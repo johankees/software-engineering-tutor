@@ -205,7 +205,7 @@ For `latest`, mise uses the newest version that is **already installed**, until 
 
 The cure is to be explicit: pin a version (`go = "1.26"`) or use a **lock file**. `mise lock` writes `mise.lock` with the exact version, checksums and download URLs per platform. Commit it, and `--locked` (or the `locked` setting) makes installs use only the locked URLs. It's the same idea as `go.sum` and `lazy-lock.json`.
 
-This repository now does both: exact versions in `mise.toml`, and a committed `mise.lock`. Look inside and you see the limits of a lock file:
+This repository now does both: exact versions in `mise.toml`, and a committed `mise.lock`. Look inside:
 
 ```text
 actionlint 1.7.12 aqua:rhysd/actionlint linux-x64 url: True 7 platforms
@@ -216,7 +216,20 @@ pipx:zensical 0.1.3 pipx:zensical linux-x64 url: None 0 platforms
 python 3.13.18 core:python linux-x64 url: True 7 platforms
 ```
 
-(A short Python summary of `mise.lock`.) Downloaded binaries get a checksum and URL per platform. `pipx:zensical` gets only a version: pipx installs from PyPI, so there is no single file to lock. That is why this repo does not turn on `locked`: an install that requires locked URLs would fail for zensical. Pinned versions plus checksums where possible is the honest middle.
+(A short Python summary of `mise.lock`.) Downloaded binaries get a checksum and URL per platform. `pipx:zensical` has no URL: pipx installs a Python package and its dependencies, not one file. For that, `mise lock` writes a second lock file, `.mise/locks/pipx-zensical/0.1.3/uv.lock`, with all 13 Python packages and their hashes. Commit that folder too.
+
+With both in git, the repo sets `locked = true` in `[settings]`: installs may only use what the lock files record. The proof is a fresh install into an empty data folder, as a CI runner would do:
+
+```text
+$ MISE_DATA_DIR=$PWD/empty-data MISE_CACHE_DIR=$PWD/empty-cache MISE_LOCKED=1 mise install
+...
+mise ✓ pipx:zensical@0.1.3   987ms
+mise go@1.27.4 go version go1.27.4 linux/amd64
+mise ✓ go@1.27.4             5.9s  go1.27.4.linux-amd64.tar.gz
+mise ████████████████ 6/6 · installed 6 tools in 6.0s
+```
+
+The price: after you change a version in `mise.toml`, run `mise lock` and commit both files, or the next install fails.
 
 ## Config files and trust
 
