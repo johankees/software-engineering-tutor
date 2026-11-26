@@ -2,7 +2,7 @@
 
 ## Why care?
 
-This repository's `mise.toml` says `go = "latest"`. CI runs the checks and they pass. On the author's laptop, in the same folder:
+This repository's `mise.toml` used to say `go = "latest"`. CI ran the checks and they passed. On the author's laptop, in the same folder:
 
 ```text
 $ go version
@@ -23,16 +23,16 @@ Homebrew is your kitchen at home: one version of each tool, for everything. That
 2. **Environment variables**: an `[env]` section, per project (like direnv).
 3. **Tasks**: named commands with dependencies (like `make`), in the same file.
 
-This repository's file:
+This repository's file (with exact versions since the fix below):
 
 ```toml
 [tools]
-python = "3.13"
-"pipx:zensical" = "latest"
-go = "latest"
-golangci-lint = "latest"
-actionlint = "latest"
-bun = "latest"
+python = "3.13.18"
+"pipx:zensical" = "0.1.3"
+go = "1.27.4"
+golangci-lint = "2.15.0"
+actionlint = "1.7.12"
+bun = "1.4.5"
 
 [settings]
 pipx.uvx = true
@@ -205,6 +205,19 @@ For `latest`, mise uses the newest version that is **already installed**, until 
 
 The cure is to be explicit: pin a version (`go = "1.26"`) or use a **lock file**. `mise lock` writes `mise.lock` with the exact version, checksums and download URLs per platform. Commit it, and `--locked` (or the `locked` setting) makes installs use only the locked URLs. It's the same idea as `go.sum` and `lazy-lock.json`.
 
+This repository now does both: exact versions in `mise.toml`, and a committed `mise.lock`. Look inside and you see the limits of a lock file:
+
+```text
+actionlint 1.7.12 aqua:rhysd/actionlint linux-x64 url: True 7 platforms
+bun 1.4.5 core:bun linux-x64 url: True 11 platforms
+go 1.27.4 core:go linux-x64 url: True 7 platforms
+golangci-lint 2.15.0 aqua:golangci/golangci-lint linux-x64 url: True 7 platforms
+pipx:zensical 0.1.3 pipx:zensical linux-x64 url: None 0 platforms
+python 3.13.18 core:python linux-x64 url: True 7 platforms
+```
+
+(A short Python summary of `mise.lock`.) Downloaded binaries get a checksum and URL per platform. `pipx:zensical` gets only a version: pipx installs from PyPI, so there is no single file to lock. That is why this repo does not turn on `locked`: an install that requires locked URLs would fail for zensical. Pinned versions plus checksums where possible is the honest middle.
+
 ## Config files and trust
 
 mise reads config files from the current folder up to `/`, plus a global one. Closer files win. The common names:
@@ -321,7 +334,7 @@ steps:
   - run: mise run check
 ```
 
-`jdx/mise-action` installs mise and the tools from `mise.toml`. Then CI runs **the same task you run locally**. No separate list of setup steps that drifts from the README. The only gap is the one above: without a pin or lock file, "latest" in CI is newer than "latest" on your laptop.
+`jdx/mise-action` installs mise and the tools from `mise.toml`. Then CI runs **the same task you run locally**. No separate list of setup steps that drifts from the README. The only gap is the one above: without a pin or lock file, "latest" in CI is newer than "latest" on your laptop. With pins and `mise.lock`, both get the same versions.
 
 ## mise next to Homebrew, fnm, direnv and asdf
 

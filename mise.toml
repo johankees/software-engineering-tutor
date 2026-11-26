@@ -1,13 +1,15 @@
 [tools]
-python = "3.13"
-"pipx:zensical" = "latest"
-go = "latest"
-golangci-lint = "latest"
-actionlint = "latest"
-bun = "latest"
+python = "3.13.18"
+"pipx:zensical" = "0.1.3"
+go = "1.27.4"
+golangci-lint = "2.15.0"
+actionlint = "1.7.12"
+bun = "1.4.5"
 
 [settings]
 pipx.uvx = true
+# install only what mise.lock records; run `mise lock` after changing a version
+locked = true
 
 [tasks.install]
 description = "Install lint and format tools with bun"
