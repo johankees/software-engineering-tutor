@@ -79,9 +79,9 @@ go env GOROOT GOPATH GOMODCACHE GOCACHE GOOS GOARCH GOPROXY GOTOOLCHAIN
 
 ```text
 /home/linuxbrew/.linuxbrew/Cellar/go/1.27.4/libexec
-/home/johan/.local/share/go
-/home/johan/.cache/go/mod
-/home/johan/.cache/go/build
+/home/you/.local/share/go
+/home/you/.cache/go/mod
+/home/you/.cache/go/build
 linux
 amd64
 https://proxy.golang.org,direct
@@ -275,11 +275,11 @@ vcs.modified=false
 
 The flags in that build command:
 
-| Flag               | Effect                                                                                         |
-| ------------------ | ---------------------------------------------------------------------------------------------- |
-| `-trimpath`        | Removes your local folder paths (`/home/johan/...`) from the binary. Reproducible and private. |
-| `-ldflags "-s -w"` | Drops the symbol table and DWARF debug info. Here: 2.4 MB became 1.6 MB.                       |
-| `-X main.version=` | Sets the string variable `version` in package `main`.                                          |
+| Flag               | Effect                                                                                       |
+| ------------------ | -------------------------------------------------------------------------------------------- |
+| `-trimpath`        | Removes your local folder paths (`/home/you/...`) from the binary. Reproducible and private. |
+| `-ldflags "-s -w"` | Drops the symbol table and DWARF debug info. Here: 2.4 MB became 1.6 MB.                     |
+| `-X main.version=` | Sets the string variable `version` in package `main`.                                        |
 
 !!! warning "`-s -w` is a trade-off"
 
