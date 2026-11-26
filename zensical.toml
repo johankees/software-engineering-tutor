@@ -84,6 +84,17 @@ nav = [
   ] },
   { "Kubernetes" = [
     "kubernetes/index.md",
+    "kubernetes/architecture.md",
+    "kubernetes/reconciliation.md",
+    "kubernetes/pods.md",
+    "kubernetes/workloads.md",
+    "kubernetes/services-and-dns.md",
+    "kubernetes/ingress-and-gateway-api.md",
+    "kubernetes/config-and-secrets.md",
+    "kubernetes/storage.md",
+    "kubernetes/scheduling-and-resources.md",
+    "kubernetes/packaging.md",
+    "kubernetes/operators.md",
   ] },
   { "Databases" = [
     "databases/index.md",
