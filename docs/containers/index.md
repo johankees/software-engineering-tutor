@@ -32,21 +32,19 @@ flowchart LR
 
 ## Reading order
 
-!!! note "Planned chapter"
+Each page builds on the one before it.
 
-    This section is a roadmap. The pages below are written in later sessions and linked here when they land.
-
-| #   | Page                 | You will learn                                                                              |
-| --- | -------------------- | ------------------------------------------------------------------------------------------- |
-| 1   | What a container is  | Run a process in namespaces by hand, then see what Docker adds; containers vs VMs           |
-| 2   | Images and layers    | The OCI image format, digests vs tags, overlayfs, open an image with `skopeo` and `tar`     |
-| 3   | Building good images | Cache-friendly Dockerfiles, multi-stage Go builds, distroless, multi-arch, BuildKit secrets |
-| 4   | Runtimes             | Docker, containerd, runc, Podman, rootless containers, and the OCI runtime spec             |
-| 5   | Container networking | veth pairs, bridges, port publishing, NAT, and container DNS                                |
-| 6   | Container security   | Non-root users, capabilities, seccomp, read-only roots, image scanning and signing          |
+| #   | Page                                          | You will learn                                                                              |
+| --- | --------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| 1   | [What a container is](what-a-container-is.md) | Run a process in namespaces by hand, then see what Docker adds; containers vs VMs           |
+| 2   | [Images and layers](images-and-layers.md)     | The OCI image format, digests vs tags, overlayfs, open an image with `skopeo` and `tar`     |
+| 3   | [Building good images](building-images.md)    | Cache-friendly Dockerfiles, multi-stage Go builds, distroless, multi-arch, BuildKit secrets |
+| 4   | [Runtimes](runtimes.md)                       | Docker, containerd, runc, Podman, rootless containers, and the OCI runtime spec             |
+| 5   | [Container networking](networking.md)         | veth pairs, bridges, port publishing, NAT, and container DNS                                |
+| 6   | [Container security](security.md)             | Non-root users, capabilities, seccomp, read-only roots, image scanning and signing          |
 
 The [Building a service](../go/services.md) page already ships `ordersd` in a distroless image. This chapter explains every line of that `Dockerfile` and takes it apart.
 
 ## How each page works
 
-The same shape as the [Fundamentals](../fundamentals/index.md): **Why care?**, **The idea**, **Under the hood**, **Try it**, **Traps** and **Check yourself**.
+The same shape as the [Fundamentals](../fundamentals/index.md): **Why care?**, **The idea**, **Under the hood**, **Try it**, **Traps** and **Check yourself**. All output comes from real runs on WSL2 with Docker 29.1 (containerd and runc), Go 1.27.4, `crane`, `syft` and `cosign`.

@@ -75,6 +75,12 @@ nav = [
   ] },
   { "Containers" = [
     "containers/index.md",
+    "containers/what-a-container-is.md",
+    "containers/images-and-layers.md",
+    "containers/building-images.md",
+    "containers/runtimes.md",
+    "containers/networking.md",
+    "containers/security.md",
   ] },
   { "Kubernetes" = [
     "kubernetes/index.md",
