@@ -94,7 +94,7 @@ The same trick solves "wrong email in the wrong project": put `user.email` in a 
 
 ### `gitdir:` vs `worktree:` for linked worktrees
 
-This setup also has:
+This setup used to have:
 
 ```ini
 [includeIf "gitdir:~/.cache/agent/worktrees/**"]
@@ -104,9 +104,9 @@ This setup also has:
 The goal: turn off signing in throwaway agent worktrees. But read the manual carefully: for a linked worktree, `gitdir:` matches **the real `.git` directory**, which is inside the main repository (`.git/worktrees/<name>`), not the worktree folder. Here is the test, in a sandbox home with both conditions:
 
 ```ini
-[includeIf "gitdir:~/.cache/agents/worktrees/**"]
+[includeIf "gitdir:~/.cache/agent/worktrees/**"]
     path = by-gitdir.gitconfig        # sets demo.gitdir = matched
-[includeIf "worktree:~/.cache/agents/worktrees/**"]
+[includeIf "worktree:~/.cache/agent/worktrees/**"]
     path = by-worktree.gitconfig      # sets demo.worktree = matched
 ```
 
@@ -114,17 +114,17 @@ The goal: turn off signing in throwaway agent worktrees. But read the manual car
 $ git rev-parse --git-dir
 ~/src/app/.git/worktrees/app-topic
 $ git rev-parse --show-toplevel
-~/.cache/agents/worktrees/app-topic
+~/.cache/agent/worktrees/app-topic
 $ git config list | grep ^demo
 demo.worktree=matched
 ```
 
-(Sandbox home shortened to `~`.) Only `worktree:` matched. A `gitdir:` pattern for a folder of **linked** worktrees never matches, and Git does not warn you. For that job, use `worktree:`.
+(Sandbox home shortened to `~`.) Only `worktree:` matched. A `gitdir:` pattern for a folder of **linked** worktrees never matches, and Git does not warn you. For that job, use `worktree:`. That is now the fix in this setup: `[includeIf "worktree:~/.cache/agent/worktrees/**"]`.
 
 !!! warning "Config fails silently"
 
     A typo in an `includeIf` path, or a key that does not exist, is just ignored. For example,
-    this setup's config has `rebase.interactive = true`, but `git-config(1)` in 2.56 has no such
+    this setup's config had `rebase.interactive = true`, but `git-config(1)` in 2.56 has no such
     key (it does have `rebase.autoSquash`, `rebase.autoStash` and `rebase.updateRefs`). Always check
     with `git config get --show-origin <key>` from inside the repo where it should apply.
 

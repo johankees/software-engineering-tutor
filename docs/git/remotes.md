@@ -217,7 +217,7 @@ The `git pull` manual in 2.56 says `--ff-only` is the default "when no method fo
 
 ### What happens with **both** `pull.ff=only` and `pull.rebase=true`?
 
-This setup's dotfiles set both. On a diverged branch:
+This setup's dotfiles used to set both. On a diverged branch:
 
 ```console
 $ git -c pull.ff=only -c pull.rebase=true pull
@@ -241,7 +241,14 @@ $ git pull --rebase
 Successfully rebased and updated refs/heads/feature.
 ```
 
-(The `...` hides a hint about a skipped commit.) A command-line `--rebase` beats the `pull.ff=only` config. That is a reasonable combination ("never surprise me"), but know that `pull.rebase=true` alone does nothing for diverged branches here. If you want `git pull` to rebase automatically, remove `pull.ff=only`. In this setup, Git Town's `git sync` (below) is what does the rebasing.
+(The `...` hides a hint about a skipped commit.) A command-line `--rebase` beats the `pull.ff=only` config. That is a reasonable combination ("never surprise me"), but know that `pull.rebase=true` alone does nothing for diverged branches here. If you want `git pull` to rebase automatically, remove `pull.ff=only`. That is what this setup now does. With only `pull.rebase=true`, the same diverged branch:
+
+```console
+$ git -c pull.rebase=true pull
+Successfully rebased and updated refs/heads/main.
+```
+
+Git Town's `git sync` (below) also rebases, branch by branch.
 
 ## Under the hood: credential helpers
 
