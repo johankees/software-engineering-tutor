@@ -1,0 +1,40 @@
+[tools]
+python = "3.13"
+"pipx:zensical" = "latest"
+go = "latest"
+"npm:prettier" = "latest"
+"npm:markdownlint-cli2" = "latest"
+golangci-lint = "latest"
+actionlint = "latest"
+node = "lts"
+
+[settings]
+pipx.uvx = true
+
+[tasks.serve]
+description = "Serve the site with live reload"
+run = "zensical serve"
+
+[tasks.build]
+description = "Build the site into ./site"
+run = "zensical build --clean"
+
+[tasks.fmt]
+description = "Format Markdown, YAML and Go code"
+run = ["prettier --write '**/*.{md,yml,yaml}'", "gofmt -w ."]
+
+[tasks."fmt:check"]
+description = "Check formatting"
+run = "prettier --check '**/*.{md,yml,yaml}'"
+
+[tasks.lint]
+description = "Lint Markdown and workflows"
+run = ["markdownlint-cli2 '**/*.md'", "actionlint"]
+
+[tasks.check]
+description = "Run all checks (CI entry point)"
+depends = ["fmt:check", "lint", "build"]
+
+[tasks.clean]
+description = "Remove build output"
+run = "rm -rf site .cache"
