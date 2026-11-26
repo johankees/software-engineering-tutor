@@ -2,7 +2,7 @@
 
 ## Why care?
 
-The invoice endpoint of the orders service is slow. In the team chat, five people have five theories: "it's the JSON", "it's the database", "Go's GC is slow", "we need a cache", "rewrite it in Rust". Two days later someone runs a profiler. The real cause is one line that builds a string in a loop. Fixing it makes the endpoint **25× faster**. None of the five theories was right.
+The invoice endpoint of the orders service is slow. In the team chat, five people have five theories: "it's the JSON", "it's the database", "Go's GC is slow", "we need a cache", "rewrite it in Rust". Two days later someone runs a profiler. The real cause is one line that builds a string in a loop. Fixing it makes the endpoint **29× faster**. None of the five theories was right.
 
 This happens all the time, and it teaches the most important rule of performance work:
 
@@ -110,10 +110,10 @@ goos: linux
 goarch: amd64
 pkg: github.com/acme/orders/invoice
 cpu: AMD Ryzen 7 5800H with Radeon Graphics
-BenchmarkRender-16    	    7177	    163091 ns/op	  418553 B/op	     599 allocs/op
-BenchmarkRender-16    	    7741	    162495 ns/op	  418553 B/op	     599 allocs/op
-BenchmarkRender-16    	    6778	    165856 ns/op	  418552 B/op	     599 allocs/op
-BenchmarkRender-16    	    7388	    168376 ns/op	  418558 B/op	     599 allocs/op
+BenchmarkRender-16    	    8029	    157291 ns/op	  418549 B/op	     599 allocs/op
+BenchmarkRender-16    	    8025	    157555 ns/op	  418547 B/op	     599 allocs/op
+BenchmarkRender-16    	    7818	    158102 ns/op	  418546 B/op	     599 allocs/op
+BenchmarkRender-16    	    8383	    164369 ns/op	  418550 B/op	     599 allocs/op
 ...
 ```
 
@@ -122,9 +122,9 @@ How to read one line:
 | Column          | Meaning                                                             |
 | --------------- | ------------------------------------------------------------------- |
 | `-16`           | GOMAXPROCS during the run                                           |
-| `7177`          | How many times the loop body ran                                    |
-| `163091 ns/op`  | Time per call: 163 µs to render 200 lines. That is a lot.           |
-| `418553 B/op`   | Bytes allocated on the heap per call: 409 KiB for ~4 KiB of output! |
+| `8029`          | How many times the loop body ran                                    |
+| `157291 ns/op`  | Time per call: 157 µs to render 200 lines. That is a lot.           |
+| `418549 B/op`   | Bytes allocated on the heap per call: 409 KiB for ~4 KiB of output! |
 | `599 allocs/op` | Heap allocations per call: 3 per line                               |
 
 The numbers already tell a story. The output is about 4 KB, but we allocate **100 times** that.
@@ -192,7 +192,7 @@ One line, 2.13 GB during the benchmark. Now we know **exactly** what to fix.
 
 Two separate problems hide in that one line.
 
-**Problem 1: `+=` on a string copies everything.** Strings in Go are immutable (see [Types and data](types-and-data.md)). `out += line` can't grow `out` in place. It allocates a **new** string of `len(out) + len(line)` bytes and copies both into it. Line 1 copies 20 bytes, line 2 copies 40, line 200 copies 4000. In total that's about 20 + 40 + … + 4000 ≈ **400 KB of copying** for 4 KB of output. That is the 418553 B/op. The cost grows with the **square** of the number of lines: double the items, four times the work.
+**Problem 1: `+=` on a string copies everything.** Strings in Go are immutable (see [Types and data](types-and-data.md)). `out += line` can't grow `out` in place. It allocates a **new** string of `len(out) + len(line)` bytes and copies both into it. Line 1 copies 20 bytes, line 2 copies 40, line 200 copies 4000. In total that's about 20 + 40 + … + 4000 ≈ **400 KB of copying** for 4 KB of output. That is the ~418550 B/op. The cost grows with the **square** of the number of lines: double the items, four times the work.
 
 **Problem 2: `fmt.Sprintf` boxes its arguments.** `Sprintf` takes `...any`. Each argument is put into an interface value, which often means a heap allocation. The compiler tells us, with the escape analysis output you know from [Memory: stack, heap and caches](../fundamentals/memory.md):
 
@@ -258,17 +258,17 @@ go test -run='^$' -bench=Render -benchmem -count=10 ./invoice > new.txt
 ```
 
 ```text
-BenchmarkRender-16    	  178996	      6505 ns/op	   10624 B/op	       2 allocs/op
-BenchmarkRender-16    	  180620	      6449 ns/op	   10624 B/op	       2 allocs/op
-BenchmarkRender-16    	  192471	      6462 ns/op	   10624 B/op	       2 allocs/op
-BenchmarkRender-16    	  184768	      6536 ns/op	   10624 B/op	       2 allocs/op
+BenchmarkRender-16    	  193960	      5791 ns/op	   10624 B/op	       2 allocs/op
+BenchmarkRender-16    	  203707	      5860 ns/op	   10624 B/op	       2 allocs/op
+BenchmarkRender-16    	  212356	      5743 ns/op	   10624 B/op	       2 allocs/op
+BenchmarkRender-16    	  204414	      5700 ns/op	   10624 B/op	       2 allocs/op
 ```
 
-| Metric        | Before   | After   | Change          |
-| ------------- | -------- | ------- | --------------- |
-| time per call | ~164 µs  | ~6.5 µs | **~25× faster** |
-| bytes / call  | 418553 B | 10624 B | ~39× less       |
-| allocs / call | 599      | 2       | ~300× fewer     |
+| Metric        | Before    | After   | Change          |
+| ------------- | --------- | ------- | --------------- |
+| time per call | ~165 µs   | ~5.7 µs | **~29× faster** |
+| bytes / call  | ~418550 B | 10624 B | ~39× less       |
+| allocs / call | 599       | 2       | ~300× fewer     |
 
 The two allocations left are the buffer and the final `string(buf)` conversion (which must copy, because strings are immutable and `buf` is not). The escape analysis now says `make([]byte, ...) does not escape` and the `strconv.AppendInt` calls are inlined. Fewer allocations also means less GC work, so the **whole service** gets faster, not only this function.
 
@@ -280,13 +280,61 @@ The two allocations left are the buffer and the final `string(buf)` conversion (
 
 ### Comparing properly: `benchstat`
 
-Eyeballing numbers is fine for a 25× change. For a 5% change it is not: benchmark results are **noisy** (other programs, CPU frequency scaling, the GC). The Go team's tool [`benchstat`](https://pkg.go.dev/golang.org/x/perf/cmd/benchstat) reads both files and does the statistics for you:
+Eyeballing numbers is fine for a 29× change. For a 5% change it is not: benchmark results are **noisy** (other programs, CPU frequency scaling, the GC). The Go team's tool [`benchstat`](https://pkg.go.dev/golang.org/x/perf/cmd/benchstat) reads both files and does the statistics for you:
 
 ```sh
 go tool benchstat old.txt new.txt   # with benchstat added as a tool in go.mod (see Modules)
 ```
 
 For each benchmark it prints the median of the old and the new runs, the variation (`±`), the change in percent, and a **p-value**. The p-value answers: "how likely is a difference this big if nothing really changed?" If it's above 0.05, benchstat prints `~`, meaning "no significant difference". This is why you run `-count=10`: with one run per side, you can't tell signal from noise.
+
+Here is the real output for our two files:
+
+```text
+          │    old.txt    │               new.txt               │
+          │    sec/op     │   sec/op     vs base                │
+Render-16   165.477µ ± 5%   5.745µ ± 1%  -96.53% (p=0.000 n=10)
+
+          │    old.txt    │               new.txt                │
+          │     B/op      │     B/op      vs base                │
+Render-16   408.74Ki ± 0%   10.38Ki ± 0%  -97.46% (p=0.000 n=10)
+
+          │   old.txt    │              new.txt               │
+          │  allocs/op   │ allocs/op   vs base                │
+Render-16   599.000 ± 0%   2.000 ± 0%  -99.67% (p=0.000 n=10)
+```
+
+How to read the first table:
+
+| Part            | Meaning                                                                                    |
+| --------------- | ------------------------------------------------------------------------------------------ |
+| `165.477µ ± 5%` | The **median** of the 10 old runs, and how far most runs were from it (the noise).         |
+| `5.745µ ± 1%`   | The same for the 10 new runs. The new code is also steadier: less noise.                   |
+| `-96.53%`       | The change. The new time is 3.47% of the old time, which is the ~29× from the table above. |
+| `p=0.000`       | The chance of seeing a difference this big by luck alone. Almost zero: the change is real. |
+| `n=10`          | Runs used per side. Benchstat may drop outliers, and then this number is lower.            |
+
+The memory tables say `± 0%`: allocation counts don't depend on timing, so they are the same in every run.
+
+To see what "no change" looks like, run the **same** new code a second time into `new2.txt` and compare it with `new.txt`:
+
+```text
+          │   new.txt   │           new2.txt            │
+          │   sec/op    │   sec/op     vs base          │
+Render-16   5.745µ ± 1%   5.804µ ± 1%  ~ (p=0.118 n=10)
+
+          │   new.txt    │             new2.txt             │
+          │     B/op     │     B/op      vs base            │
+Render-16   10.38Ki ± 0%   10.38Ki ± 0%  ~ (p=1.000 n=10) ¹
+¹ all samples are equal
+
+          │  new.txt   │            new2.txt            │
+          │ allocs/op  │ allocs/op   vs base            │
+Render-16   2.000 ± 0%   2.000 ± 0%  ~ (p=1.000 n=10) ¹
+¹ all samples are equal
+```
+
+The second run looks 1% slower (5.804 µs vs 5.745 µs), but benchstat prints `~` with `p=0.118`: a difference that size happens by chance too often to mean anything. Without benchstat, it is easy to "see" a 1% regression here that does not exist. `all samples are equal` means every run gave exactly the same number, so there is nothing to test.
 
 !!! tip "Pin benchstat as a tool"
 
