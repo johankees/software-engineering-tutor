@@ -36,9 +36,14 @@ description = "Lint Markdown and workflows"
 depends = ["install"]
 run = ["bunx --bun markdownlint-cli2 '**/*.md'", "actionlint"]
 
+[tasks."go:check"]
+description = "Vet, lint and race-test the Go reference project"
+dir = "examples/orders"
+run = ["test -z \"$(gofmt -l .)\"", "go vet ./...", "golangci-lint run ./...", "go test -race -count=1 ./..."]
+
 [tasks.check]
 description = "Run all checks (CI entry point)"
-depends = ["fmt:check", "lint", "build"]
+depends = ["fmt:check", "lint", "build", "go:check"]
 
 [tasks.clean]
 description = "Remove build output"

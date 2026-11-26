@@ -1,0 +1,55 @@
+# golangci-lint v2 configuration.
+# Docs: https://golangci-lint.run/docs/configuration/file/
+version: "2"
+
+linters:
+  # "standard" = errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+  enable:
+    - bodyclose # HTTP response bodies must be closed
+    - contextcheck # functions should pass on the context they received
+    - errname # sentinel errors are ErrX, error types are XError
+    - errorlint # use errors.Is/As, wrap with %w
+    - exhaustive # switch over an enum covers every value
+    - gocritic # many small correctness and style checks
+    - gosec # security problems
+    - misspell # spelling in comments and strings
+    - nilerr # returning nil when err != nil
+    - noctx # HTTP requests without a context
+    - revive # successor of golint: naming, doc comments
+    - sloglint # consistent log/slog usage
+    - unconvert # needless type conversions
+    - usestdlibvars # http.MethodGet instead of "GET"
+  settings:
+    exhaustive:
+      default-signifies-exhaustive: true
+    sloglint:
+      attr-only: false
+      no-global: all # never use slog.Info etc.; inject a *slog.Logger
+      context: scope # pass ctx to ...Context methods when one is in scope
+    revive:
+      rules:
+        - name: exported
+        - name: package-comments
+        - name: var-naming
+        - name: receiver-naming
+        - name: error-strings
+        - name: error-naming
+        - name: context-as-argument
+        - name: unused-parameter
+  exclusions:
+    presets:
+      - std-error-handling
+    rules:
+      # Tests may ignore errors from setup helpers and use weak randomness.
+      - path: _test\.go
+        linters: [gosec, errcheck]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/acme/orders
