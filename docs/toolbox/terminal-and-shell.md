@@ -244,9 +244,10 @@ That is mystery number three. If a new tool appears in a directory that is _earl
 The `.zshrc` in this setup loads three plugins with **zinit**, a plugin manager that clones git repositories and sources them:
 
 ```sh
-zinit light zsh-users/zsh-syntax-highlighting
-zinit light zsh-users/zsh-autosuggestions
 zinit light Aloxaf/fzf-tab
+zinit light zsh-users/zsh-autosuggestions
+# ... everything else ...
+zinit light zsh-users/zsh-syntax-highlighting   # at the very end of .zshrc
 ```
 
 - **zsh-syntax-highlighting** colours your command line while you type (red for unknown commands).
@@ -283,29 +284,61 @@ num  calls                time                       self            name
  ...
 ```
 
-**68% of the time is `compaudit`**, the security check, not the plugins. You can prove it in isolation with a clean zsh (`zsh -f`) and the same `fpath`:
+It looks clear: **`compaudit`**, the security check, takes 111 ms. `compinit -C` skips the check and trusts the existing `.zcompdump`, so the obvious fix is "run the full check once a day, `-C` otherwise". We tried exactly that. Wall-clock time, 10 runs each:
 
 ```text
-== compinit
- 1)    2         110.02    55.01   93.76%    110.02    55.01   93.76%  compaudit
- 2)    1         117.34   117.34  100.00%      7.32     7.32    6.24%  compinit
-== compinit -C
- 1)    1           6.70     6.70  100.00%      6.70     6.70  100.00%  compinit
+old 348ms avg
+new 342ms avg
 ```
 
-`compinit -C` skips the check and trusts the existing `.zcompdump`: about 7 ms instead of 117 ms. The trade-off is safety and freshness. A common pattern is to run the full check only when the dump file is older than a day, and use `-C` otherwise.
+Almost nothing. `compinit` itself dropped from about 120 ms to 7 ms, but the shell was not faster. The cost **moved**. Two lessons hide here:
 
-!!! tip "Measure before you optimise"
+1. `zprof` only measures **zsh functions**. Time spent in a builtin, an expansion or a child process is charged to whichever function happens to be running.
+2. The real cost was something `compaudit` merely **touched first**.
+
+To see where time goes line by line, trace with timestamps and sort the gaps:
+
+```sh
+zsh -c 'zmodload zsh/datetime; setopt promptsubst
+        PS4="+\$EPOCHREALTIME %x:%I> "; setopt xtrace
+        source ~/.config/zsh/.zshrc' 2> trace.log
+```
+
+The two biggest gaps (from a small script that sorts the trace):
+
+```text
+  107.9ms .../functions/compaudit:18 [[ -n /usr/bin/getent ]]
+  100.9ms ~/.config/zsh/.zshrc:107 command -v gcloud
+```
+
+Line 18 of `compaudit` is `[[ -n $commands[getent] ]]`. `$commands` is zsh's hash table of every program in `PATH` (the same table `rehash` resets). The **first** time anything reads it, zsh fills it by listing every directory in `PATH`. And `command -v` for a program that is **not installed** must look in every directory too. So the question is: what is slow about this `PATH`? On WSL, Windows adds its own folders (`/mnt/c/...`). Here there are 28 of them, and every listing of them crosses from Linux to Windows. Proof, with the same kind of lookups in a clean zsh:
+
+```text
+54 dirs: first $commands lookup 109 ms, missing command 103 ms
+26 dirs: first $commands lookup   5 ms, missing command   0 ms
+```
+
+Remove the `/mnt/` folders and both costs disappear. With `compinit -C`, the first `$commands` lookup simply happened later (inside zinit), which is why the total did not change. The root cause is the Windows `PATH`. On WSL you can turn it off in `/etc/wsl.conf`:
+
+```ini
+[interop]
+appendWindowsPath = false
+```
+
+Then Windows programs like `code` or `explorer.exe` are no longer found by name; add the few you need to `PATH` by hand.
+
+!!! tip "Measure before you optimise, and measure the right thing"
 
     People often blame "too many plugins" for a slow shell. Here, the plugins together cost about
-    35 ms. The real cost was one security check. `zprof` takes ten seconds to run. Do it first.
+    35 ms. But the profiler's top line was not the cause either. Confirm every "fix" with wall-clock
+    time, and when a fix doesn't help, look for work that just moved.
 
 ## Traps
 
 - **Output in `.zshenv`.** It runs for scripts and for `scp`/`rsync` over SSH too. Any `echo` there can break those tools. Keep it silent.
-- **Growing `PATH`.** `.zshenv` in this setup _appends_ `~/.local/share/scripts`, and `.zshrc` appends `~/.local/bin`. Every nested shell (each tmux pane is one) appends again. On this machine: `~/.local/share/scripts` is in `PATH` **3 times**, and the Homebrew directories twice. It is harmless but slow to read and confusing to debug. `typeset -U path` in `.zshenv` fixes it.
-- **Plugin order.** zsh-syntax-highlighting's own docs say it "must be the last plugin sourced", and fzf-tab's README says it must load after `compinit` but _before_ plugins that wrap widgets, such as zsh-autosuggestions. This setup loads them in the opposite order (highlighting first, fzf-tab last). The safe order is: `compinit`, fzf-tab, autosuggestions, syntax-highlighting.
-- **The terminfo folder layout.** terminfo files live in a folder per first character. macOS uses the hex code (`78/xterm-ghostty`, since `x` is `0x78`); ncurses on Linux uses the letter (`x/xterm-ghostty`). This setup stows `~/.terminfo/78/...`, which works on macOS but **not** on this Linux machine:
+- **Growing `PATH`.** `.zshenv` in this setup _appends_ `~/.local/share/scripts`, and `.zshrc` appends `~/.local/bin`. Every nested shell (each tmux pane is one) appends again. Before the fix, three nested shells had `~/.local/share/scripts` in `PATH` 6 times (64 entries in total). `typeset -U path PATH` at the top of `.zshenv` fixes it: 1 copy, 47 entries.
+- **Plugin order.** zsh-syntax-highlighting's own docs say it "must be the last plugin sourced", and fzf-tab's README says it must load after `compinit` but _before_ plugins that wrap widgets, such as zsh-autosuggestions. This setup used to load them in the opposite order (highlighting first, fzf-tab last). The safe order is: `compinit`, fzf-tab, autosuggestions, and syntax-highlighting at the very end of `.zshrc`.
+- **The terminfo folder layout.** terminfo files live in a folder per first character. macOS uses the hex code (`78/xterm-ghostty`, since `x` is `0x78`); ncurses on Linux uses the letter (`x/xterm-ghostty`). This setup used to stow only `~/.terminfo/78/...`, which works on macOS but **not** on Linux:
 
   ```text
   $ cd ~/.terminfo && file 78/xterm-ghostty
@@ -314,7 +347,7 @@ num  calls                time                       self            name
   infocmp: error: no match in terminfo database for terminal type "xterm-ghostty"
   ```
 
-  The same file copied to a `x/` folder is found at once. Ship both layouts, or install the entry with `tic -x`, which picks the right layout for the machine.
+  The same file in an `x/` folder is found at once. The fix ships both layouts: `x` is a symlink to `78` (and `g` to `67`). Or install the entry with `tic -x`, which picks the right layout for the machine.
 
 - **A dead terminal after a crash.** If a full-screen program dies in raw mode, type `reset` and press Enter, even if you can't see what you type.
 
@@ -355,6 +388,6 @@ num  calls                time                       self            name
 - True colour, OSC 52 clipboard and extended keys are features each layer must support and pass on.
 - zsh reads `.zshenv` always, `.zprofile`/`.zlogin` for login shells, `.zshrc` for interactive shells. `ZDOTDIR` and XDG keep `$HOME` clean.
 - zsh hashes command locations: `rehash` after a new tool appears earlier in `PATH`.
-- Measure start-up with `zprof`. In this setup the cost was `compaudit`, not the plugins.
+- Measure start-up with `zprof`, then confirm with wall-clock time and a timestamped trace. In this setup `zprof` blamed `compaudit`, but the real cost was 28 slow Windows folders in `PATH`.
 
 Next: [tmux](tmux.md), the server that keeps all of this alive.

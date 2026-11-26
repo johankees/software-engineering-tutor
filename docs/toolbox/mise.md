@@ -106,7 +106,7 @@ Every shim is a **symlink to mise itself**. When you run `go`, mise starts, sees
 ```text
 $ cd ~ && ~/.local/share/mise/shims/go version
 go version go1.27.4 linux/amd64
-$ cd ~/.cache/agents/worktrees/software-engineering-tutor-toolbox-and-git && ~/.local/share/mise/shims/go version
+$ cd ~/.cache/agent/worktrees/software-engineering-tutor-toolbox-and-git && ~/.local/share/mise/shims/go version
 go version go1.26.5 linux/amd64
 ```
 
@@ -136,7 +136,7 @@ shims_on_path: no
 self_update_available: no
 ...
 config_files:
-  ~/.cache/agents/worktrees/software-engineering-tutor-toolbox-and-git/mise.toml
+  ~/.cache/agent/worktrees/software-engineering-tutor-toolbox-and-git/mise.toml
 ...
 toolset:
   aqua:golangci/golangci-lint@2.15.0
@@ -176,6 +176,20 @@ The fix has two parts:
 
 2. For things that don't run `.zshrc` (editors started from a GUI, scripts), put the shims on `PATH` in `.zshenv` or the login environment: `export PATH="$XDG_DATA_HOME/mise/shims:$PATH"`. Activation in the interactive shell then puts the real folders in front of the shims.
 
+The dotfiles now do part 1. The same check in the project folder, first with the old `.zshrc`, then with the fixed one (`zsh -i -c 'go version; command -v zensical'`):
+
+```text
+go version go1.27.4 linux/amd64
+zensical: not on PATH
+```
+
+```text
+go version go1.26.5 linux/amd64
+~/.local/share/mise/installs/pipx-zensical/latest/bin/zensical
+```
+
+Same folder, same `mise.toml`. Only activation changed, and now the shell uses the project's tools.
+
 ### The second half of the mystery: what "latest" means
 
 There's another surprise in the output above. `latest` gave Go **1.26.5**, but:
@@ -184,7 +198,7 @@ There's another surprise in the output above. `latest` gave Go **1.26.5**, but:
 $ mise latest go
 1.27.4
 $ mise outdated
-go  latest  1.26.5  1.27.4 ~/.cache/agents/worktrees/software-engineering-tutor-toolbox-and-git/mise.toml
+go  latest  1.26.5  1.27.4 ~/.cache/agent/worktrees/software-engineering-tutor-toolbox-and-git/mise.toml
 ```
 
 For `latest`, mise uses the newest version that is **already installed**, until you upgrade (`mise upgrade go`). On a fresh machine, like a CI runner, nothing is installed yet, so CI gets 1.27.4. Your laptop and CI run different Go versions from the same file, and neither is wrong.
@@ -205,7 +219,7 @@ mise reads config files from the current folder up to `/`, plus a global one. Cl
 
 ```text
 $ mise config ls
-~/.cache/agents/worktrees/software-engineering-tutor-toolbox-and-git/mise.toml  python, pipx:zensical, go, golangci-lint, actionlint, bun
+~/.cache/agent/worktrees/software-engineering-tutor-toolbox-and-git/mise.toml  python, pipx:zensical, go, golangci-lint, actionlint, bun
 ```
 
 (This setup has no global mise config: `~/.config/mise` does not exist.)
@@ -220,7 +234,7 @@ That last point is why this worktree was trusted without asking:
 
 ```text
 $ mise trust --show
-~/.cache/agents/worktrees/software-engineering-tutor-toolbox-and-git: trusted
+~/.cache/agent/worktrees/software-engineering-tutor-toolbox-and-git: trusted
 ```
 
 ## Backends: where tools come from
@@ -279,7 +293,7 @@ check
 $ mise tasks info go:check
 Task: go:check
 Description: Vet, lint and race-test the Go reference project
-Source: ~/.cache/agents/worktrees/software-engineering-tutor-toolbox-and-git/mise.toml
+Source: ~/.cache/agent/worktrees/software-engineering-tutor-toolbox-and-git/mise.toml
 Directory: examples/orders
 
 Run:
@@ -359,7 +373,7 @@ This setup activates **fnm** and **direnv** in `.zshrc`, but not mise, even thou
 
 - mise manages per-project tools, env vars and tasks from `mise.toml`.
 - `activate` rewrites `PATH` in a `precmd`/`chpwd` hook; shims are symlinks to mise that pick the version per call; `exec`/`run` are explicit.
-- In this setup mise is **not activated**: `mise doctor` shows it, and the fix is `eval "$(mise activate zsh)"` plus shims for non-interactive programs.
+- This setup did **not activate** mise: `mise doctor` showed it. The fix is `eval "$(mise activate zsh)"` in `.zshrc`, plus shims for non-interactive programs.
 - `latest` means "newest installed". Pin versions or use `mise lock` for reproducible builds.
 - Config files merge from the folder upwards; trust protects you from running a stranger's config.
 - Tasks with `depends`, `dir` and `run` arrays make `mise run check` the single entry point, locally and in CI.

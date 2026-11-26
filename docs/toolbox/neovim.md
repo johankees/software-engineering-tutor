@@ -150,7 +150,7 @@ lazy.nvim collects all specs for the same plugin and **merges** them. Tables mer
 formatters_by_ft = { go = { "goimports", "gofumpt" } }
 ```
 
-and `lua/plugins/lang/go.lua` sets:
+and `lua/plugins/lang/go.lua` used to set:
 
 ```lua
 formatters_by_ft = { ["go"] = { "gofumpt" } }
@@ -163,7 +163,7 @@ $ nvim --headless -c 'edit cmd/ordersd/main.go' -c 'lua print(vim.inspect(requir
 { "gofumpt" }
 ```
 
-`goimports` is gone. More about what that means in [Traps](#traps).
+`goimports` is gone. More about what that means in [Traps](#traps). (The dotfiles have since dropped that override, so the Go extra's default applies again.)
 
 If you need to _extend_ a list, use an `opts` function instead of a table: `opts = function(_, opts) table.insert(opts.x, "y") end`. The function gets the already-merged options and can change them in any way. This setup's `sql.lua` uses that form to change one formatter's arguments.
 
@@ -364,17 +364,23 @@ vim.lsp:                                                                    ✅
    )
   ```
 
-  So unused imports stay until the compiler complains. If you want them gone on save, keep `goimports` in the list (`{ "goimports", "gofumpt" }`), or run gopls' organize-imports code action.
+  So unused imports stay until the compiler complains. The fix in this setup was to delete the override, so LazyVim's `{ "goimports", "gofumpt" }` applies again. The same test afterwards lists both formatters for the buffer, and the `"fmt"` line is gone:
+
+  ```text
+  goimports,gofumpt
+  ```
+
+  The lesson: if you only want the default, don't restate a list. Every list you write replaces one.
 
 - **The same happens to `directoryFilters`.** The setup's gopls `directoryFilters` list replaces LazyVim's list. Here it repeats LazyVim's entries and adds one (`-**/.terraform`), which is right. If you shorten such a list, you lose entries without a warning.
-- **A typo is not an error in Lua.** `options.lua` sets `g.gui_font_fize = 16` (typo) and then reads `g.gui_font_size`, which is `nil`. LuaJIT formats `nil` as text, so there is no error, just a wrong value:
+- **A typo is not an error in Lua.** `options.lua` used to set `g.gui_font_fize = 16` (typo) and then read `g.gui_font_size`, which is `nil`. LuaJIT formats `nil` as text, so there is no error, just a wrong value:
 
   ```text
   $ nvim --headless -c 'lua print(vim.o.guifont)' -c 'qa!'
   Iosevka NF:hnil
   ```
 
-  Harmless in a terminal (only GUIs use `guifont`), but a nice example: check your settings headless.
+  After fixing the name, the same check prints `Iosevka NF:h16`. Harmless in a terminal (only GUIs use `guifont`), but a nice example: check your settings headless.
 
 - **Auto-save runs your save hooks.** auto-save.nvim calls `silent! write`, so every `InsertLeave` also runs the `BufWritePre` hooks: conform formatting and the whitespace strip. Text can move under your cursor when you leave insert mode, and the file on disk changes much more often. Tools that watch files (test runners, `go run` with reload) will fire a lot.
 - **`Ctrl+l` no longer clears the screen.** vim-tmux-navigator takes `Ctrl+h/j/k/l` in Neovim and in tmux. In a shell pane, `Ctrl+l` now moves to the right pane. Type `clear` instead.
