@@ -14,20 +14,22 @@ Style: plain English, friendly like "Head First", deep like "The Hard Parts".
 Install [mise](https://mise.jdx.dev), then:
 
 ```sh
-mise install       # install all tools
+mise install       # install all tools (incl. bun)
+mise run install   # install prettier + markdownlint with bun
 mise run serve     # live preview at http://localhost:8000
 ```
 
 ## Tasks
 
-| Task             | What it does                       |
-| ---------------- | ---------------------------------- |
-| `mise run serve` | Serve the site with live reload    |
-| `mise run build` | Build the static site into `site/` |
-| `mise run fmt`   | Format Markdown, YAML and Go code  |
-| `mise run lint`  | Lint Markdown and GitHub workflows |
-| `mise run check` | Format check + lint + build (CI)   |
-| `mise run clean` | Remove build output                |
+| Task               | What it does                       |
+| ------------------ | ---------------------------------- |
+| `mise run install` | Install lint/format tools with bun |
+| `mise run serve`   | Serve the site with live reload    |
+| `mise run build`   | Build the static site into `site/` |
+| `mise run fmt`     | Format Markdown, YAML and Go code  |
+| `mise run lint`    | Lint Markdown and GitHub workflows |
+| `mise run check`   | Format check + lint + build (CI)   |
+| `mise run clean`   | Remove build output                |
 
 ## License
 
