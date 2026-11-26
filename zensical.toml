@@ -55,6 +55,13 @@ nav = [
   ] },
   { "Linux" = [
     "linux/index.md",
+    "linux/system-calls.md",
+    "linux/file-descriptors.md",
+    "linux/filesystems.md",
+    "linux/signals-and-processes.md",
+    "linux/namespaces-and-cgroups.md",
+    "linux/systemd.md",
+    "linux/debugging.md",
   ] },
   { "Networking" = [
     "networking/index.md",
