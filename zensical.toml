@@ -10,6 +10,7 @@ nav = [
     "fundamentals/bits-and-bytes.md",
     "fundamentals/encodings.md",
     "fundamentals/cpu-and-registers.md",
+    "fundamentals/compilers-and-bytecode.md",
     "fundamentals/memory.md",
     "fundamentals/processes-and-threads.md",
   ] },

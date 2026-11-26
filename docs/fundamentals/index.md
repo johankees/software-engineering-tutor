@@ -34,13 +34,14 @@ flowchart LR
 
 Each page builds on the one before it.
 
-| #   | Page                                                            | You will learn                                                      |
-| --- | --------------------------------------------------------------- | ------------------------------------------------------------------- |
-| 1   | [Bits, bytes and numbers](bits-and-bytes.md)                    | Binary, hex, negative numbers, overflow, bit tricks, floats         |
-| 2   | [Encodings](encodings.md)                                       | ASCII, Unicode, UTF-8, endianness, and Go strings vs bytes vs runes |
-| 3   | [CPU and registers](cpu-and-registers.md)                       | How the CPU runs code, and how to read the assembly Go produces     |
-| 4   | [Memory: stack, heap and caches](memory.md)                     | Where your variables live, escape analysis, virtual memory, caches  |
-| 5   | [Processes, threads and system calls](processes-and-threads.md) | How the OS runs programs, and how Go runs goroutines on threads     |
+| #   | Page                                                            | You will learn                                                               |
+| --- | --------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| 1   | [Bits, bytes and numbers](bits-and-bytes.md)                    | Binary, hex, negative numbers, overflow, bit tricks, floats                  |
+| 2   | [Encodings](encodings.md)                                       | ASCII, Unicode, UTF-8, endianness, and Go strings vs bytes vs runes          |
+| 3   | [CPU and registers](cpu-and-registers.md)                       | How the CPU runs code, and how to read the assembly Go produces              |
+| 4   | [From source code to bytecode](compilers-and-bytecode.md)       | How compilers translate code, what bytecode looks like, and how a VM runs it |
+| 5   | [Memory: stack, heap and caches](memory.md)                     | Where your variables live, escape analysis, virtual memory, caches           |
+| 6   | [Processes, threads and system calls](processes-and-threads.md) | How the OS runs programs, and how Go runs goroutines on threads              |
 
 ## How each page works
 
