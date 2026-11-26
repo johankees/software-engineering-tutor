@@ -5,6 +5,8 @@ A personal training site about software engineering, built with [Zensical](https
 It covers:
 
 - **Fundamentals**: registers, stack, heap, memory, encodings, and more.
+- **Toolbox**: terminal, zsh, tmux, Neovim, mise and dotfiles, under the hood.
+- **Git**: how Git works internally (objects, refs, index, packfiles, merging, remotes, recovery).
 - **Go**: from basic to expert, with an enterprise focus (project layout, tooling, testing, CLIs, services).
 
 Style: plain English, friendly like "Head First", deep like "The Hard Parts".

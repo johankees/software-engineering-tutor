@@ -249,3 +249,5 @@ Since **Go 1.25**, on Linux the runtime reads the cgroup CPU limit and sets `GOM
 You now know what is below your Go code: bits and their meaning, text encodings, the CPU and its registers, the stack, heap and caches, and how the OS and the Go runtime run your program.
 
 You will see every one of these ideas again in the [Go chapter](../go/index.md). This time, they won't be magic.
+
+But first, set up your workshop. The [Toolbox](../toolbox/index.md) chapter covers the terminal, tmux, Neovim and mise. Then the [Git](../git/index.md) chapter shows how Git works on the inside.
