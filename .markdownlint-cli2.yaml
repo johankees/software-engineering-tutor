@@ -1,5 +1,10 @@
 config:
   MD013: false
+  # Go code blocks use tabs (gofmt); prose must not.
+  MD010:
+    code_blocks: false
+  # Admonition bodies (!!! note) are indented, which markdownlint misreads as indented code blocks.
+  MD046: false
 ignores:
   - site/**
   - node_modules/**
