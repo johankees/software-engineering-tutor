@@ -1,6 +1,6 @@
 # orders
 
-Reference project for the Go chapter of the Software Engineering Tutor: a small orders service (`ordersd`) and its command-line client (`orderctl`). Standard library only.
+Reference project for the Go chapter of the Software Engineering Tutor: a small orders service (`ordersd`) and its command-line client (`orderctl`). The code uses only the standard library; `govulncheck` is pinned as a `tool` in `go.mod`, so `make vuln` runs a fixed version.
 
 ```sh
 make help     # list all targets
