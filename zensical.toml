@@ -16,6 +16,23 @@ nav = [
   ] },
   { "Go" = [
     "go/index.md",
+    "go/toolchain.md",
+    "go/modules.md",
+    "go/project-layout.md",
+    "go/tooling-and-quality.md",
+    "go/basics.md",
+    "go/types-and-data.md",
+    "go/conventions.md",
+    "go/methods-and-interfaces.md",
+    "go/errors.md",
+    "go/generics.md",
+    "go/testing.md",
+    "go/stdlib-essentials.md",
+    "go/concurrency.md",
+    "go/context.md",
+    "go/performance.md",
+    "go/cli.md",
+    "go/services.md",
   ] },
 ]
 
