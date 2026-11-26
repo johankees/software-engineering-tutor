@@ -882,7 +882,7 @@ WORKDIR /src
 
 # Download modules in their own layer: it is cached until go.mod/go.sum
 # change, so code-only changes rebuild in seconds.
-COPY go.mod ./
+COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
