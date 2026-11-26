@@ -53,6 +53,42 @@ nav = [
     "go/cli.md",
     "go/services.md",
   ] },
+  { "Linux" = [
+    "linux/index.md",
+  ] },
+  { "Networking" = [
+    "networking/index.md",
+  ] },
+  { "Containers" = [
+    "containers/index.md",
+  ] },
+  { "Kubernetes" = [
+    "kubernetes/index.md",
+  ] },
+  { "Databases" = [
+    "databases/index.md",
+  ] },
+  { "Distributed systems" = [
+    "distributed-systems/index.md",
+  ] },
+  { "Observability" = [
+    "observability/index.md",
+  ] },
+  { "CI/CD and delivery" = [
+    "delivery/index.md",
+  ] },
+  { "Security" = [
+    "security/index.md",
+  ] },
+  { "Architecture" = [
+    "architecture/index.md",
+  ] },
+  { "Algorithms" = [
+    "algorithms/index.md",
+  ] },
+  { "AI engineering" = [
+    "ai-engineering/index.md",
+  ] },
 ]
 
 [project.theme]

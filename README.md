@@ -8,6 +8,8 @@ It covers:
 - **Toolbox**: terminal, zsh, tmux, Neovim, mise and dotfiles, under the hood.
 - **Git**: how Git works internally (objects, refs, index, packfiles, merging, remotes, recovery).
 - **Go**: from basic to expert, with an enterprise focus (project layout, tooling, testing, CLIs, services).
+- **Planned**: Linux, networking, containers, Kubernetes, databases, distributed systems, observability, CI/CD and
+  delivery, security, architecture, algorithms, AI-assisted engineering. Each section's index page holds its chapter plan.
 
 Style: plain English, friendly like "Head First", deep like "The Hard Parts".
 
