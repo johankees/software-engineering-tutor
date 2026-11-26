@@ -65,6 +65,13 @@ nav = [
   ] },
   { "Networking" = [
     "networking/index.md",
+    "networking/layers-and-packets.md",
+    "networking/tcp.md",
+    "networking/dns.md",
+    "networking/tls.md",
+    "networking/http.md",
+    "networking/load-balancers.md",
+    "networking/debugging.md",
   ] },
   { "Containers" = [
     "containers/index.md",
