@@ -25,19 +25,17 @@ This chapter is about **reasoning**: how cost grows with input size, which struc
 
 ## Reading order
 
-!!! note "Planned chapter"
+Each page builds on the one before it. The examples ran on WSL2 (Ubuntu 24.04, kernel 5.15) on an AMD Ryzen 7 5800H with Go 1.27.4; benchmarks are plain `go test -bench -benchmem` output, so your numbers will differ.
 
-    This section is a roadmap. The pages below are written in later sessions and linked here when they land.
-
-| #   | Page                       | You will learn                                                                     |
-| --- | -------------------------- | ---------------------------------------------------------------------------------- |
-| 1   | Big-O in practice          | Counting work, amortized cost, constants and caches, measuring with benchmarks     |
-| 2   | Arrays, slices and hashing | Contiguous memory, hash functions, collisions, how Go's Swiss-table `map` works    |
-| 3   | Trees                      | Binary search trees, balanced trees, B-trees, tries and radix trees (HTTP routers) |
-| 4   | Heaps and queues           | Binary heaps, `container/heap`, ring buffers, timers and the Go scheduler          |
-| 5   | Graphs                     | BFS, DFS, topological sort, shortest paths, cycles; Git and dependency graphs      |
-| 6   | Sorting and searching      | `slices.Sort` (pdqsort), stability, binary search, external sort for big data      |
-| 7   | Probabilistic structures   | Bloom filters, HyperLogLog, count-min sketch, consistent hashing                   |
+| #   | Page                                                    | You will learn                                                                     |
+| --- | ------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| 1   | [Big-O in practice](big-o.md)                           | Counting work, amortized cost, constants and caches, measuring with benchmarks     |
+| 2   | [Arrays, slices and hashing](arrays-and-hashing.md)     | Contiguous memory, hash functions, collisions, how Go's Swiss-table `map` works    |
+| 3   | [Trees](trees.md)                                       | Binary search trees, balanced trees, B-trees, tries and radix trees (HTTP routers) |
+| 4   | [Heaps and queues](heaps-and-queues.md)                 | Binary heaps, `container/heap`, ring buffers, timers and the Go scheduler          |
+| 5   | [Graphs](graphs.md)                                     | BFS, DFS, topological sort, shortest paths, cycles; Git and dependency graphs      |
+| 6   | [Sorting and searching](sorting-and-searching.md)       | `slices.Sort` (pdqsort), stability, binary search, external sort for big data      |
+| 7   | [Probabilistic structures](probabilistic-structures.md) | Bloom filters, HyperLogLog, count-min sketch, consistent hashing                   |
 
 ## How each page works
 

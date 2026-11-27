@@ -160,6 +160,13 @@ nav = [
   ] },
   { "Algorithms" = [
     "algorithms/index.md",
+    "algorithms/big-o.md",
+    "algorithms/arrays-and-hashing.md",
+    "algorithms/trees.md",
+    "algorithms/heaps-and-queues.md",
+    "algorithms/graphs.md",
+    "algorithms/sorting-and-searching.md",
+    "algorithms/probabilistic-structures.md",
   ] },
   { "AI engineering" = [
     "ai-engineering/index.md",
