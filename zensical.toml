@@ -109,6 +109,14 @@ nav = [
   ] },
   { "Distributed systems" = [
     "distributed-systems/index.md",
+    "distributed-systems/failure-models.md",
+    "distributed-systems/time-and-ordering.md",
+    "distributed-systems/consistency-models.md",
+    "distributed-systems/retries-and-idempotency.md",
+    "distributed-systems/messaging.md",
+    "distributed-systems/outbox-and-sagas.md",
+    "distributed-systems/consensus-and-raft.md",
+    "distributed-systems/caching.md",
   ] },
   { "Observability" = [
     "observability/index.md",
