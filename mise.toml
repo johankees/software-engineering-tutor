@@ -5,6 +5,7 @@ go = "1.27.4"
 golangci-lint = "2.15.0"
 actionlint = "1.7.12"
 bun = "1.4.5"
+uv = "0.13.10"
 
 [settings]
 pipx.uvx = true
@@ -41,7 +42,12 @@ run = ["bunx --bun markdownlint-cli2 '**/*.md'", "actionlint"]
 [tasks."go:check"]
 description = "Vet, lint and race-test the Go reference project"
 dir = "examples/orders"
-run = ["test -z \"$(gofmt -l .)\"", "go vet ./...", "golangci-lint run ./...", "go test -race -count=1 ./..."]
+run = [
+  "test -z \"$(gofmt -l .)\"",
+  "go vet ./...",
+  "golangci-lint run ./...",
+  "go test -race -count=1 ./..."
+]
 
 [tasks.check]
 description = "Run all checks (CI entry point)"
