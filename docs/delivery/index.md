@@ -34,19 +34,17 @@ flowchart LR
 
 ## Reading order
 
-!!! note "Planned chapter"
+Each page builds on the one before it. The examples ran on WSL2 (Ubuntu 24.04, kernel 5.15) with Docker 29.1 and Go 1.27.4, plus actionlint 1.7.12, Git Town 24.2.0, kind v0.33.0, kubectl v1.37.3, Flux 2.10.1 and OpenTofu v1.13.10.
 
-    This section is a roadmap. The pages below are written in later sessions and linked here when they land.
-
-| #   | Page                    | You will learn                                                                          |
-| --- | ----------------------- | --------------------------------------------------------------------------------------- |
-| 1   | CI pipelines            | How GitHub Actions runs a job, caching, matrices, fast feedback, keeping CI trustworthy |
-| 2   | Reproducible builds     | Pinned tools, lock files, `-trimpath`, build IDs, proving two builds are the same       |
-| 3   | Trunk-based development | Small PRs, short-lived branches, stacked changes, merge queues                          |
-| 4   | Feature flags           | Deploy vs release, flag types, OpenFeature, cleaning up old flags                       |
-| 5   | Deployment strategies   | Rolling, blue/green, canary, progressive delivery, database changes during deploys      |
-| 6   | GitOps                  | Pull-based deploys with Argo CD or Flux, drift detection, environment promotion         |
-| 7   | Infrastructure as code  | Terraform/OpenTofu state, plans and drift, modules, and reviewing infra changes safely  |
+| #   | Page                                                  | You will learn                                                                          |
+| --- | ----------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| 1   | [CI pipelines](ci-pipelines.md)                       | How GitHub Actions runs a job, caching, matrices, fast feedback, keeping CI trustworthy |
+| 2   | [Reproducible builds](reproducible-builds.md)         | Pinned tools, lock files, `-trimpath`, build IDs, proving two builds are the same       |
+| 3   | [Trunk-based development](trunk-based-development.md) | Small PRs, short-lived branches, stacked changes, merge queues                          |
+| 4   | [Feature flags](feature-flags.md)                     | Deploy vs release, flag types, OpenFeature, cleaning up old flags                       |
+| 5   | [Deployment strategies](deployment-strategies.md)     | Rolling, blue/green, canary, progressive delivery, database changes during deploys      |
+| 6   | [GitOps](gitops.md)                                   | Pull-based deploys with Argo CD or Flux, drift detection, environment promotion         |
+| 7   | [Infrastructure as code](infrastructure-as-code.md)   | Terraform/OpenTofu state, plans and drift, modules, and reviewing infra changes safely  |
 
 ## How each page works
 

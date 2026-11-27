@@ -129,6 +129,13 @@ nav = [
   ] },
   { "CI/CD and delivery" = [
     "delivery/index.md",
+    "delivery/ci-pipelines.md",
+    "delivery/reproducible-builds.md",
+    "delivery/trunk-based-development.md",
+    "delivery/feature-flags.md",
+    "delivery/deployment-strategies.md",
+    "delivery/gitops.md",
+    "delivery/infrastructure-as-code.md",
   ] },
   { "Security" = [
     "security/index.md",
