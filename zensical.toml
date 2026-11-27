@@ -170,6 +170,11 @@ nav = [
   ] },
   { "AI engineering" = [
     "ai-engineering/index.md",
+    "ai-engineering/how-llms-work.md",
+    "ai-engineering/prompting-for-code.md",
+    "ai-engineering/coding-agents.md",
+    "ai-engineering/reviewing-ai-code.md",
+    "ai-engineering/building-with-llms-in-go.md",
   ] },
 ]
 

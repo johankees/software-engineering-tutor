@@ -32,17 +32,15 @@ flowchart LR
 
 ## Reading order
 
-!!! note "Planned chapter"
+Each page builds on the one before it. The examples ran on 2026-11-27 on WSL2 (Ubuntu 24.04, kernel 5.15) with Go 1.27.4 and the Anthropic Go SDK (`github.com/anthropics/anthropic-sdk-go/v2`) v2.15.0. No real model was called: every model on these pages is a small Go program or a local `httptest` fake, so you can run all of it for free, with no API key.
 
-    This section is a roadmap. The pages below are written in later sessions and linked here when they land.
-
-| #   | Page                      | You will learn                                                                           |
-| --- | ------------------------- | ---------------------------------------------------------------------------------------- |
-| 1   | How LLMs work             | Tokens, embeddings, attention, context windows, sampling, why models hallucinate         |
-| 2   | Prompting for code        | Context over cleverness, specs and examples, project rules files, asking for tests first |
-| 3   | Coding agents             | The tool-use loop, permissions and sandboxes, worktrees, MCP, when to let an agent run   |
-| 4   | Reviewing AI-written code | Common failure patterns, test integrity, small diffs, security and licence checks        |
-| 5   | Building with LLMs in Go  | Calling a model API, structured output, tool use, evaluations, cost and latency          |
+| #   | Page                                                    | You will learn                                                                           |
+| --- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| 1   | [How LLMs work](how-llms-work.md)                       | Tokens, embeddings, attention, context windows, sampling, why models hallucinate         |
+| 2   | [Prompting for code](prompting-for-code.md)             | Context over cleverness, specs and examples, project rules files, asking for tests first |
+| 3   | [Coding agents](coding-agents.md)                       | The tool-use loop, permissions and sandboxes, worktrees, MCP, when to let an agent run   |
+| 4   | [Reviewing AI-written code](reviewing-ai-code.md)       | Common failure patterns, test integrity, small diffs, security and licence checks        |
+| 5   | [Building with LLMs in Go](building-with-llms-in-go.md) | Calling a model API, structured output, tool use, evaluations, cost and latency          |
 
 ## How each page works
 
