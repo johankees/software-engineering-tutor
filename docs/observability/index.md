@@ -35,18 +35,16 @@ flowchart LR
 
 ## Reading order
 
-!!! note "Planned chapter"
+Each page builds on the one before it. The examples ran on WSL2 (Ubuntu 24.04, kernel 5.15) with Docker 29.1 and Go 1.27.4; the backends ran in containers (Prometheus 3.16.0, Jaeger 2.23.0, OpenTelemetry Collector contrib 0.166.0, Pyroscope 2.4.3), with OpenTelemetry Go v1.47.0, `otelhttp` v0.72.0, `otelslog` v0.21.0 and `client_golang` v1.25.0.
 
-    This section is a roadmap. The pages below are written in later sessions and linked here when they land.
-
-| #   | Page                     | You will learn                                                                       |
-| --- | ------------------------ | ------------------------------------------------------------------------------------ |
-| 1   | Signals and how they fit | Logs, metrics, traces, profiles, events; cost and cardinality; OpenTelemetry's model |
-| 2   | Structured logging       | `slog` in depth, log levels that mean something, correlation IDs, what never to log  |
-| 3   | Metrics                  | Counters, gauges, histograms, RED and USE, Prometheus scraping, PromQL, cardinality  |
-| 4   | Distributed tracing      | Spans, context propagation (W3C `traceparent`), sampling, instrumenting Go with OTel |
-| 5   | SLOs and alerting        | SLIs, SLOs, error budgets, burn-rate alerts, on-call and runbooks                    |
-| 6   | Profiling in production  | Continuous profiling, `pprof` endpoints safely, finding a leak in a live service     |
+| #   | Page                                          | You will learn                                                                       |
+| --- | --------------------------------------------- | ------------------------------------------------------------------------------------ |
+| 1   | [Signals and how they fit](signals.md)        | Logs, metrics, traces, profiles, events; cost and cardinality; OpenTelemetry's model |
+| 2   | [Structured logging](structured-logging.md)   | `slog` in depth, log levels that mean something, correlation IDs, what never to log  |
+| 3   | [Metrics](metrics.md)                         | Counters, gauges, histograms, RED and USE, Prometheus scraping, PromQL, cardinality  |
+| 4   | [Distributed tracing](distributed-tracing.md) | Spans, context propagation (W3C `traceparent`), sampling, instrumenting Go with OTel |
+| 5   | [SLOs and alerting](slos-and-alerting.md)     | SLIs, SLOs, error budgets, burn-rate alerts, on-call and runbooks                    |
+| 6   | [Profiling in production](profiling.md)       | Continuous profiling, `pprof` endpoints safely, finding a leak in a live service     |
 
 ## How each page works
 

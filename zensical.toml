@@ -120,6 +120,12 @@ nav = [
   ] },
   { "Observability" = [
     "observability/index.md",
+    "observability/signals.md",
+    "observability/structured-logging.md",
+    "observability/metrics.md",
+    "observability/distributed-tracing.md",
+    "observability/slos-and-alerting.md",
+    "observability/profiling.md",
   ] },
   { "CI/CD and delivery" = [
     "delivery/index.md",
