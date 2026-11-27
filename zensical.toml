@@ -149,6 +149,14 @@ nav = [
   ] },
   { "Architecture" = [
     "architecture/index.md",
+    "architecture/trade-offs.md",
+    "architecture/http-api-design.md",
+    "architecture/grpc-and-protobuf.md",
+    "architecture/evolving-apis.md",
+    "architecture/boundaries-and-modules.md",
+    "architecture/domain-modeling.md",
+    "architecture/decision-records.md",
+    "architecture/twelve-factor-app.md",
   ] },
   { "Algorithms" = [
     "algorithms/index.md",

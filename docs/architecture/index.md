@@ -34,20 +34,18 @@ flowchart TB
 
 ## Reading order
 
-!!! note "Planned chapter"
+Each page builds on the one before it. The examples ran on WSL2 (Ubuntu 24.04, kernel 5.15) with Go 1.27.4 and Docker 29.1, plus buf 1.75.0, protoc 36.2 (libprotoc) and golangci-lint 2.15.0.
 
-    This section is a roadmap. The pages below are written in later sessions and linked here when they land.
-
-| #   | Page                         | You will learn                                                                  |
-| --- | ---------------------------- | ------------------------------------------------------------------------------- |
-| 1   | Thinking in trade-offs       | Quality attributes, coupling and cohesion, Conway's law, cost of change         |
-| 2   | HTTP API design              | Resources, methods, status codes, errors (RFC 9457), pagination, OpenAPI        |
-| 3   | gRPC and Protocol Buffers    | The wire format, streaming, deadlines, `buf`, when gRPC beats JSON over HTTP    |
-| 4   | Evolving APIs                | Compatible changes, versioning, deprecation, consumer-driven contract tests     |
-| 5   | Boundaries and modules       | Monolith, modular monolith, microservices; hexagonal architecture in Go         |
-| 6   | Domain modeling              | Ubiquitous language, bounded contexts, aggregates, and DDD without the ceremony |
-| 7   | Decision records             | ADRs, RFCs and design docs that people actually read                            |
-| 8   | The twelve-factor app, today | Which factors still matter in a Kubernetes world, and which ones changed        |
+| #   | Page                                                 | You will learn                                                                  |
+| --- | ---------------------------------------------------- | ------------------------------------------------------------------------------- |
+| 1   | [Thinking in trade-offs](trade-offs.md)              | Quality attributes, coupling and cohesion, Conway's law, cost of change         |
+| 2   | [HTTP API design](http-api-design.md)                | Resources, methods, status codes, errors (RFC 9457), pagination, OpenAPI        |
+| 3   | [gRPC and Protocol Buffers](grpc-and-protobuf.md)    | The wire format, streaming, deadlines, `buf`, when gRPC beats JSON over HTTP    |
+| 4   | [Evolving APIs](evolving-apis.md)                    | Compatible changes, versioning, deprecation, consumer-driven contract tests     |
+| 5   | [Boundaries and modules](boundaries-and-modules.md)  | Monolith, modular monolith, microservices; hexagonal architecture in Go         |
+| 6   | [Domain modeling](domain-modeling.md)                | Ubiquitous language, bounded contexts, aggregates, and DDD without the ceremony |
+| 7   | [Decision records](decision-records.md)              | ADRs, RFCs and design docs that people actually read                            |
+| 8   | [The twelve-factor app, today](twelve-factor-app.md) | Which factors still matter in a Kubernetes world, and which ones changed        |
 
 ## How each page works
 
