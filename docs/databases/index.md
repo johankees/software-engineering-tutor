@@ -34,20 +34,18 @@ flowchart TB
 
 ## Reading order
 
-!!! note "Planned chapter"
+Each page builds on the one before it. The examples ran on WSL2 (Ubuntu 24.04, kernel 5.15) with Docker 29.1, PostgreSQL 18.7 in the official `postgres:18` image, and Go 1.27.4 with `pgx` v5.13.0.
 
-    This section is a roadmap. The pages below are written in later sessions and linked here when they land.
-
-| #   | Page                       | You will learn                                                                           |
-| --- | -------------------------- | ---------------------------------------------------------------------------------------- |
-| 1   | How data is stored         | Pages, tuples, the heap, the WAL, `fsync`; B-trees vs LSM trees                          |
-| 2   | Indexes                    | B-tree structure, composite and covering indexes, partial indexes, when indexes hurt     |
-| 3   | Transactions and isolation | ACID in plain words, isolation levels, the anomalies each level allows, with real races  |
-| 4   | MVCC and locks             | Row versions, `VACUUM`, row and table locks, deadlocks, `SELECT ... FOR UPDATE`          |
-| 5   | Query planning             | `EXPLAIN ANALYZE`, statistics, joins, and fixing a slow query step by step               |
-| 6   | Schema migrations          | Online migrations, expand and contract, lock-safe DDL, running migrations in CI/CD       |
-| 7   | Go and SQL                 | `database/sql`, `pgx`, `sqlc`, connection pools, context timeouts, testing with real DBs |
-| 8   | Replication and scaling    | Streaming replication, read replicas, replication lag, partitioning, sharding            |
+| #   | Page                                          | You will learn                                                                           |
+| --- | --------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| 1   | [How data is stored](storage.md)              | Pages, tuples, the heap, the WAL, `fsync`; B-trees vs LSM trees                          |
+| 2   | [Indexes](indexes.md)                         | B-tree structure, composite and covering indexes, partial indexes, when indexes hurt     |
+| 3   | [Transactions and isolation](transactions.md) | ACID in plain words, isolation levels, the anomalies each level allows, with real races  |
+| 4   | [MVCC and locks](mvcc-and-locks.md)           | Row versions, `VACUUM`, row and table locks, deadlocks, `SELECT ... FOR UPDATE`          |
+| 5   | [Query planning](query-planning.md)           | `EXPLAIN ANALYZE`, statistics, joins, and fixing a slow query step by step               |
+| 6   | [Schema migrations](migrations.md)            | Online migrations, expand and contract, lock-safe DDL, running migrations in CI/CD       |
+| 7   | [Go and SQL](go-and-sql.md)                   | `database/sql`, `pgx`, `sqlc`, connection pools, context timeouts, testing with real DBs |
+| 8   | [Replication and scaling](replication.md)     | Streaming replication, read replicas, replication lag, partitioning, sharding            |
 
 ## How each page works
 

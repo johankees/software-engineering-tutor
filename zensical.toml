@@ -98,6 +98,14 @@ nav = [
   ] },
   { "Databases" = [
     "databases/index.md",
+    "databases/storage.md",
+    "databases/indexes.md",
+    "databases/transactions.md",
+    "databases/mvcc-and-locks.md",
+    "databases/query-planning.md",
+    "databases/migrations.md",
+    "databases/go-and-sql.md",
+    "databases/replication.md",
   ] },
   { "Distributed systems" = [
     "distributed-systems/index.md",
