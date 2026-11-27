@@ -34,19 +34,17 @@ flowchart LR
 
 ## Reading order
 
-!!! note "Planned chapter"
+Each page builds on the one before it. The examples ran on WSL2 (Ubuntu 24.04, kernel 5.15) with Docker 29.1 and Go 1.27.4, plus sops 3.13.3, OpenSSL 4.1.0, GnuPG 2.5.24, cosign v3.1.6, syft 1.57.2, crane 0.22.1, `govulncheck` (as a Go tool in `examples/orders`), and containers for Vault 1.21.4, Dex v2.44.0, OPA 1.23.0 and PostgreSQL 18.7.
 
-    This section is a roadmap. The pages below are written in later sessions and linked here when they land.
-
-| #   | Page                       | You will learn                                                                                 |
-| --- | -------------------------- | ---------------------------------------------------------------------------------------------- |
-| 1   | Threat modeling            | Assets, attackers, trust boundaries, STRIDE, and a 30-minute threat model for `orders`         |
-| 2   | Cryptography for engineers | Hashes, MACs, symmetric and public-key crypto, signatures, password hashing; what not to build |
-| 3   | Authentication             | Sessions vs tokens, OAuth 2, OIDC, JWT internals and traps, passkeys, service identity         |
-| 4   | Authorization              | RBAC, ABAC, ReBAC, object-level checks, policy engines, multi-tenant data                      |
-| 5   | Secrets management         | Vault and cloud secret stores, workload identity, rotation, finding leaked secrets             |
-| 6   | Supply chain security      | Dependency risk, `govulncheck`, SBOMs, Sigstore signing, SLSA provenance, pinned actions       |
-| 7   | Web and API security       | OWASP Top 10 in Go: injection, SSRF, CSRF, CORS, rate limits, security headers                 |
+| #   | Page                                            | You will learn                                                                                 |
+| --- | ----------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| 1   | [Threat modeling](threat-modeling.md)           | Assets, attackers, trust boundaries, STRIDE, and a 30-minute threat model for `orders`         |
+| 2   | [Cryptography for engineers](cryptography.md)   | Hashes, MACs, symmetric and public-key crypto, signatures, password hashing; what not to build |
+| 3   | [Authentication](authentication.md)             | Sessions vs tokens, OAuth 2, OIDC, JWT internals and traps, passkeys, service identity         |
+| 4   | [Authorization](authorization.md)               | RBAC, ABAC, ReBAC, object-level checks, policy engines, multi-tenant data                      |
+| 5   | [Secrets management](secrets-management.md)     | Vault and cloud secret stores, workload identity, rotation, finding leaked secrets             |
+| 6   | [Supply chain security](supply-chain.md)        | Dependency risk, `govulncheck`, SBOMs, Sigstore signing, SLSA provenance, pinned actions       |
+| 7   | [Web and API security](web-and-api-security.md) | OWASP Top 10 in Go: injection, SSRF, CSRF, CORS, rate limits, security headers                 |
 
 ## How each page works
 

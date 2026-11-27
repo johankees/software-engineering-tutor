@@ -139,6 +139,13 @@ nav = [
   ] },
   { "Security" = [
     "security/index.md",
+    "security/threat-modeling.md",
+    "security/cryptography.md",
+    "security/authentication.md",
+    "security/authorization.md",
+    "security/secrets-management.md",
+    "security/supply-chain.md",
+    "security/web-and-api-security.md",
   ] },
   { "Architecture" = [
     "architecture/index.md",
