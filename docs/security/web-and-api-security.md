@@ -665,7 +665,7 @@ So 10,000 levels are fine and deeper is refused. Together with the 1 MiB body ca
 3. **SSRF.** Add `10.0.0.0/8` to the internal service's address with `ip addr` in a network namespace (see [Network namespaces](../linux/namespaces-and-cgroups.md#network-namespaces-a-separate-network-stack)), and confirm `safeClient` refuses it. Then make the "is this address public?" function a table test.
 4. **CSRF.** Wrap `ordersd`'s handler in `http.NewCrossOriginProtection().Handler(...)` in your copy, and write an `httptest` case with `Sec-Fetch-Site: cross-site` on `POST /v1/orders`.
 5. **Rate limits.** Make the limiter evict clients not seen for 3 minutes, and test it with a fake clock.
-6. **Scanners.** `gosec ./...` flags `fmt.Sprintf` SQL, `exec.Command` with variables, and missing `ReadHeaderTimeout` (the `//nolint:gosec` comments in `ordersd` are for it). It is not installed here. <!-- TODO(real-output): gosec is not installed on this machine; run `gosec ./...` in a copy with the bugs above and show its findings. -->
+6. **Scanners.** `gosec ./...` flags `fmt.Sprintf` SQL, `exec.Command` with variables, and missing `ReadHeaderTimeout` (the `//nolint:gosec` comments in `ordersd` are for it). It is a Go module, so mise builds it with the `go` backend: `mise use go:github.com/securego/gosec/v2/cmd/gosec@2.30.0`. <!-- TODO(real-output): gosec is not installed on this machine; run `gosec ./...` in a copy with the bugs above and show its findings. -->
 
 ## Traps
 
@@ -741,4 +741,4 @@ So 10,000 levels are fine and deeper is refused. Together with the 1 MiB body ca
 
 You can now take apart the security of a Go service, layer by layer. You built a threat model of `orders` and found where it trusts too much. You know what hashes, MACs, AEAD and signatures each promise, and broke two of them on purpose. You know how a login becomes a session or a token, how OIDC and JWTs work, and how they fail. You can tell authentication from authorization, and you test object-level checks. Secrets live in a manager, expire, and never in Git. You can prove which code and which dependencies went into an image. And the handler itself keeps data as data, at every interpreter it talks to.
 
-The pattern behind all of it: decide **where the trust boundaries are**, then make every boundary check something, fail closed, and leave evidence. Where those boundaries go is a design decision, made long before the first handler. Next chapter: [Architecture and API design](../architecture/index.md).
+The pattern behind all of it: decide **where the trust boundaries are**, then make every boundary check something, fail closed, and leave evidence. The same pattern applies to the path your code takes to production. Next chapter: [Secure delivery](../secure-delivery/index.md), where every step from commit to deploy checks something and leaves evidence.

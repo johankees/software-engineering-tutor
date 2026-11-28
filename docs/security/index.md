@@ -48,4 +48,4 @@ Each page builds on the one before it. The examples ran on WSL2 (Ubuntu 24.04, k
 
 ## How each page works
 
-The same shape as the [Fundamentals](../fundamentals/index.md): **Why care?**, **The idea**, **Under the hood**, **Try it**, **Traps** and **Check yourself**. We attack the `orders` service on purpose, on your own machine, then fix it. [Config, hooks and signing](../git/config-hooks-signing.md) already covers signed commits; this chapter extends that trust to builds and images.
+The same shape as the [Fundamentals](../fundamentals/index.md): **Why care?**, **The idea**, **Under the hood**, **Try it**, **Traps** and **Check yourself**. We attack the `orders` service on purpose, on your own machine, then fix it. [Config, hooks and signing](../git/config-hooks-signing.md) already covers signed commits; this chapter extends that trust to builds and images. The next chapter, [Secure delivery](../secure-delivery/index.md), puts these ideas into practice, from repository settings to verified deploys.

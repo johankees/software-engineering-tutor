@@ -94,6 +94,12 @@ Each chapter starts with how a thing works inside, then shows how to use it well
 
     Threat models, cryptography, authentication and authorization, secrets and the supply chain.
 
+- :lucide-package-check:{ .lg } [Secure delivery](secure-delivery/index.md)
+
+    ***
+
+    From signed commit to verified deploy. Rulesets, workflow security, dependencies, Sigstore and SLSA.
+
 - :lucide-drafting-compass:{ .lg } [Architecture](architecture/index.md)
 
     ***

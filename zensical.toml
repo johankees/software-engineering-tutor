@@ -151,6 +151,15 @@ nav = [
     "security/supply-chain.md",
     "security/web-and-api-security.md",
   ] },
+  { "Secure delivery" = [
+    "secure-delivery/index.md",
+    "secure-delivery/github-repositories.md",
+    "secure-delivery/signed-commits.md",
+    "secure-delivery/workflow-security.md",
+    "secure-delivery/dependencies.md",
+    "secure-delivery/artifact-signing.md",
+    "secure-delivery/secure-pipeline.md",
+  ] },
   { "Architecture" = [
     "architecture/index.md",
     "architecture/trade-offs.md",

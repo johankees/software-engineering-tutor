@@ -48,4 +48,4 @@ Each page builds on the one before it. The examples ran on WSL2 (Ubuntu 24.04, k
 
 ## How each page works
 
-The same shape as the [Fundamentals](../fundamentals/index.md): **Why care?**, **The idea**, **Under the hood**, **Try it**, **Traps** and **Check yourself**. The running example is this site's own repository and the `orders` service: their CI workflows, pinned tools, and a deploy to a local `kind` cluster.
+The same shape as the [Fundamentals](../fundamentals/index.md): **Why care?**, **The idea**, **Under the hood**, **Try it**, **Traps** and **Check yourself**. The running example is this site's own repository and the `orders` service: their CI workflows, pinned tools, and a deploy to a local `kind` cluster. How to make each stage tamper-proof is the topic of [Secure delivery](../secure-delivery/index.md).
