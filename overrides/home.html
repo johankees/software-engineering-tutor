@@ -1,0 +1,36 @@
+{% extends "main.html" %}
+
+{% block hero %}
+  <section class="tx-hero" aria-labelledby="tx-hero-title">
+    <div class="md-grid tx-hero__inner">
+      <div class="tx-hero__text">
+        <p class="tx-hero__eyebrow">A free, open course</p>
+        <h1 id="tx-hero-title" class="tx-hero__title">
+          Software engineering,<br>
+          <span class="tx-hero__accent">from registers to production.</span>
+        </h1>
+        <p class="tx-hero__lead">{{ config.site_description }}</p>
+        <div class="tx-hero__actions">
+          <a href="{{ 'fundamentals/' | url }}" class="md-button md-button--primary">Start the course</a>
+          <a href="{{ config.repo_url }}" class="md-button">
+            <span class="twemoji">{% include ".icons/fontawesome/brands/github.svg" %}</span>
+            View the source
+          </a>
+        </div>
+      </div>
+      <ol class="tx-stack" aria-label="The layers this course covers, from top to bottom">
+        <li><span>Services and APIs</span><small>Go, architecture</small></li>
+        <li><span>Delivery and operations</span><small>CI/CD, observability</small></li>
+        <li><span>Orchestration</span><small>Kubernetes</small></li>
+        <li><span>Containers</span><small>images, runtimes</small></li>
+        <li><span>Network</span><small>TCP, DNS, TLS, HTTP</small></li>
+        <li><span>Operating system</span><small>Linux</small></li>
+        <li><span>Hardware</span><small>CPU, memory</small></li>
+      </ol>
+    </div>
+  </section>
+{% endblock %}
+
+{% block content %}
+  <div class="tx-home">{{ page.content }}</div>
+{% endblock %}

@@ -3,6 +3,10 @@ site_name = "Software Engineering Tutor"
 site_description = "From registers to enterprise Go: software engineering explained in plain English."
 docs_dir = "docs"
 site_dir = "site"
+site_url = "https://johankees.github.io/software-engineering-tutor/"
+repo_url = "https://github.com/johankees/software-engineering-tutor"
+repo_name = "johankees/software-engineering-tutor"
+extra_css = ["stylesheets/extra.css"]
 nav = [
   { "Home" = "index.md" },
   { "Fundamentals" = [
@@ -180,22 +184,50 @@ nav = [
 
 [project.theme]
 language = "en"
+custom_dir = "overrides"
+favicon = "assets/favicon.svg"
 features = [
-  "content.code.copy",
   "content.code.annotate",
+  "content.code.copy",
+  "content.tabs.link",
   "navigation.footer",
   "navigation.indexes",
-  "navigation.sections",
+  "navigation.instant",
+  "navigation.instant.prefetch",
+  "navigation.instant.progress",
+  "navigation.path",
+  "navigation.prune",
   "navigation.top",
+  "navigation.tracking",
   "search.highlight",
+  "toc.follow",
 ]
 
+[project.theme.icon]
+logo = "lucide/graduation-cap"
+repo = "fontawesome/brands/github"
+
+[project.theme.font]
+text = "Inter"
+code = "JetBrains Mono"
+
 [[project.theme.palette]]
+media = "(prefers-color-scheme)"
+toggle.icon = "lucide/sun-moon"
+toggle.name = "Switch to light mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
 scheme = "default"
+primary = "indigo"
+accent = "indigo"
 toggle.icon = "lucide/sun"
 toggle.name = "Switch to dark mode"
 
 [[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
 scheme = "slate"
+primary = "indigo"
+accent = "indigo"
 toggle.icon = "lucide/moon"
-toggle.name = "Switch to light mode"
+toggle.name = "Switch to system preference"

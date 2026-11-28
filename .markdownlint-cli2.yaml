@@ -5,6 +5,9 @@ config:
     code_blocks: false
   # Admonition bodies (!!! note) are indented, which markdownlint misreads as indented code blocks.
   MD046: false
+  # md_in_html grids (<div markdown>) lay out the home page.
+  MD033:
+    allowed_elements: [div]
 ignores:
   - site/**
   - node_modules/**
