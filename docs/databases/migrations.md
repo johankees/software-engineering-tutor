@@ -33,17 +33,17 @@ FROM generate_series(1, 2000000) g;
 VACUUM ANALYZE orders;
 ```
 
-## The idea: renovating a shop while it is open
+## The idea: short exclusive locks and compatible steps
 
-You own a busy shop and want to move a shelf. To do that safely, you need the aisle empty: no customers in it.
+Most schema changes need the table to themselves for a moment. That causes a chain of waits:
 
-- You put up a sign "aisle closed, wait here" and wait for the customers who are already in the aisle to leave.
-- New customers arrive. They see the sign and **wait behind it**, even the ones who only want to look.
-- One customer in the aisle is on a long phone call. He doesn't leave for ten minutes. Now the queue is out of the door, and **you haven't even started moving the shelf**.
+- `ALTER TABLE` asks for an exclusive lock on the table. It must wait until every transaction that already uses the table has ended.
+- New queries on the table arrive. They **queue behind the waiting `ALTER TABLE`**, even plain reads.
+- One transaction that uses the table stays open for ten minutes, for example a long report. Now every query on the table waits, and **the `ALTER TABLE` has not even started**.
 
-The shelf move takes 2 seconds. The queue costs ten minutes. A good shop owner gives up after a few seconds, takes the sign down, lets the queue through, and tries again later. And for big jobs he builds the new shelf next to the old one, moves goods over a bit at a time, and removes the old shelf at the end.
+The change itself takes 2 seconds. The queue costs ten minutes. The safe approach is to let the migration give up after a few seconds, so the queued queries can run, and to try again later. For larger changes, add the new structure next to the old one, move data and code over in small steps, and remove the old structure at the end.
 
-That's the whole page: `ALTER TABLE` is the sign, a long transaction is the phone call, `lock_timeout` is giving up, and **expand and contract** is the new shelf next to the old one.
+This page covers both parts: `lock_timeout` makes the migration give up, and **expand and contract** is the step-by-step change.
 
 ```mermaid
 flowchart LR
@@ -172,7 +172,7 @@ Rules that follow from the queue:
 
 - **Every migration sets `lock_timeout`.** 1 to 5 seconds, depending on how much stall your service can take. Put it at the top of the migration file, or set it for the migration role: `ALTER ROLE migrator SET lock_timeout = '3s'`.
 - **One table per transaction, if you can.** A migration that changes three tables in one transaction holds the first table's `ACCESS EXCLUSIVE` lock while it waits for the second.
-- **Find the phone call.** Long transactions block migrations, and `VACUUM` too (see [MVCC and locks](mvcc-and-locks.md#the-long-transaction-that-stops-vacuum)). `idle_in_transaction_session_timeout` ends sessions that sit idle inside a transaction.
+- **Find the long transactions.** Long transactions block migrations, and `VACUUM` too (see [MVCC and locks](mvcc-and-locks.md#the-long-transaction-that-stops-vacuum)). `idle_in_transaction_session_timeout` ends sessions that sit idle inside a transaction.
 - **Don't fight autovacuum.** An `ALTER` that conflicts with a running autovacuum doesn't wait long: after `deadlock_timeout` (1 s), the autovacuum cancels itself. You see `ERROR: canceling autovacuum task` in the log, and your migration takes one second longer. That's normal. An autovacuum that runs "to prevent wraparound" does **not** cancel itself.
 
 ## Adding a column
@@ -281,7 +281,7 @@ Indexes:
 ```
 
 - **No transaction.** Most migration tools wrap each migration in a transaction. You must turn that off for this one migration (goose: `-- +goose NO TRANSACTION`, below).
-- **A failed build leaves an `INVALID` index behind.** It isn't used for reads, but **it is still updated on every write**, so it costs you. Find them with `SELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid`, drop with `DROP INDEX CONCURRENTLY`, then build again. Write the migration as `CREATE INDEX CONCURRENTLY IF NOT EXISTS`? Careful: on a retry, `IF NOT EXISTS` sees the invalid index and does nothing. Drop invalid leftovers first.
+- **A failed build leaves an `INVALID` index behind.** It isn't used for reads, but **it is still updated on every write**, so it costs you. Find them with `SELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid`, drop with `DROP INDEX CONCURRENTLY`, then build again. Be careful with `CREATE INDEX CONCURRENTLY IF NOT EXISTS`: on a retry, `IF NOT EXISTS` sees the invalid index and does nothing. Drop invalid leftovers first.
 - **It still waits for a lock at the start**, and for old transactions to finish in the middle. So `lock_timeout` still matters.
 
 The same idea exists for other operations: `DROP INDEX CONCURRENTLY`, `REINDEX CONCURRENTLY`, and `DETACH PARTITION CONCURRENTLY` (see [Replication and scaling](replication.md)). Which index to build is the topic of [Indexes](indexes.md).

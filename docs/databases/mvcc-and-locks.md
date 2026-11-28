@@ -10,17 +10,17 @@ Five tickets from services that "just store orders":
 - "`ERROR: deadlock detected`, a few times a day, always in the checkout handler."
 - "We added a column. The deploy took ten seconds, and for those ten seconds every request timed out."
 
-On [How data is stored](storage.md#an-update-writes-a-new-row) you saw that an `UPDATE` does not overwrite a row: it writes a new version and leaves the old one on the page. On [Transactions and isolation](transactions.md) you saw what each isolation level promises. This page shows the machine underneath both: **row versions** (MVCC) for readers, and **locks** for writers. Every ticket above is one of them doing its job.
+On [How data is stored](storage.md#an-update-writes-a-new-row) you saw that an `UPDATE` does not overwrite a row: it writes a new version and leaves the old one on the page. On [Transactions and isolation](transactions.md) you saw what each isolation level promises. This page shows the mechanisms under both: **row versions** (MVCC) for readers, and **locks** for writers. Each ticket above is one of them working as designed.
 
-## The idea: a shared notebook with a pencil and sticky notes
+## The idea: row versions for readers, locks for writers
 
-A team keeps the order list in one big notebook. Many people read it, a few change it.
+Many transactions read the same table at the same time, and a few change it.
 
-- Nobody erases anything. To change a line, you **cross it out**, write the new line below, and write your name and the time on both. A reader who opened the notebook at 10:00 simply ignores everything written after 10:00. So readers **never wait for writers**, and writers never wait for readers. That is **MVCC**, multi-version concurrency control.
-- Crossed-out lines pile up. Once nobody who opened the notebook before the change is still reading, a cleaner can erase them, and the space can be used again. The cleaner is **`VACUUM`**.
-- Two people who want to change **the same line** can't both do it. The first one puts a sticky note on it: "mine, until I'm done". The second one waits. That is a **row lock**.
-- Some jobs need the whole notebook, for example when you add a new column to every page. Then you need a note on the cover: "nobody touch this". That is a **table lock**.
-- Two people each hold a sticky note, and each waits for the other's. Someone must give up. That is a **deadlock**.
+- PostgreSQL never changes a row in place. To change a row, it marks the current version as deleted, writes a new version, and records on both which transaction did it. A transaction that started at 10:00 ignores versions written by transactions that were not committed at 10:00. So readers **never wait for writers**, and writers never wait for readers. That is **MVCC**, multi-version concurrency control.
+- Old versions accumulate. Once no running transaction can still see an old version, PostgreSQL can remove it and reuse the space. The process that does this is **`VACUUM`**.
+- Two transactions cannot change **the same row** at the same time. The first one takes a lock on the row until it ends. The second one waits. That is a **row lock**.
+- Some operations need the whole table, for example adding a column. They take a lock that keeps every other transaction out of the table. That is a **table lock**.
+- Two transactions each hold a lock, and each waits for the lock the other one holds. Neither can continue, so the database must cancel one. That is a **deadlock**.
 
 ```mermaid
 flowchart LR
@@ -288,7 +288,7 @@ FROM pg_stat_user_tables WHERE relname = 'orders';
 (1 row)
 ```
 
-Good news: the file did not grow, the new versions went into the free space. Bad news: only 55 of 100,000 updates were **HOT** (heap-only tuple). You met HOT on [Indexes](indexes.md#updates-and-hot): if the new version fits **on the same page** and no indexed column changed, PostgreSQL does not add new index entries. Here the free space was in the wrong place. The first update had moved every row to the second half of the file. `VACUUM` emptied the first half. So the live rows sat on full pages, and their new versions had to go to other (empty) pages, with new index entries.
+The file did not grow: the new versions went into the free space. But only 55 of 100,000 updates were **HOT** (heap-only tuple). You met HOT on [Indexes](indexes.md#updates-and-hot): if the new version fits **on the same page** and no indexed column changed, PostgreSQL does not add new index entries. Here the free space was in the wrong place. The first update had moved every row to the second half of the file. `VACUUM` emptied the first half. So the live rows sat on full pages, and their new versions had to go to other (empty) pages, with new index entries.
 
 With `fillfactor = 50`, every page keeps half of its space free on insert, right next to its rows:
 
@@ -365,7 +365,7 @@ tuples: 100 removed, 99974 remain, 0 are dead but not yet removable
 removable cutoff: 12479, which was 1 XIDs old when operation ended
 ```
 
-(`...` marks lines left out. The `remain` numbers are estimates, so they wobble.) Here it was four seconds. In production it is a report that runs for two hours, a migration someone forgot to commit in a SQL console, or a Go handler that returns early without `tx.Rollback()`. During that time no dead tuple in that database is removed, the busy tables grow, queries scan more and more dead rows, and the night gets slow. That's the 02:00 ticket. The same happens with a **replication slot** that nobody reads, or a replica with `hot_standby_feedback = on` and a long query (see [Replication and scaling](replication.md)).
+(`...` marks lines left out. The `remain` numbers are estimates, so they vary between runs.) Here it was four seconds. In production it is a report that runs for two hours, a migration someone forgot to commit in a SQL console, or a Go handler that returns early without `tx.Rollback()`. During that time no dead tuple in that database is removed, the busy tables grow, queries scan more and more dead rows, and the database gets slow. That's the 02:00 ticket. The same happens with a **replication slot** that nobody reads, or a replica with `hot_standby_feedback = on` and a long query (see [Replication and scaling](replication.md)).
 
 Find the culprits with `pg_stat_activity`: sort by `xact_start`, look at `state = 'idle in transaction'` and at `backend_xmin`. Then protect yourself with timeouts (`idle_in_transaction_session_timeout`, and `transaction_timeout` since PostgreSQL 17; both are `0`, off, by default).
 
@@ -405,7 +405,7 @@ A table gets vacuumed when its dead tuples pass **`threshold + scale_factor × r
 ALTER TABLE orders SET (autovacuum_vacuum_scale_factor = 0.02);
 ```
 
-`autovacuum_vacuum_cost_delay` and `cost_limit` slow the workers down on purpose, so they don't eat all the disk bandwidth. On fast disks, the defaults are often too gentle, and autovacuum falls behind on big tables. Check `last_autovacuum` and `n_dead_tup` in `pg_stat_user_tables` before you blame it.
+`autovacuum_vacuum_cost_delay` and `cost_limit` slow the workers down on purpose, so they don't use all the disk bandwidth. On fast disks, the defaults are often too conservative, and autovacuum falls behind on big tables. Check `last_autovacuum` and `n_dead_tup` in `pg_stat_user_tables` before you blame it.
 
 ### Transaction ID wraparound
 
@@ -447,7 +447,7 @@ MVCC keeps readers and writers apart. **Writers against writers** need locks. Wh
 
 ### Seeing a wait
 
-**Session A** (pid 900) locks alice's order with `SELECT ... FOR UPDATE`, then thinks for four seconds:
+**Session A** (pid 900) locks alice's order with `SELECT ... FOR UPDATE`, then waits four seconds before it continues:
 
 ```console
 tutor_mvcc=# BEGIN;
@@ -501,7 +501,7 @@ This is the most useful query of this page. Read it from the bottom:
 - **`905 transactionid ShareLock granted=f xid=12493`**: B waits for **transaction 12493** to end. That is A's transaction. Every transaction holds an `ExclusiveLock` on its own xid (third line); waiting for a row means asking for a share lock on that xid, which you only get when its owner commits or rolls back.
 - **`905 tuple ExclusiveLock`**: B is first in line for this row. If a third writer came, it would wait on the tuple lock behind B, in order.
 - **`RowShareLock` / `RowExclusiveLock` on `orders`**: table-level locks that every `SELECT ... FOR UPDATE` or `UPDATE` takes. They don't conflict with each other (next section).
-- `pg_stat_activity` says the same in short: B is `wait_event_type = Lock`, `blocked_by = {900}`. And A is `idle in transaction`: it holds the lock and **does nothing**. In real life, that's a Go handler that called an HTTP service between `BEGIN` and `COMMIT`.
+- `pg_stat_activity` says the same in short: B is `wait_event_type = Lock`, `blocked_by = {900}`. And A is `idle in transaction`: it holds the lock and **does nothing**. In production, that is often a Go handler that called an HTTP service between `BEGIN` and `COMMIT`.
 
 **Session A** updates the order to `'paid'` and commits. Session B finishes immediately:
 
@@ -624,7 +624,7 @@ Every statement also takes a lock on each table it touches. Most of these never 
 
 (There are two more, `SHARE ROW EXCLUSIVE` and `EXCLUSIVE`, which you rarely meet. The full table is in the PostgreSQL docs under "Explicit Locking".)
 
-The dangerous one is `ACCESS EXCLUSIVE`, because most `ALTER TABLE` forms need it, even quick ones like adding a nullable column. **Session A** has an open transaction that read `orders` (it holds `ACCESS SHARE` until it ends). **Session B** adds a column, with a safety belt:
+The dangerous one is `ACCESS EXCLUSIVE`, because most `ALTER TABLE` forms need it, even quick ones like adding a nullable column. **Session A** has an open transaction that read `orders` (it holds `ACCESS SHARE` until it ends). **Session B** adds a column, with a lock timeout:
 
 ```console
 tutor_mvcc=# SET lock_timeout = '1s';
@@ -646,7 +646,7 @@ WHERE relation = 'orders'::regclass ORDER BY granted DESC;
 (2 rows)
 ```
 
-Without `lock_timeout`, B would wait until A ends, and here is the catch: **every new query on `orders` would queue behind B**, because locks are granted in order. One forgotten transaction plus one `ALTER TABLE` and the whole service stops: that's the "deploy took ten seconds" ticket. [Schema migrations](migrations.md) is all about this lock queue and how to avoid it. The short version: always set `lock_timeout` for DDL, and retry.
+Without `lock_timeout`, B would wait until A ends. The problem is that **every new query on `orders` would queue behind B**, because locks are granted in order. One forgotten transaction plus one `ALTER TABLE` and the whole service stops: that's the "deploy took ten seconds" ticket. [Schema migrations](migrations.md) is all about this lock queue and how to avoid it. The short version: always set `lock_timeout` for DDL, and retry.
 
 ## Under the hood: deadlocks
 
@@ -704,7 +704,7 @@ $ docker logs tutor-pg 2>&1 | grep -A7 'deadlock detected'
 2. **Keep transactions short.** No network calls between `BEGIN` and `COMMIT`.
 3. **Retry.** A deadlock victim lost nothing that was committed. `40P01` is safe to retry, like the serialization failure `40001` from [Transactions and isolation](transactions.md). [Go and SQL](go-and-sql.md) shows the retry loop.
 
-## Timeouts: your safety net
+## Timeouts
 
 | Setting                               | Cancels                                            | Typical value   |
 | ------------------------------------- | -------------------------------------------------- | --------------- |
@@ -714,7 +714,7 @@ $ docker logs tutor-pg 2>&1 | grep -A7 'deadlock detected'
 | `transaction_timeout` (PG 17+)        | a whole transaction that lasts too long            | depends         |
 | `deadlock_timeout`                    | not a timeout: when to **check** for a deadlock    | leave at 1 s    |
 
-All are `0` (off) by default, except `deadlock_timeout`. Set them per role (`ALTER ROLE ordersd SET statement_timeout = '10s'`) or per session, not in your head. Also turn on `log_lock_waits` (off by default here): it logs every wait longer than `deadlock_timeout`, with the blocking process. A Go `context` deadline also cancels the query on the server (pgx sends a cancel request), but only if your context actually has a deadline.
+All are `0` (off) by default, except `deadlock_timeout`. Set them per role (`ALTER ROLE ordersd SET statement_timeout = '10s'`) or per session. Also turn on `log_lock_waits` (off by default here): it logs every wait longer than `deadlock_timeout`, with the blocking process. A Go `context` deadline also cancels the query on the server (pgx sends a cancel request), but only if your context actually has a deadline.
 
 ## Try it
 
@@ -734,7 +734,7 @@ Clean up with `docker exec tutor-pg dropdb -U postgres tutor_mvcc`.
 - **Disabling autovacuum** because it "uses resources". It must run, at the latest at 200 million xids, and then it runs at the worst moment. Tune it instead.
 - **`SELECT ... FOR UPDATE` by habit.** It blocks foreign key checks from other transactions. Use `FOR NO KEY UPDATE` unless you change the key.
 - **DDL without `lock_timeout`.** One long transaction plus one `ALTER TABLE` queues every query on the table.
-- **Locking rows in random order.** Map iteration order in Go is random, so "update every order in this map" is a deadlock waiting to happen. Sort first.
+- **Locking rows in random order.** Map iteration order in Go is random, so "update every order in this map" can deadlock. Sort first.
 - **Not retrying `40P01`.** A deadlock is a normal, retryable error under load. Retry the whole transaction, not just the statement.
 - **Abandoned replication slots.** They hold back vacuum just like a long transaction, and also keep WAL on disk.
 

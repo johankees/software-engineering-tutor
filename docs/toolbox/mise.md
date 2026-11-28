@@ -11,13 +11,13 @@ $ mise exec -- go version
 go version go1.26.5 linux/amd64
 ```
 
-Two Go versions, in the same folder, on the same machine, a second apart. Which one runs your tests depends on _how_ you call it. And CI, which installs fresh, gets a third answer that may differ from both. This page explains why, and how to make it boring and predictable again.
+Two Go versions, in the same folder, on the same machine, a second apart. Which one runs your tests depends on _how_ you call it. And CI, which installs fresh, gets a third answer that may differ from both. This page explains why, and how to make the result predictable again.
 
-## The idea: a menu per restaurant
+## The idea: tool versions per project
 
-Homebrew is your kitchen at home: one version of each tool, for everything. That's fine for `ripgrep`. It's not fine for Go, Python or Node, where project A needs one version and project B another.
+Homebrew installs one version of each tool, for everything on the machine. That's fine for `ripgrep`. It's not fine for Go, Python or Node, where project A needs one version and project B another.
 
-**mise** gives every project its own menu. A `mise.toml` in the project says "here we use Go 1.26 and Python 3.13". When you work in that folder, `go` means that version. Outside, it means something else. mise manages three things:
+**mise** gives every project its own list of tool versions. A `mise.toml` in the project says "here we use Go 1.26 and Python 3.13". When you work in that folder, `go` means that version. Outside, it means something else. mise manages three things:
 
 1. **Tools**: install versions side by side under `~/.local/share/mise/installs/`, and put the right one on `PATH`.
 2. **Environment variables**: an `[env]` section, per project (like direnv).
@@ -42,7 +42,7 @@ description = "Run all checks (CI entry point)"
 depends = ["fmt:check", "lint", "build", "go:check"]
 ```
 
-(Tasks shortened; we look at all of them below.)
+(Tasks shortened; all of them are shown below.)
 
 ## Under the hood: three ways to get the right `go`
 
@@ -91,9 +91,9 @@ go version go1.26.5 linux/amd64
 
 The real install folders are put at the **front** of `PATH`. No wrapper, no extra process: `go` is the real binary. mise also sets tool variables; for Go, `mise env` shows `GOROOT` and `GOBIN` pointing into the 1.26.5 install, so `go install` puts binaries next to that Go version.
 
-### 2. Shims: tiny stand-ins
+### 2. Shims: small stand-in programs
 
-A hook only works in an interactive shell. Your IDE, a cron job or a `#!/bin/sh` script never runs `precmd`. For them, mise has **shims**: one file per tool name in `~/.local/share/mise/shims/`. Look at them:
+A hook only works in an interactive shell. Your IDE, a cron job or a `#!/bin/sh` script never runs `precmd`. For them, mise has **shims**: one file per tool name in `~/.local/share/mise/shims/`. Here they are:
 
 ```text
 $ cd ~/.local/share/mise/shims && stat -c '%N' go gofmt
@@ -101,7 +101,7 @@ $ cd ~/.local/share/mise/shims && stat -c '%N' go gofmt
 'gofmt' -> '/home/linuxbrew/.linuxbrew/bin/mise'
 ```
 
-Every shim is a **symlink to mise itself**. When you run `go`, mise starts, sees `argv[0]` is `go`, reads the config for the current folder, and runs the right real binary. (The same multi-call trick as the `dot` CLI in [tmux](tmux.md#try-it-script-a-session-like-tmux-session-start).) The answer depends on the folder:
+Every shim is a **symlink to mise itself**. When you run `go`, mise starts, sees `argv[0]` is `go`, reads the config for the current folder, and runs the right real binary. (The same multi-call design as the `dot` CLI in [tmux](tmux.md#try-it-script-a-session-like-tmux-session-start).) The answer depends on the folder:
 
 ```text
 $ cd ~ && ~/.local/share/mise/shims/go version
@@ -114,7 +114,7 @@ In `$HOME` there is no config for Go, so the shim falls through to the next `go`
 
 ### 3. `mise exec` and `mise run`: explicit
 
-`mise exec -- <command>` (short: `mise x`) runs one command with the project's tools and env, without touching your shell. `mise run <task>` does the same for tasks. Nothing to activate, nothing to forget. That's why the help text of `mise activate` itself says:
+`mise exec -- <command>` (short: `mise x`) runs one command with the project's tools and env, without touching your shell. `mise run <task>` does the same for tasks. There is nothing to activate and nothing to forget. That's why the help text of `mise activate` itself says:
 
 > Use `mise exec -- command` for scripts and CI that do not need interactive hooks.
 
@@ -126,7 +126,7 @@ In `$HOME` there is no config for Go, so the shim falls through to the next `go`
 
 ## Diagnose this setup: mise is not active
 
-Back to the mystery. `mise doctor` tells you the state:
+Back to the two Go versions. `mise doctor` shows the state:
 
 ```text
 $ mise doctor
@@ -154,7 +154,7 @@ toolset:
    Using the shims directory is preferred for non-interactive setups.
 ```
 
-`activated: no` and `shims_on_path: no`. mise is installed by Homebrew, but the dotfiles' `.zshrc` never activates it. So in a normal shell, `go` is simply Homebrew's `go`, and the project's `mise.toml` is ignored. Only `mise run` and `mise exec` use it. You can see this in what the shell finds:
+`activated: no` and `shims_on_path: no`. mise is installed by Homebrew, but the dotfiles' `.zshrc` never activates it. So in a normal shell, `go` is Homebrew's `go`, and the project's `mise.toml` is ignored. Only `mise run` and `mise exec` use it. You can see this in what the shell finds:
 
 ```text
 $ command -v go python3 bun actionlint
@@ -190,9 +190,9 @@ go version go1.26.5 linux/amd64
 
 Same folder, same `mise.toml`. Only activation changed, and now the shell uses the project's tools.
 
-### The second half of the mystery: what "latest" means
+### What "latest" means
 
-There's another surprise in the output above. `latest` gave Go **1.26.5**, but:
+The output above shows a second problem. `latest` gave Go **1.26.5**, but:
 
 ```text
 $ mise latest go
@@ -203,7 +203,7 @@ go  latest  1.26.5  1.27.4 ~/.cache/agent/worktrees/software-engineering-tutor-t
 
 For `latest`, mise uses the newest version that is **already installed**, until you upgrade (`mise upgrade go`). On a fresh machine, like a CI runner, nothing is installed yet, so CI gets 1.27.4. Your laptop and CI run different Go versions from the same file, and neither is wrong.
 
-The cure is to be explicit: pin a version (`go = "1.26"`) or use a **lock file**. `mise lock` writes `mise.lock` with the exact version, checksums and download URLs per platform. Commit it, and `--locked` (or the `locked` setting) makes installs use only the locked URLs. It's the same idea as `go.sum` and `lazy-lock.json`.
+The fix is to be explicit: pin a version (`go = "1.26"`) or use a **lock file**. `mise lock` writes `mise.lock` with the exact version, checksums and download URLs per platform. Commit it, and `--locked` (or the `locked` setting) makes installs use only the locked URLs. It's the same idea as `go.sum` and `lazy-lock.json`.
 
 This repository now does both: exact versions in `mise.toml`, and a committed `mise.lock`. Look inside:
 
@@ -218,7 +218,7 @@ python 3.13.18 core:python linux-x64 url: True 7 platforms
 
 (A short Python summary of `mise.lock`.) Downloaded binaries get a checksum and URL per platform. `pipx:zensical` has no URL: pipx installs a Python package and its dependencies, not one file. For that, `mise lock` writes a second lock file, `.mise/locks/pipx-zensical/0.1.3/uv.lock`, with all 13 Python packages and their hashes. Commit that folder too.
 
-With both in git, the repo sets `locked = true` in `[settings]`: installs may only use what the lock files record. The proof is a fresh install into an empty data folder, as a CI runner would do:
+With both in git, the repo sets `locked = true` in `[settings]`: installs may only use what the lock files record. To test this, run a fresh install into an empty data folder, as a CI runner would do:
 
 ```text
 $ MISE_DATA_DIR=$PWD/empty-data MISE_CACHE_DIR=$PWD/empty-cache MISE_LOCKED=1 mise install
@@ -250,7 +250,7 @@ $ mise config ls
 
 (This setup has no global mise config: `~/.config/mise` does not exist.)
 
-**Trust.** A `mise.toml` can set environment variables, run templates and define tasks. Loading it from a repository you just cloned would be like running its code. So mise asks you to **trust** a config file before it loads the risky parts. From `mise trust --help` in this version:
+**Trust.** A `mise.toml` can set environment variables, run templates and define tasks. Loading it from a repository you just cloned is the same as running its code. So mise asks you to **trust** a config file before it loads the risky parts. From `mise trust --help` in this version:
 
 - A file with only plain `[tools]` versions and simple `[tasks]` does not need trust.
 - Commands that run project code anyway (`mise run`, `mise install`, `mise exec`) trust their active config automatically.
@@ -364,7 +364,7 @@ This setup activates **fnm** and **direnv** in `.zshrc`, but not mise, even thou
 
 - **"latest" is not reproducible.** It means "newest installed" locally and "newest released" on a fresh machine. Pin, or `mise lock`.
 - **Installed but not activated.** `mise doctor` says `activated: no`. Everything still _seems_ to work, because Homebrew has a `go` too. You only notice when the versions differ. Run `mise doctor` on every new machine.
-- **Hook order.** `mise activate` must run after `mise` is on `PATH` (after `brew shellenv`). Other hooks that also rewrite `PATH` on each prompt (fnm with `--use-on-cd`) fight over the order.
+- **Hook order.** `mise activate` must run after `mise` is on `PATH` (after `brew shellenv`). Other hooks that also rewrite `PATH` on each prompt (fnm with `--use-on-cd`) compete for the order.
 - **Shims and `rehash`.** When you install a tool with a new name, a new shim file appears. zsh may have hashed the old location of that name (or "not found") and needs a `rehash`.
 - **Untrusted configs in CI.** `mise run` trusts its config automatically. For other commands, the help text says that without trust "mise prompts, skips the file, or fails with an untrusted-config error when it cannot prompt". In CI there is nobody to answer the prompt.
 

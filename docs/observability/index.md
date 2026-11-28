@@ -4,7 +4,7 @@ How to ask a running system questions you did not think of when you wrote it.
 
 ## Why go deeper?
 
-At 3 a.m. the alert says "error rate high". Now what?
+An alert says "error rate high". To find the cause, you need data you can query. Common problems:
 
 - The logs have 40,000 lines per minute, and none say which customer is affected.
 - The dashboard shows average latency is fine, while 1% of users wait 10 seconds.

@@ -7,22 +7,22 @@
 - "We check that at least one engineer is on call before anyone signs off. Last night nobody was on call."
 - "Since we switched to `SERIALIZABLE`, we get `could not serialize access` errors in the logs."
 
-Every one of these is a **race between two transactions**. The database did exactly what its isolation level promised. The promise was weaker than the developer thought. This page shows each race for real, with two `psql` sessions, and then the Go code that survives them.
+Every one of these is a **race between two transactions**. The database did exactly what its isolation level promised. The promise was weaker than the developer thought. This page runs each race for real, with two `psql` sessions, and then shows Go code that handles them correctly.
 
-## The idea: a shared spreadsheet
+## The idea: ACID and snapshots
 
-Picture a team that keeps the shop's stock in one shared spreadsheet.
+A **transaction** is a group of statements that the database treats as one unit. ACID names its four guarantees:
 
-- **Atomicity**: you change five cells as one edit. Either all five land, or none. Nobody ever sees three of the five.
-- **Consistency**: the sheet has rules ("stock is never negative"). An edit that breaks a rule is refused as a whole.
-- **Isolation**: while you are editing, how much of other people's unfinished and finished work do you see? That is the interesting one, and it has **levels**.
-- **Durability**: once the sheet says "saved", a power cut doesn't undo it. That is the WAL and `fsync` from [How data is stored](storage.md#under-the-hood-the-write-ahead-log).
+- **Atomicity**: a transaction that changes five rows applies all five changes, or none. No other transaction ever sees three of the five.
+- **Consistency**: the database has rules (constraints such as "stock is never negative"). A transaction that breaks a rule is refused as a whole.
+- **Isolation**: while your transaction runs, how much of the work of other transactions, unfinished or finished, does it see? This is the hardest of the four, and it has **levels**.
+- **Durability**: once `COMMIT` returns, a power cut does not undo the change. That is the WAL and `fsync` from [How data is stored](storage.md#under-the-hood-the-write-ahead-log).
 
-For isolation, imagine each person gets a **photo** of the sheet:
+Isolation is built on **snapshots**. A snapshot is a fixed view of the data: the set of committed changes a transaction may see. The levels differ in when the snapshot is taken and what is checked:
 
-- At **Read Committed**, you take a new photo before every single question you ask. Each answer is up to date, but two answers in one task may come from two different photos.
-- At **Repeatable Read**, you take one photo when your task starts and use it until you are done. Everything you read agrees with itself. But you may be working from an old photo when you write.
-- At **Serializable**, an assistant watches all the photos and edits. If the result could not have happened with people taking turns one after another, the assistant tears up one person's work and says "please do it again".
+- At **Read Committed**, each statement gets a new snapshot. Each statement sees the latest committed data, but two statements in one transaction may see different data.
+- At **Repeatable Read**, the transaction takes one snapshot at its first statement and keeps it until the end. Everything it reads is consistent. But its writes may be based on data that is no longer current.
+- At **Serializable**, the database also tracks what each transaction reads and writes. If the combined result could not have come from running the transactions one after another, it aborts one transaction with an error, and the application must run it again.
 
 ```mermaid
 sequenceDiagram
@@ -37,7 +37,7 @@ sequenceDiagram
     B->>DB: COMMIT
 ```
 
-PostgreSQL builds these photos with **MVCC**: every row version carries the transaction that created and deleted it, and a **snapshot** decides which versions you see. [MVCC and locks](mvcc-and-locks.md) shows the mechanics. This page is about what you **observe**.
+PostgreSQL builds these snapshots with **MVCC** (multi-version concurrency control): every row version carries the transaction that created and deleted it, and a **snapshot** decides which versions you see. [MVCC and locks](mvcc-and-locks.md) shows the mechanics. This page is about what you **observe**.
 
 ## Setup: two sessions
 
@@ -144,7 +144,7 @@ Three things to learn:
 
 ## The anomalies, one by one
 
-The SQL standard defines isolation levels by the **anomalies** (strange results) they allow. Here is each one, live.
+The SQL standard defines isolation levels by the **anomalies** (incorrect results) they allow. Here is each one, live.
 
 ### Dirty read: impossible in PostgreSQL
 
@@ -661,7 +661,7 @@ docker exec tutor-pg dropdb -U postgres tutor_transactions
 ## Traps
 
 - **Read in Go, decide in Go, write the result back.** That's a lost update at the default level. Write `SET x = x - 1`, or `SELECT ... FOR UPDATE`, or use a higher level and retry.
-- **Raising the isolation level without a retry loop.** You swapped wrong data for random 500 errors.
+- **Raising the isolation level without a retry loop.** You replaced wrong data with unexpected 500 errors.
 - **Retrying only the last statement.** Retry the whole transaction, reads included.
 - **Side effects inside a retried transaction.** E-mails sent twice, messages published for orders that rolled back.
 - **Long transactions.** They hold row locks (blocking others), hold back `VACUUM` (see [MVCC and locks](mvcc-and-locks.md)), and at Serializable raise the chance of conflicts. Never wait for a user, an HTTP call or a queue inside a transaction.

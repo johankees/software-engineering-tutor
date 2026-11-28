@@ -4,7 +4,7 @@ What Git really stores, and why every command does what it does.
 
 ## Why go deeper?
 
-You already use Git every day. You add, commit, branch, merge, rebase and push. Most days that is enough. Then one day:
+You already use Git every day. You add, commit, branch, merge, rebase and push. Most days that is enough. But sometimes:
 
 - A rebase "loses" three days of work.
 - `git status` takes eight seconds in the monorepo.
@@ -12,11 +12,11 @@ You already use Git every day. You add, commit, branch, merge, rebase and push. 
 - Somebody pushed a secret, and "just delete the file" did not remove it.
 - `git pull` refuses to work, and the hint tells you to pick between two things you don't fully understand.
 
-All of these have the same cause: we learn Git as a list of **commands**, but Git is really a small set of **data structures**. When you know the data structures, the commands become obvious. You stop memorising recipes. You can predict what a command will do before you run it, and you can undo almost anything.
+All of these have the same cause: we learn Git as a list of **commands**, but Git is really a small set of **data structures**. When you know the data structures, the commands make sense, and you no longer need to memorise recipes. You can predict what a command will do before you run it, and you can undo almost anything.
 
 ## The big picture
 
-Git is three simple things stacked on top of each other:
+Git is three simple layers, one on top of the other:
 
 ```mermaid
 flowchart TB
@@ -42,7 +42,7 @@ flowchart TB
 
 1. **An object database.** A key-value store. The value is some content (a file, a directory listing, a commit). The key is the **hash of the content**. Same content, same key. You can never change an object; you can only add new ones.
 2. **A graph of commits.** Each commit points to a tree (a snapshot of the project) and to its parent commit(s). The parents form a **DAG**: a directed acyclic graph. "Directed" because arrows point from child to parent. "Acyclic" because you can never follow the arrows back to where you started.
-3. **Refs.** Human names like `main` or `v1.0` that point to a commit. Refs are the only thing in Git that **moves**. A branch is just a ref that moves forward when you commit.
+3. **Refs.** Human names like `main` or `v1.0` that point to a commit. Refs are the only thing in Git that **moves**. A branch is a ref that moves forward when you commit.
 
 Everything else (the index, remotes, merges, rebases, the reflog) is built from these three pieces.
 
@@ -94,4 +94,4 @@ The examples use **plumbing** commands (`hash-object`, `cat-file`, `update-ref`,
 
     If your global config signs commits or has a commit template hook, run the examples with
     `git -c commit.gpgSign=false` and `git init --template=` so your own setup does not change the
-    hashes. Then break things on purpose. A throwaway repo is the cheapest Git teacher there is.
+    hashes. Then try commands that change or break things. A throwaway repo is a safe place to learn how Git behaves.

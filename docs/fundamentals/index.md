@@ -4,18 +4,18 @@ What really happens inside the machine when your program runs.
 
 ## Why start here?
 
-You can write Go without knowing what a register is. Many people do. But one day something strange happens:
+You can write Go without knowing what a register is. Many people do. But some bugs make no sense at the level of your code:
 
 - A number becomes negative when it should be very big.
 - A name with an `é` in it breaks your API.
 - A small change makes your service two times slower.
 - Your program uses 2 GB of memory and you do not know why.
 
-All of these bugs live _below_ your code. This chapter gives you a map of that place. After it, the strange things stop being magic. They become normal, and you can explain them to your team.
+All of these bugs come from the layers _below_ your code. This chapter explains those layers. After it, you can explain these bugs to your team and fix them.
 
 ## The big picture
 
-A running program is a small story with four actors:
+A running program involves four parts:
 
 ```mermaid
 flowchart LR
@@ -27,7 +27,7 @@ flowchart LR
 
 1. **Data** is only bits. Numbers, text, pictures: all bits. The _meaning_ comes from how we read them.
 2. **The CPU** runs very simple instructions, one after another, on very small and very fast storage called **registers**.
-3. **Memory** holds everything that does not fit in registers. Your program sees it as one long row of numbered boxes.
+3. **Memory** holds everything that does not fit in registers. Your program sees it as one long row of numbered bytes.
 4. **The operating system** shares the CPU and memory between many programs, and does the dangerous work (disk, network) for you.
 
 ## Reading order
@@ -36,7 +36,7 @@ Each page builds on the one before it.
 
 | #   | Page                                                            | You will learn                                                               |
 | --- | --------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| 1   | [Bits, bytes and numbers](bits-and-bytes.md)                    | Binary, hex, negative numbers, overflow, bit tricks, floats                  |
+| 1   | [Bits, bytes and numbers](bits-and-bytes.md)                    | Binary, hex, negative numbers, overflow, bitwise operators, floats           |
 | 2   | [Encodings](encodings.md)                                       | ASCII, Unicode, UTF-8, endianness, and Go strings vs bytes vs runes          |
 | 3   | [CPU and registers](cpu-and-registers.md)                       | How the CPU runs code, and how to read the assembly Go produces              |
 | 4   | [From source code to bytecode](compilers-and-bytecode.md)       | How compilers translate code, what bytecode looks like, and how a VM runs it |
@@ -55,4 +55,4 @@ Each page builds on the one before it.
 !!! tip "Run the examples"
 
     Make a folder, run `go mod init demo`, paste the code into `main.go`, and run `go run .`.
-    Change the code. Break it. That is how this knowledge sticks.
+    Change the code and watch what changes in the output. This helps you remember what you learned.

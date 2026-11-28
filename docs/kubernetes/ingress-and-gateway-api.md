@@ -2,26 +2,26 @@
 
 ## Why care?
 
-A Service gives `ordersd` a stable address **inside** the cluster. Customers are outside. You could give every Service its own cloud load balancer (`type: LoadBalancer`), but that is one public IP, one bill and one TLS certificate per Service, and no HTTP routing at all. What you want is one front door that speaks HTTP: it terminates TLS, looks at the host name and the path, and sends `/v1/orders` to `ordersd` and `/v1/payments` to somebody else's service.
+A Service gives `ordersd` a stable address **inside** the cluster. Customers are outside. You could give every Service its own cloud load balancer (`type: LoadBalancer`), but that is one public IP, one bill and one TLS certificate per Service, and no HTTP routing at all. What you want is one HTTP entry point: it terminates TLS, looks at the host name and the path, and sends `/v1/orders` to `ordersd` and `/v1/payments` to somebody else's service.
 
-Kubernetes has two APIs for that front door. **Ingress** is the old one: small, everywhere, and full of vendor-specific annotations. **Gateway API** is the new one, built to fix Ingress's problems. You will meet both, often in the same company:
+Kubernetes has two APIs for that entry point. **Ingress** is the old one: small, everywhere, and full of vendor-specific annotations. **Gateway API** is the new one, built to fix Ingress's problems. You will meet both, often in the same company:
 
 - "The Ingress works on the test cluster, but in production the path rewrite does nothing." (Annotations are not portable.)
 - "Which team owns this Ingress? Changing it broke three other teams' TLS." (Ingress has no role split.)
 - "The route is in the cluster, but every request gets `404`." (The route was never accepted, and its status says why.)
 
-This page installs a real controller in the `kind` cluster, serves `ordersd` through both APIs with TLS, and shows the 502 from [Workloads](workloads.md) again, this time at the front door. It builds on [Load balancers and proxies](../networking/load-balancers.md) and [TLS and certificates](../networking/tls.md).
+This page installs a real controller in the `kind` cluster, serves `ordersd` through both APIs with TLS, and shows the 502 from [Workloads](workloads.md) again, this time at the entry point. It builds on [Load balancers and proxies](../networking/load-balancers.md) and [TLS and certificates](../networking/tls.md).
 
-## The idea: a hotel reception
+## The idea: one proxy, configured by routing objects
 
-A big hotel has one entrance. At the reception desk, a clerk reads each visitor's request: "I'm here for the orders team, room service please." The clerk checks the name against a list and sends the visitor to the right room. The rooms (Pods) never face the street.
+All external HTTP traffic enters through one reverse proxy. The proxy reads each request's host name and path, and sends it to the matching Service. The Pods are never exposed directly.
 
-- The **reception desk** is the **controller**: a real proxy (Envoy, NGINX, Traefik, HAProxy) running as Pods, behind a NodePort or a cloud load balancer.
-- The **list at the desk** is the routing configuration: Ingress objects, or Gateway API routes.
+- The **controller** is a real proxy (Envoy, NGINX, Traefik, HAProxy) running as Pods, behind a NodePort or a cloud load balancer. It watches the API and configures itself.
+- The **routing configuration** is a set of API objects: Ingress objects, or Gateway API routes.
 
-With **Ingress**, there is one list, and every team writes on it. Who decides which doors are open, and which certificates hang at the entrance? Nobody, really: every team's Ingress can set them.
+With **Ingress**, every team writes the same kind of object, and each one can set ports, hosts and certificates. No single owner decides which ports are open or which certificates are served.
 
-**Gateway API** splits the list by role, like a real hotel:
+**Gateway API** splits the configuration by role:
 
 ```mermaid
 flowchart TD
@@ -40,13 +40,13 @@ flowchart TD
     R -->|backendRef| S
 ```
 
-- The **hotel owner** picks the type of front desk: **GatewayClass** ("Traefik", "Envoy Gateway", "the cloud's load balancer").
-- The **front-desk manager** runs one entrance: a **Gateway**, with its ports, its certificates, and a rule for which teams may put signs up.
-- Each **team** hangs its own sign: an **HTTPRoute** in its own namespace, pointing at its own Service.
+- The **infrastructure provider** defines the kind of proxy: a **GatewayClass** ("Traefik", "Envoy Gateway", "the cloud's load balancer").
+- The **platform team** runs one entry point: a **Gateway**, with its ports, its certificates, and a rule for which namespaces may attach routes.
+- Each **application team** writes an **HTTPRoute** in its own namespace, pointing at its own Service.
 
 ## Under the hood: Ingress
 
-### An Ingress is only a wish
+### An Ingress is only configuration
 
 Deploy two `ordersd` Pods and a Service (as in [Services and cluster DNS](services-and-dns.md)) in `tutor-ingress`, and an Ingress:
 
@@ -84,7 +84,7 @@ Annotations:         <none>
 Events:              <none>
 ```
 
-The API server stored it, and nothing else happened. Unlike Services (kube-proxy) or Deployments (the controller manager), Kubernetes ships **no Ingress controller**. An Ingress is a wish written down. Somebody must install a controller that watches Ingress objects with its class name (`ingressClassName`) and configures a proxy.
+The API server stored it, and nothing else happened. Unlike Services (kube-proxy) or Deployments (the controller manager), Kubernetes ships **no Ingress controller**. An Ingress on its own is only stored configuration. Somebody must install a controller that watches Ingress objects with its class name (`ingressClassName`) and configures a proxy.
 
 `pathType` matters: `Prefix` matches whole path segments (`/v1/orders` matches `/v1/orders/42`, not `/v1/ordersX`), `Exact` matches one path, and `ImplementationSpecific` means "whatever this controller does", which is the start of most portability problems.
 
@@ -200,7 +200,7 @@ tcp      6 86399 ESTABLISHED src=10.244.1.159 dst=10.244.1.157 sport=49076 dport
 Two connections go straight to the Pod IPs on port 8080, with no ClusterIP in between. They are keep-alive connections, reused for many requests. The third is the watch on the API server (the `kubernetes` Service, `10.96.0.1:443`, DNAT to the control plane on 6443). Most Ingress and Gateway controllers work like this: they read **EndpointSlices** themselves and balance **per request** across Pods. So:
 
 - The proxy balances requests, not connections, which fixes the "one long connection" problem from the [previous page](services-and-dns.md).
-- The proxy has its own view of which Pods are alive. It must learn about a terminating Pod as fast as kube-proxy does, or faster. When it learns too late, you get a 502. See [Try it](#try-it-the-rollout-502-at-the-front-door).
+- The proxy has its own view of which Pods are alive. It must learn about a terminating Pod as fast as kube-proxy does, or faster. When it learns too late, you get a 502. See [Try it](#try-it-502-errors-at-the-proxy-during-a-rollout).
 
 ### TLS termination
 
@@ -262,7 +262,7 @@ Between the proxy and `ordersd` the traffic is plain HTTP inside the cluster net
 
 ### The annotation trap
 
-The Ingress API is tiny: hosts, paths, backends, TLS. Everything else (rewrites, timeouts, rate limits, auth, CORS, canaries) is done with **annotations**, and each controller has its own. Here is a classic from ingress-nginx, applied to Traefik:
+The Ingress API is tiny: hosts, paths, backends, TLS. Everything else (rewrites, timeouts, rate limits, auth, CORS, canaries) is done with **annotations**, and each controller has its own. Here is a common one from ingress-nginx, applied to Traefik:
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -302,7 +302,7 @@ $ kubectl -n tutor-ingress logs -l app=tutor-ordersd --since=15s | grep 'http re
 {"time":"2026-11-26T22:01:23.550252532Z","level":"INFO","msg":"http request","service":"ordersd","request_id":"01a219e0-a95e-734e-931d-2a1b2ed46287","method":"GET","path":"/orders-api/v1/orders","route":"","status":404,"bytes":19,"duration":36290}
 ```
 
-No error, no warning, no event. The annotation was silently ignored, the path was not rewritten, and `ordersd` got `/orders-api/v1/orders`. (The `X-Request-Id` shows that this 404 came from `ordersd`, not from the proxy.) Moving between controllers means translating every annotation, and testing every one. Regex paths are the same story: an nginx-style path like `/orders-api(/|$)(.*)` is just a literal string to another controller.
+No error, no warning, no event. The annotation was silently ignored, the path was not rewritten, and `ordersd` got `/orders-api/v1/orders`. (The `X-Request-Id` shows that this 404 came from `ordersd`, not from the proxy.) Moving between controllers means translating every annotation, and testing every one. Regex paths have the same problem: an nginx-style path like `/orders-api(/|$)(.*)` is just a literal string to another controller.
 
 Ingress's other limits: only HTTP(S), no TCP or gRPC routing in the spec, no header matching, no traffic splitting, and the TLS and the routes of one host live in the same object, owned by one team. The Ingress API is frozen: it gets no new features. Kubernetes points to Gateway API instead.
 
@@ -592,7 +592,7 @@ The client asked for `/legacy/orders`; `ordersd` saw `/v1/orders`.
 
 Ingress isn't going away soon, and for one team with one host it is still fine. For a platform shared by many teams, start with Gateway API. Tools like `ingress2gateway` translate existing Ingress objects (and some annotations) into Gateway API resources.
 
-## Try it: the rollout 502 at the front door
+## Try it: 502 errors at the proxy during a rollout
 
 [Workloads](workloads.md) showed `connection refused` during a rollout, for clients inside the cluster. Through a proxy, the same race becomes a `502 Bad Gateway`. Give the Gateway a plain-HTTP route to the `ordersd` in `tutor-ingress` (label that namespace too, so it may attach):
 
@@ -666,10 +666,10 @@ validatingadmissionpolicybinding.admissionregistration.k8s.io "safe-upgrades.gat
 
 - **No controller, no error.** An Ingress or HTTPRoute without a matching controller is stored and does nothing. Check `ingressClassName` / `gatewayClassName`, and that the class shows `ACCEPTED True`.
 - **Annotations don't travel.** Every controller has its own. An unknown annotation is silently ignored. Test every one after a migration, or move the behaviour into Gateway API's standard fields.
-- **Route not accepted.** Read `status.parents[].conditions` on the HTTPRoute: `NotAllowedByListeners` (the Gateway doesn't allow your namespace), `NoMatchingListenerHostname`, `RefNotPermitted` (missing ReferenceGrant). A route that isn't accepted is just 404s.
+- **Route not accepted.** Read `status.parents[].conditions` on the HTTPRoute: `NotAllowedByListeners` (the Gateway doesn't allow your namespace), `NoMatchingListenerHostname`, `RefNotPermitted` (missing ReferenceGrant). A route that isn't accepted only returns 404s.
 - **The default certificate.** A client that sees the controller's default certificate means: no TLS config for that SNI name. Check hosts, Secret name and namespace.
 - **TLS ends at the proxy.** Traffic from the proxy to Pods is plain HTTP unless you add backend TLS or a mesh.
-- **Shared CRDs.** Gateway API CRDs are cluster-wide. Two controllers that each install "their" version will fight. Decide who owns them, and use the `standard` channel in production.
+- **Shared CRDs.** Gateway API CRDs are cluster-wide. Two controllers that each install "their" version will overwrite each other. Decide who owns them, and use the `standard` channel in production.
 - **The rollout 502.** The proxy watches EndpointSlices with its own delay. Keep serving a few seconds after `SIGTERM`.
 - **Starting on ingress-nginx today.** It is retired. Pick a maintained controller, preferably one with Gateway API support.
 
@@ -718,7 +718,7 @@ validatingadmissionpolicybinding.admissionregistration.k8s.io "safe-upgrades.gat
 
 ## Recap
 
-- One L7 front door for many Services: TLS termination, host and path routing. Kubernetes defines the API; you install the **controller** (Traefik, Envoy Gateway, NGINX Gateway Fabric, a cloud's, ...).
+- One L7 entry point for many Services: TLS termination, host and path routing. Kubernetes defines the API; you install the **controller** (Traefik, Envoy Gateway, NGINX Gateway Fabric, a cloud's, ...).
 - **Ingress**: hosts, paths, backends, TLS, and an IngressClass. Everything else is **annotations**, which are not portable and fail silently. The API is frozen. ingress-nginx is retired.
 - Controllers usually read **EndpointSlices** and balance **per request** across Pod IPs, skipping kube-proxy.
 - **Gateway API** (CRDs, v1.7.0 here) splits the roles: **GatewayClass** (infrastructure), **Gateway** (platform team: ports, certificates, who may attach), **HTTPRoute** (app team: matches, filters, weighted backends).

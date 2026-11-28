@@ -15,14 +15,14 @@ There is no `container` object in the Linux kernel. Docker, Podman and Kubernete
 
 On this page you build a container with nothing but `unshare`, run `ordersd` in it, and then look at the limits that make Go services fail in strange ways.
 
-## The idea: a flat with frosted windows and an electricity meter
+## The idea: limits on what a process sees and what it uses
 
-Think of a big apartment building again (the kernel is the building manager, see [Processes and threads](../fundamentals/processes-and-threads.md)).
+A container is not a separate machine. It is a normal process on the shared kernel, with two kinds of limits (see [Processes and threads](../fundamentals/processes-and-threads.md) for how the kernel manages processes):
 
-- A **namespace** is frosted glass. The tenant in flat 12 looks out and sees their own little world: their own door numbers, their own name on the bell, their own mailbox. The building is still one building. The glass only changes what they can _see_.
-- A **cgroup** is the electricity meter with a fuse. It does not hide anything. It counts what the flat uses, and when the flat uses too much, the fuse blows.
+- A **namespace** changes what a process can **see**. Inside it, the process has its own PID numbers, its own mount list, its own network interfaces and its own hostname. Nothing is copied: the kernel only shows the process a different view.
+- A **cgroup** limits what a process can **use**. It hides nothing. It counts the memory, CPU time and processes the group uses. When the group goes over a limit, the kernel throttles it or kills a process in it.
 
-A container is a flat with both: frosted glass on every window, and a meter with a fuse.
+A container is a process that has both: a set of namespaces and a cgroup with limits.
 
 ```mermaid
 flowchart LR
@@ -60,7 +60,7 @@ Each namespace type wraps one kind of global resource. Linux 5.6 and newer has e
 | cgroup    | `CLONE_NEWCGROUP` | Which part of the cgroup tree you see        | 4.6            |
 | time      | `CLONE_NEWTIME`   | The `CLOCK_MONOTONIC` and `CLOCK_BOOTTIME`   | 5.6            |
 
-The mount flag is called `CLONE_NEWNS` ("new namespace") because it was the first one. Nobody expected there would be more.
+The mount flag is called `CLONE_NEWNS` ("new namespace") because it was the first one. At that time, no other namespace types existed.
 
 Every process is in exactly one namespace of each type. You can see which ones in `/proc/<pid>/ns`:
 
@@ -78,7 +78,7 @@ user -> user:[4026531837]
 uts -> uts:[4026532256]
 ```
 
-The number in brackets is an **inode number** on a hidden filesystem (`nsfs`). Two processes with the same number are in the same namespace. That's the whole test.
+The number in brackets is an **inode number** on a hidden filesystem (`nsfs`). Two processes with the same number are in the same namespace. No other check is needed.
 
 Two odd ones: `pid_for_children` and `time_for_children`. A process can never change its own PID, so a new PID (or time) namespace only applies to the **children** it creates from now on.
 
@@ -98,9 +98,9 @@ Two odd ones: `pid_for_children` and `time_for_children`. A process can never ch
 | `setns(2)`   | Join an existing namespace, given a `/proc/.../ns` fd | `nsenter(1)`               |
 | (read /proc) | List namespaces and who is in them                    | `lsns(8)`                  |
 
-A namespace stays alive as long as one of these holds on to it: a process inside it, an open file descriptor on its `/proc/<pid>/ns/...` file, or a bind mount of that file. `ip netns add` uses the last trick: it bind-mounts network namespaces under `/run/netns` so they survive with no process in them.
+A namespace stays alive as long as one of these holds on to it: a process inside it, an open file descriptor on its `/proc/<pid>/ns/...` file, or a bind mount of that file. `ip netns add` uses the last method: it bind-mounts network namespaces under `/run/netns` so they survive with no process in them.
 
-### User namespaces: root, but only at home
+### User namespaces: root inside, unprivileged outside
 
 Most namespaces need the `CAP_SYS_ADMIN` capability. Try one as a normal user:
 
@@ -145,10 +145,10 @@ $ ls -ln made-by-root
 -rw-r--r-- 1 1000 1000 0 Nov 26 16:45 made-by-root
 ```
 
-Read it carefully:
+What this shows:
 
 - The real root (UID 0) and group `shadow` (GID 42) are **not in the map**. Inside, they show up as `65534` ("nobody", the overflow ID).
-- The file "root" creates belongs to UID 1000 on the host. Inside root is outside you.
+- The file "root" creates belongs to UID 1000 on the host. Root inside is your own user outside.
 - Capabilities inside a user namespace only count for things **owned by** that namespace. Root in the box can change its own hostname. It can't load a kernel module or read `/etc/shadow`.
 
 Without a map you are `nobody` and can do almost nothing:
@@ -207,7 +207,7 @@ pid 1 on gobox as 0
 
 ### PID namespaces: who is PID 1?
 
-A PID namespace gives its processes their own numbers, starting at 1. Three tries, each one teaches something:
+A PID namespace gives its processes their own numbers, starting at 1. Three attempts show how it works:
 
 ```console
 $ unshare -Urp sh -c '/bin/true; /bin/true; echo done'
@@ -240,7 +240,7 @@ PID 1 is special inside a namespace, just like on a real machine (see [Signals a
 2. Orphaned processes are re-parented to it, so it must reap zombies.
 3. The kernel only delivers a signal to it if it has **installed a handler** for that signal. The default action ("die on `SIGTERM`") does not apply. From an ancestor namespace, only `SIGKILL` and `SIGSTOP` are forced through.
 
-Rule 3, for real. `sleep` has no `SIGTERM` handler. `NSpid` in `/proc/<pid>/status` shows its PID in every namespace from the outside in: 202360 on the host, 1 in the box.
+Rule 3 in practice. `sleep` has no `SIGTERM` handler. `NSpid` in `/proc/<pid>/status` shows its PID in every namespace from the outside in: 202360 on the host, 1 in the box.
 
 ```console
 $ unshare -Urpf --mount-proc --uts sh -c 'hostname box; exec sleep 300' &
@@ -267,7 +267,7 @@ $ ls -A scratch | wc -l
 0
 ```
 
-One subtlety: **mount propagation**. On a normal systemd machine, `/` is a `shared` mount. A new mount under a shared mount is copied to every namespace that shares it, which would leak your mounts back to the host. `unshare` sets everything to `private` by default (`--propagation private`) to stop that. On this WSL2 machine `/` is already private:
+One more detail: **mount propagation**. On a normal systemd machine, `/` is a `shared` mount. A new mount under a shared mount is copied to every namespace that shares it, which would leak your mounts back to the host. `unshare` sets everything to `private` by default (`--propagation private`) to stop that. On this WSL2 machine `/` is already private:
 
 ```console
 $ findmnt -no PROPAGATION /
@@ -281,7 +281,7 @@ To give a process a different root filesystem there are two tools:
 
 `pivot_root` has rules: the new root must be a mount point (a bind mount of a directory onto itself is enough), and it must be in a mount namespace that is not shared with the host.
 
-### Network namespaces: one cable, unplugged
+### Network namespaces: a separate network stack
 
 A new network namespace has its own interfaces, routes, firewall rules and port numbers. It starts with **only a loopback interface, and that is down**:
 
@@ -306,9 +306,9 @@ rtt min/avg/max/mdev = 0.099/0.099/0.099/0.000 ms
 
 No route to the outside at all. To connect a container, a runtime creates a **veth pair** (a virtual cable with two ends), puts one end in the container's namespace and plugs the other into a bridge on the host (`docker0`). That needs real root on the host, and it's the topic of container networking in the [Containers](../containers/index.md) chapter.
 
-Note that `127.0.0.1` inside is **not** the host's `127.0.0.1`. Each network namespace has its own loopback. Keep that in mind; it bites in the "Try it" below.
+Note that `127.0.0.1` inside is **not** the host's `127.0.0.1`. Each network namespace has its own loopback. Keep that in mind; it matters in the "Try it" below.
 
-### UTS, IPC, cgroup and time: the small four
+### UTS, IPC, cgroup and time namespaces
 
 ```console
 $ unshare -Ur --uts sh -c 'hostname box; hostname'; hostname
@@ -333,7 +333,7 @@ $ unshare -Urf --time --boottime 86400 cat /proc/uptime
 - **Time**: the box thinks the machine booted one day earlier. It is for moving containers between machines (checkpoint and restore) without the monotonic clock jumping. You will rarely use it.
 - **Cgroup**: inside a new cgroup namespace, your own cgroup looks like the root. You will see `0::/` in the "Try it" below instead of a long host path. It hides host details and makes the container's view portable.
 
-### `nsenter` and `setns`: walking into a running box
+### `nsenter` and `setns`: joining existing namespaces
 
 `nsenter` opens `/proc/<pid>/ns/<type>` for a target process and calls `setns(2)` on each, then runs a command. Start a box in the background, then join it:
 
@@ -352,7 +352,7 @@ $ nsenter -t 202583 -U -u -m -p sh -c 'hostname'
 nsenter: setgroups failed: Operation not permitted
 ```
 
-Without `--preserve-credentials`, `nsenter` tries to drop supplementary groups with `setgroups(2)`, and a user namespace made by `unshare -r` forbids that. `docker exec` and `kubectl exec` do the same `setns` dance, with real root.
+Without `--preserve-credentials`, `nsenter` tries to drop supplementary groups with `setgroups(2)`, and a user namespace made by `unshare -r` forbids that. `docker exec` and `kubectl exec` make the same `setns` calls, with real root.
 
 !!! warning "`setns` and Go don't mix well"
 
@@ -367,7 +367,7 @@ Without `--preserve-credentials`, `nsenter` tries to drop supplementary groups w
 
 ## Try it: a container by hand
 
-Time to build one. No Docker, no root, just `unshare`, `mount` and `pivot_root`.
+This section builds one. It needs no Docker and no root: only `unshare`, `mount` and `pivot_root`.
 
 **Step 1: a root filesystem.** A container image is, in the end, a directory tree. A static Go binary needs no libraries, so the smallest useful tree is one binary. Here is a tiny program that prints what a process can see:
 
@@ -448,7 +448,7 @@ exec unshare --user --map-root-user --pid --fork --mount --uts --ipc --net --cgr
   ' box "$@"
 ```
 
-The one ugly line deserves a word. After `pivot_root`, `umount` lives at `/.old/usr/bin/umount`, but it is dynamically linked and looks for its libraries in `/lib`, which is now our nearly empty rootfs. So we call the dynamic loader by hand and point it at the old library directory. Real runtimes do this step with a direct `umount2(2)` system call and have no such problem.
+One line needs an explanation. After `pivot_root`, `umount` lives at `/.old/usr/bin/umount`, but it is dynamically linked and looks for its libraries in `/lib`, which is now our nearly empty rootfs. So we call the dynamic loader by hand and point it at the old library directory. Real runtimes do this step with a direct `umount2(2)` system call and have no such problem.
 
 **Step 3: run it**, and compare with the host:
 
@@ -487,7 +487,7 @@ $ nsenter --target 219912 --user --net --preserve-credentials ip -br addr
 lo               UNKNOWN        127.0.0.1/8 ::1/128
 ```
 
-The host's `curl` fails: the box's `127.0.0.1` is a different loopback. With `nsenter --net` we run the **host's** `curl` binary (we did not join the mount namespace) inside the **box's** network. That's a handy debugging trick for real containers too, when the image has no `curl`: `nsenter -t <pid> -n curl ...`.
+The host's `curl` fails: the box's `127.0.0.1` is a different loopback. With `nsenter --net` we run the **host's** `curl` binary (we did not join the mount namespace) inside the **box's** network. This is also a useful debugging method for real containers, when the image has no `curl`: `nsenter -t <pid> -n curl ...`.
 
 `lsns` shows the box from outside. Only the time namespace is still shared with the host:
 
@@ -520,13 +520,13 @@ time=2026-11-26T15:51:06.816Z level=INFO msg="shutdown complete" service=ordersd
 Two details:
 
 1. `ordersd` is PID 1 and **did** stop on `SIGTERM`, unlike `sleep` earlier. It installed a handler with `signal.NotifyContext`, so the kernel delivers the signal.
-2. The times end in `Z` (UTC), while the host is in Amsterdam. Go looks for `/etc/localtime`, and our rootfs has no `/etc`. This is why distroless images ship time zone data, and why "the logs in the container are an hour off" is a classic.
+2. The times end in `Z` (UTC), while the host is in Amsterdam. Go looks for `/etc/localtime`, and our rootfs has no `/etc`. This is why distroless images ship time zone data, and why "the logs in the container are an hour off" is a common problem.
 
-What is missing compared to `docker run`? Quite a lot: an image made of layers (overlayfs, see [Filesystems](filesystems.md)), a network cable (veth), a `/dev`, dropped capabilities, a seccomp filter, and **cgroup limits**. Right now our box can use all 16 CPUs and all memory. Let's look at the meter.
+What is missing compared to `docker run`? Quite a lot: an image made of layers (overlayfs, see [Filesystems](filesystems.md)), a network cable (veth), a `/dev`, dropped capabilities, a seccomp filter, and **cgroup limits**. Right now our box can use all 16 CPUs and all memory. The next section covers the limits.
 
 ## Under the hood: cgroups
 
-### A tree of directories, where files are knobs
+### A tree of directories with control files
 
 A cgroup is a directory in a special filesystem. Processes are listed in its `cgroup.procs` file. Limits and counters are other files in the same directory. Create a subdirectory, and you have a child cgroup. The interface is `mkdir`, `echo` and `cat`.
 
@@ -551,7 +551,7 @@ With v1, the memory tree and the CPU tree could disagree about which group a pro
 
 **v2 is the production norm.** Ubuntu since 21.10, Fedora, Debian 11+, RHEL 9, and every current Kubernetes node image use pure v2. Kubernetes has supported it as stable since 1.25, and systemd 256 and newer refuse to boot on v1 by default.
 
-### This machine: hybrid, and honest about it
+### This machine: hybrid mode
 
 WSL2 (kernel 5.15) still mounts 15 v1 trees (one per controller, plus `name=systemd` for systemd's own bookkeeping), and one v2 tree:
 
@@ -603,7 +603,7 @@ MemoryMax=67108864
 TasksMax=20
 ```
 
-systemd accepted all three settings. But `MemoryCurrent=[not set]` is the tell: there is no memory controller to read from. Prove it with a program that allocates and touches memory in 16 MiB steps:
+systemd accepted all three settings. But `MemoryCurrent=[not set]` shows the problem: there is no memory controller to read from. To confirm it, run a program that allocates and touches memory in 16 MiB steps:
 
 ```go
 // Command hog allocates memory in 16 MiB steps and touches every page.
@@ -646,7 +646,7 @@ user_usec 1937782
 system_usec 0
 ```
 
-128 MiB under a 64 MiB limit, and 1.94 seconds of CPU in 2 seconds under a 20% quota. **Neither limit was enforced.** Why? The user manager (`user@1000.service`) is delegated `cpu memory pids` (`systemctl show user@1000.service -p DelegateControllers`), but delegation only works in v2, and in this v2 tree those controllers don't exist. The v1 trees belong to root, and v1 cannot be delegated safely. So systemd records the setting and moves on. Silently.
+128 MiB under a 64 MiB limit, and 1.94 seconds of CPU in 2 seconds under a 20% quota. **Neither limit was enforced.** Why? The user manager (`user@1000.service`) is delegated `cpu memory pids` (`systemctl show user@1000.service -p DelegateControllers`), but delegation only works in v2, and in this v2 tree those controllers don't exist. The v1 trees belong to root, and v1 cannot be delegated safely. So systemd records the setting and does nothing else. It gives no warning.
 
 Some limits **are** active here, set by the root systemd in the v1 trees. `systemd-logind` caps the number of tasks per user:
 
@@ -666,14 +666,14 @@ max 0
     controller to the v2 tree. The outputs below marked "to do" are meant to be captured
     on such a machine (or any modern Linux box).
 
-### `memory.max`: the fuse
+### `memory.max`: the hard memory limit
 
 In v2, memory has a few knobs. Two matter most:
 
 - **`memory.high`**: a soft ceiling. Above it, the kernel **throttles** the cgroup and reclaims its memory hard (page cache first). The process gets slow, not killed.
 - **`memory.max`**: the hard limit. When the cgroup needs more and reclaim cannot free enough, the kernel's **OOM killer** runs **inside this cgroup only** and kills a process (the biggest one, by default). The host may have 50 GB free; it doesn't matter.
 
-What counts? Anonymous memory (your Go heap and stacks), **page cache** of files the cgroup read or wrote, kernel memory for its sockets and so on. Page cache is reclaimable, so it is rarely what gets you killed, but it makes `memory.current` look scary.
+What counts? Anonymous memory (your Go heap and stacks), **page cache** of files the cgroup read or wrote, kernel memory for its sockets and so on. Page cache is reclaimable, so it is rarely what gets you killed, but it makes `memory.current` look high.
 
 `memory.events` counts what happened:
 
@@ -715,7 +715,7 @@ The CPU limit is not "2 cores". It is **a budget of CPU time per period**. `cpu.
 
 "In every 100 ms period, this cgroup may use 200 ms of CPU time", across all its threads, on any cores. That's 2 CPUs on average. The default is `max 100000` (no limit). In v1 the same two numbers are `cpu.cfs_quota_us` and `cpu.cfs_period_us`.
 
-Here is the trap. A Go service with 16 busy threads on a 16-core machine burns the 200 ms budget in **12.5 ms** of wall time. Then every thread of the cgroup is stopped until the next period starts. For 87.5 ms, nothing runs. A request that arrived at the wrong moment waits up to 87.5 ms for no visible reason, while average CPU use looks fine. This is the "p99 jumps every 100 ms" message from the top of the page.
+This causes a problem. A Go service with 16 busy threads on a 16-core machine uses up the 200 ms budget in **12.5 ms** of wall time. Then every thread of the cgroup is stopped until the next period starts. For 87.5 ms, nothing runs. A request that arrived at the wrong moment waits up to 87.5 ms for no visible reason, while average CPU use looks fine. This is the "p99 jumps every 100 ms" message from the top of the page.
 
 ```mermaid
 gantt
@@ -736,7 +736,7 @@ The kernel counts it in `cpu.stat`:
 - `nr_throttled`: periods in which it ran out of budget.
 - `throttled_usec` (v1: `throttled_time`, in nanoseconds): total time spent stopped.
 
-A rising `nr_throttled / nr_periods` ratio is the smoking gun. Here, with no quota, all zeros:
+A rising `nr_throttled / nr_periods` ratio is a clear sign of throttling. Here, with no quota, all zeros:
 
 ```console
 $ cat /sys/fs/cgroup/cpu/cpu.stat
@@ -754,7 +754,7 @@ systemd-run --user --scope --expand-environment=no -p CPUQuota=50% \
 
 Kubernetes maps a container's CPU **limit** to `cpu.max`, and its CPU **request** to `cpu.weight` (a relative share that only matters when the node is busy). Requests never throttle. Limits do.
 
-### `pids.max`: the fork bomb fuse
+### `pids.max`: a limit on tasks
 
 `pids.max` caps the number of tasks (processes **and threads**) in the cgroup. When it is reached, `fork` and `clone` fail with `EAGAIN`, and `pids.events` counts it. It stops a fork bomb from taking the whole machine. For a Go service it means: if a blocking system call storm makes the runtime start hundreds of threads (see [System calls](system-calls.md)), they count too. Go crashes with `runtime: failed to create new OS thread` when it hits the limit.
 
@@ -810,7 +810,7 @@ The environment variable wins over everything, and it also turns off the automat
 
 ### `GOMEMLIMIT` does not follow the memory limit
 
-The Go runtime does **not** read `memory.max`. By default, the garbage collector lets the heap grow to twice the live data (`GOGC=100`) before it collects. If your live data is 300 MiB and the limit is 512 MiB, the heap target is 600 MiB, and the kernel kills you before the GC even starts.
+The Go runtime does **not** read `memory.max`. By default, the garbage collector lets the heap grow to twice the live data (`GOGC=100`) before it collects. If your live data is 300 MiB and the limit is 512 MiB, the heap target is 600 MiB, and the kernel kills the process before the GC starts.
 
 `GOMEMLIMIT` is a **soft limit** for the Go runtime: when total Go-managed memory gets near it, the GC runs more often, whatever `GOGC` says. Here is a program that keeps 100 MiB live and makes 8 GiB of short-lived garbage (in 4 MiB pieces), then prints its peak RSS (`VmHWM`):
 
@@ -865,11 +865,11 @@ peak RSS 131348 kB, GC cycles 1520
 GOMEMLIMIT=90MiB 2.074836889 s
 ```
 
-Three lessons in three lines:
+What the three runs show:
 
 1. **Off**: peak 229 MiB for 100 MiB of live data. Under a 200 MiB `memory.max`, this program is OOM-killed while doing nothing wrong.
 2. **150 MiB**: peak 153 MiB, same speed. The GC simply ran more often (276 cycles instead of 79). This is the setting you want.
-3. **90 MiB**, below the live data: the limit **cannot** be met. The GC runs 1520 times and the program takes twice as long. Go caps GC work at about half the CPU to avoid a total death spiral, so it keeps working, slowly, over the limit. A soft limit is not a promise.
+3. **90 MiB**, below the live data: the limit **cannot** be met. The GC runs 1520 times and the program takes twice as long. Go caps GC work at about half the CPU, so the program does not spend all its time in the GC. It keeps working, slowly, over the limit. A soft limit is not a promise.
 
 Rule of thumb: set `GOMEMLIMIT` to about 90% of the container's memory limit, leaving room for memory that is not Go-managed (cgo, the binary, page cache). In Kubernetes, use the downward API to set it from `limits.memory`, or use a library such as `github.com/KimMachineGun/automemlimit` that reads `memory.max` at start-up.
 
@@ -880,8 +880,8 @@ Rule of thumb: set `GOMEMLIMIT` to about 90% of the container's memory limit, le
 - **Settings that silently do nothing.** As you saw, systemd accepts `MemoryMax=` when there is no controller to apply it. Always check the counters (`MemoryCurrent`, `memory.current`) after you set a limit.
 - **CPU limits cause latency, not just slowness.** Throttling is bursty. Watch `nr_throttled`. Many teams set CPU **requests** but no CPU **limits** for latency-sensitive Go services.
 - **Old Go, old `go.mod`.** Before Go 1.25, or with `go 1.24` in `go.mod`, `GOMAXPROCS` ignores the CPU limit. Use `go.uber.org/automaxprocs` there.
-- **No `GOMEMLIMIT`.** The Go runtime does not know about `memory.max`. Without `GOMEMLIMIT`, a heap at 2x live data meets the OOM killer.
-- **Page cache counts.** A service that reads big files shows a high `memory.current`. Look at `memory.stat` (`anon` vs `file`) before you panic.
+- **No `GOMEMLIMIT`.** The Go runtime does not know about `memory.max`. Without `GOMEMLIMIT`, a heap at 2x live data is killed by the OOM killer.
+- **Page cache counts.** A service that reads big files shows a high `memory.current`. Look at `memory.stat` (`anon` vs `file`) before you treat it as a problem.
 - **`chroot` is not isolation.** Use `pivot_root` in a mount namespace, and drop `CAP_SYS_CHROOT`.
 
 ## Check yourself
@@ -934,7 +934,7 @@ Rule of thumb: set `GOMEMLIMIT` to about 90% of the container's memory limit, le
 - **PID 1** in a namespace only gets signals it handles. Handle `SIGTERM`.
 - `pivot_root` in a mount namespace, not `chroot`, gives a process its own `/`.
 - A new **network namespace** has only `lo`, and it is down.
-- **cgroup v2** is one tree; `memory.max`, `cpu.max` and `pids.max` are files. `memory.events` and `cpu.stat` tell you when they bite.
+- **cgroup v2** is one tree; `memory.max`, `cpu.max` and `pids.max` are files. `memory.events` and `cpu.stat` show when a limit is reached.
 - This WSL2 machine is **hybrid**: v1 controllers, an empty v2 tree, and user-level limits that are accepted and ignored.
 - Go 1.25+ sets `GOMAXPROCS` from the CPU limit. Nothing sets `GOMEMLIMIT` for you: set it to about 90% of the memory limit.
 

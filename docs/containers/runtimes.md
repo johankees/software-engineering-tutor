@@ -4,22 +4,22 @@
 
 Messages you will see, and need to place:
 
-- `OCI runtime create failed: runc create failed: unable to start container process: ...`. Who is "OCI runtime", and why is it talking?
+- `OCI runtime create failed: runc create failed: unable to start container process: ...`. Which program is the "OCI runtime", and what failed?
 - "Kubernetes removed dockershim. Do our images still work?" (Yes. Why?)
 - "Anyone in the `docker` group is root on that machine." True, and the reason is on this page.
 - "Run containers rootless." What does that change, and why does it fail with `cannot setgid to unmapped gid`?
 
 `docker run` is not one program. It is a chain of five, each with one job. When something breaks, the error message comes from one link in that chain, and knowing the chain tells you where to look. On this page you watch the chain from the host, read the **OCI runtime spec** that the last link gets, and then skip Docker completely and start `ordersd` with `runc` as a normal user.
 
-## The idea: a theatre
+## The idea: a chain of programs, each with one job
 
-- **You** (the `docker` CLI) buy a ticket at the box office: "I want `ordersd`, port 8080."
-- **The theatre manager** (`dockerd`) knows about the building: networks, volumes, port publishing, logs, the Docker API.
-- **The stage manager** (`containerd`) knows about shows: images, snapshots of the stage floor (layers), and which show runs where.
-- **A stagehand** (`containerd-shim-runc-v2`) stays next to each actor for the whole show, holding the microphone (stdio) and writing down how the show ended (exit code).
-- **The curtain puller** (`runc`) sets up the stage (namespaces, cgroups, mounts), opens the curtain, and **goes home**. It does not watch the show.
+- **The `docker` CLI** sends your request to the daemon: "run `ordersd`, publish port 8080."
+- **`dockerd`** handles the Docker-level features: networks, volumes, port publishing, logs, and the Docker API.
+- **`containerd`** manages images, snapshots (unpacked layers), and the list of containers and where they run.
+- **`containerd-shim-runc-v2`** (the shim) stays with each container for its whole life. It holds the container's stdio and records its exit code.
+- **`runc`** sets up the container (namespaces, cgroups, mounts), starts the process, and **exits**. It does not watch the process.
 
-The script the curtain puller reads is a standard: the **OCI runtime spec**, one file called `config.json`. Any curtain puller that reads that script (`runc`, `crun`, `runsc`, Kata) can do the job.
+The input to `runc` is defined by a standard: the **OCI runtime spec**, one file called `config.json`. Any runtime that reads that file (`runc`, `crun`, `runsc`, Kata) can do the job.
 
 ```mermaid
 sequenceDiagram
@@ -296,7 +296,7 @@ PID   USER     TIME  COMMAND
          0       1000          1
 ```
 
-A container. PID 1, its own hostname, root inside. The twelve `nobody` groups are your host groups (`adm`, `sudo`, `docker` and so on): they are not mapped into the user namespace, so the kernel shows them as the overflow ID 65534. You still have them, you just can't see their names.
+This is a container: PID 1, its own hostname, root inside. The twelve `nobody` groups are your host groups (`adm`, `sudo`, `docker` and so on): they are not mapped into the user namespace, so the kernel shows them as the overflow ID 65534. You still have them, you just can't see their names.
 
 ### Watch the lifecycle
 
@@ -439,10 +439,10 @@ Higher up, **Podman** replaces `dockerd` and containerd. It has **no daemon**: `
 Three different things are called "rootless". Keep them apart:
 
 1. **Non-root in the container** (`USER nonroot`, UID 65532). No user namespace. UID 65532 inside is 65532 on the host, as `ps` showed above. Good, and the minimum. [Container security](security.md) covers it.
-2. **A user namespace for the container** (Docker `--userns-remap`, Kubernetes `hostUsers: false`). The daemon still runs as root, but root in the container maps to an unused high UID on the host. A container escape lands as a nobody.
+2. **A user namespace for the container** (Docker `--userns-remap`, Kubernetes `hostUsers: false`). The daemon still runs as root, but root in the container maps to an unused high UID on the host. A process that escapes the container runs as a user with no rights on the host.
 3. **A rootless runtime** (rootless Podman, rootless Docker, `runc` as you ran it). Even the runtime runs as a normal user. An escape gets at most what that user has.
 
-The kernel feature behind 2 and 3 is the one from [User namespaces: root, but only at home](../linux/namespaces-and-cgroups.md). This machine allows up to 63662 of them per user:
+The kernel feature behind 2 and 3 is the one from [User namespaces](../linux/namespaces-and-cgroups.md). This machine allows up to 63662 of them per user:
 
 ```console
 $ cat /proc/sys/user/max_user_namespaces

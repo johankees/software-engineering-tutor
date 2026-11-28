@@ -4,7 +4,7 @@
 
 Your team has a `internal/xslices` package. Inside: `ContainsString`, `ContainsInt`, `ContainsUUID`, `UniqueStrings`, `UniqueInts`, `MapOrdersToIDs`, `MapItemsToSKUs`… forty small functions that do the same thing for different types. Every one has its own tests. Two of them have a bug the others don't.
 
-Or worse: someone wrote one `Contains(list []interface{}, v interface{}) bool`. Now every caller converts its slice to `[]interface{}` (one allocation per element), and passing an `int` where a `string` was meant compiles fine and is silently wrong.
+Another option: someone wrote one `Contains(list []interface{}, v interface{}) bool`. Now every caller converts its slice to `[]interface{}` (one allocation per element), and passing an `int` where a `string` was meant compiles fine and is silently wrong.
 
 Before Go 1.18 (2022), those were your only two options. **Generics** add a third: write the code **once**, keep **full type safety**, and let the compiler fill in the types.
 
@@ -42,7 +42,7 @@ fmt.Println("total:", Sum(prices)) // T inferred as Cents
 total: 2749
 ```
 
-## Constraints are interfaces (with a twist)
+## Constraints are interfaces
 
 A constraint says what you may do with `T`. In Go, constraints are just **interfaces**. Until 1.18, an interface was a list of methods. Now it can also be a list of **types**: a **type set**.
 
@@ -135,7 +135,7 @@ So: a generic method is a nicer way to write a generic function that "belongs" t
     `type Set[T comparable] = map[T]struct{}` is an **alias**, not a new type. It is useful when you move a type
     between packages and want old code to keep compiling.
 
-## The standard library already did the work
+## Generic helpers in the standard library
 
 Before you write a generic helper, check these three packages. They replace 90% of the `xslices` packages teams used to write.
 
@@ -221,7 +221,7 @@ BOOK 2
 PEN 1
 ```
 
-Three patterns worth stealing:
+Three useful patterns:
 
 1. **`cmp.Or` for multi-key sorting.** It returns the first non-zero value. So "compare by price; if equal, compare by SKU" is one expression. It is also handy for defaults: `cmp.Or(os.Getenv("REGION"), "eu-west-1")`.
 2. **`b` before `a` for descending** order. No need for a `Reverse` step.
@@ -255,7 +255,7 @@ type Seq[V any] func(yield func(V) bool)
 type Seq2[K, V any] func(yield func(K, V) bool)
 ```
 
-That looks strange the first time. Read it slowly:
+The shape is unusual. Here is what it means:
 
 - An iterator is a function that takes another function, `yield`.
 - It calls `yield(v)` once for each value.
@@ -314,7 +314,7 @@ func All[T any](ctx context.Context, fetch FetchFunc[T]) iter.Seq2[T, error] {
 }
 ```
 
-Using it feels like a normal loop. Here with a fake API that serves 3 pages of 2 orders, and prints every fetch:
+The caller writes a normal loop. Here it runs with a fake API that serves 3 pages of 2 orders, and prints every fetch:
 
 ```go
 for id, err := range All(ctx, fakeOrders) {
@@ -363,17 +363,17 @@ Look at the second run: after `break`, page 2 is **never fetched**. The iterator
 
 ### Iterators in the standard library
 
-| Function                                                 | Gives you                                  |
-| -------------------------------------------------------- | ------------------------------------------ |
-| `slices.All(s)`, `slices.Values(s)`                      | index+value, or only values, of a slice    |
-| `slices.Backward(s)`                                     | a slice from end to start                  |
-| `maps.Keys(m)`, `maps.Values(m)`, `maps.All(m)`          | map contents (random order)                |
-| `slices.Collect(seq)`, `slices.Sorted(seq)`              | turn an iterator back into a slice         |
-| `maps.Collect(seq2)`                                     | turn a `Seq2` into a map                   |
-| `strings.SplitSeq`, `strings.FieldsSeq`, `strings.Lines` | split without allocating a slice           |
-| `slices.Chunk(s, n)`                                     | sub-slices of `n` elements: batch inserts! |
+| Function                                                 | Gives you                               |
+| -------------------------------------------------------- | --------------------------------------- |
+| `slices.All(s)`, `slices.Values(s)`                      | index+value, or only values, of a slice |
+| `slices.Backward(s)`                                     | a slice from end to start               |
+| `maps.Keys(m)`, `maps.Values(m)`, `maps.All(m)`          | map contents (random order)             |
+| `slices.Collect(seq)`, `slices.Sorted(seq)`              | turn an iterator back into a slice      |
+| `maps.Collect(seq2)`                                     | turn a `Seq2` into a map                |
+| `strings.SplitSeq`, `strings.FieldsSeq`, `strings.Lines` | split without allocating a slice        |
+| `slices.Chunk(s, n)`                                     | sub-slices of `n` elements, for batches |
 
-`slices.Chunk` deserves a mention: inserting 10,000 rows in batches of 500 is `for batch := range slices.Chunk(rows, 500) { ... }`.
+`slices.Chunk` is useful for batch work: inserting 10,000 rows in batches of 500 is `for batch := range slices.Chunk(rows, 500) { ... }`.
 
 !!! tip "Pull iterators"
 
@@ -429,7 +429,7 @@ Bad fits:
 
 - **When an interface is enough.** If your function only calls methods, take an interface. `func Save(w io.Writer)` is simpler than `func Save[W io.Writer](w W)`, and does the same thing.
 - **To avoid writing two similar functions** whose logic is not really the same. Two simple functions beat one clever one.
-- **"Generic repository"** layers like `Repository[T]` with `Get`, `List`, `Save` for every table. They look elegant on day one. On day thirty, the `orders` table needs a join, `customers` needs a soft delete, and the generic layer is in everyone's way. Write a repository per aggregate.
+- **"Generic repository"** layers like `Repository[T]` with `Get`, `List`, `Save` for every table. They look clean at first. Later, the `orders` table needs a join, `customers` needs a soft delete, and the generic layer gets in the way. Write a repository per aggregate.
 
 !!! quote "Go proverb"
 

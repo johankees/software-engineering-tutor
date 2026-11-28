@@ -2,25 +2,25 @@
 
 ## Why care?
 
-Four messages you have seen, or will see, and all four are about graphs:
+Four common situations, all of them about graphs:
 
 - `go build` says `import cycle not allowed`, and you do not see the cycle.
 - "Rebase my branch onto `main`. Which commits will move?"
 - You delete a Kubernetes Deployment, and 30 pods disappear with it.
 - "Ship this order from the Rotterdam warehouse to Lyon, as fast as possible."
 
-A **graph** is just things and the links between them. Your Go packages and their imports, your Git commits and their parents, your Kubernetes objects and their owners: all graphs. The same five algorithms answer almost every question about them. On this page you write those five in about 150 lines of Go, and then you find them inside `go`, `git` and `kubectl`.
+A **graph** is a set of things and the links between them. Your Go packages and their imports, your Git commits and their parents, your Kubernetes objects and their owners: all graphs. The same five algorithms answer almost every question about them. On this page you write those five in about 150 lines of Go, and then you find them inside `go`, `git` and `kubectl`.
 
-## The idea: a map of roads between towns
+## The idea: nodes and edges
 
-Think of a road map.
+A road map is a simple example of a graph. The terms:
 
-- Each town is a **node** (also called a vertex).
-- Each road is an **edge**.
-- A one-way road is a **directed** edge. An import is one-way: `httpapi` imports `order`, never the other way round.
-- A road with a travel time on it is a **weighted** edge.
-- If you can drive in a circle and come back to where you started, the graph has a **cycle**.
-- A directed graph with no cycles is a **DAG** (directed acyclic graph). Git history, package imports and build steps are all DAGs. That's not luck: tools **forbid** cycles there, because a cycle would mean "A must come before B, and B before A".
+- Each thing (a town) is a **node** (also called a vertex).
+- Each link (a road) is an **edge**.
+- A one-way link is a **directed** edge. An import is one-way: `httpapi` imports `order`, never the other way round.
+- A link with a cost on it, such as a travel time, is a **weighted** edge.
+- If you can follow edges and come back to where you started, the graph has a **cycle**.
+- A directed graph with no cycles is a **DAG** (directed acyclic graph). Git history, package imports and build steps are all DAGs. This is deliberate: tools **forbid** cycles there, because a cycle would mean "A must come before B, and B before A".
 
 Here is a real one, the import graph of the packages in `examples/orders` (only our own packages, not the standard library):
 
@@ -125,7 +125,7 @@ PASS
 ok  	example.com/graphs	7.483s
 ```
 
-91 µs against 14.5 ms: the list is about **160 times faster**. Same algorithm, same answer. The matrix version looks at 5,000 cells for every node (25 million checks), the list version at 4 (20,000 checks). That is the difference between O(V²) and O(V + E), and you just measured it. (Your numbers will differ; the ratio will not change much.)
+91 µs against 14.5 ms: the list is about **160 times faster**. Same algorithm, same answer. The matrix version looks at 5,000 cells for every node (25 million checks), the list version at 4 (20,000 checks). That is the difference between O(V²) and O(V + E), and the benchmark shows it. (Your numbers will differ; the ratio will not change much.)
 
 For the rest of the page, an adjacency list with string names is enough:
 
@@ -158,7 +158,7 @@ func (g Graph) Nodes() []string { return slices.Sorted(maps.Keys(g)) }
 
 ## Under the hood: breadth-first search
 
-**BFS** explores in rings: first everything one step away, then everything two steps away, and so on. Like a stone dropped in water. The tool is a **queue** (first in, first out).
+**BFS** (breadth-first search) explores in rings: first everything one step away, then everything two steps away, and so on. The tool is a **queue** (first in, first out).
 
 ```go
 // BFS returns the number of hops from start to every reachable node.
@@ -181,14 +181,14 @@ func (g Graph) BFS(start string) map[string]int {
 
 Two things to notice:
 
-1. **Mark a node when you put it in the queue, not when you take it out.** Here `dist[next]` is set at once. If you wait, the same node can be queued many times, and on a dense graph the queue explodes.
+1. **Mark a node when you put it in the queue, not when you take it out.** Here `dist[next]` is set at once. If you wait, the same node can be queued many times, and on a dense graph the queue grows very large.
 2. Because BFS goes ring by ring, the first time it reaches a node is by the **fewest edges**. So BFS is the shortest-path algorithm when every edge costs the same. "How many hops from this service to the database?" "What is the shortest chain of imports from `main` to `unsafe`?" BFS.
 
 `queue = queue[1:]` is fine for a short-lived search: the slice's backing array is freed when the search ends. For a queue that lives for hours, use a ring buffer (see [Heaps and queues](heaps-and-queues.md)).
 
 ## Under the hood: depth-first search and cycles
 
-**DFS** goes as deep as it can along one path, then backs up and tries the next branch. Like exploring a maze with one hand on the wall. The tool is a **stack**: either an explicit one or, as here, the call stack (recursion).
+**DFS** (depth-first search) goes as deep as it can along one path, then backs up and tries the next branch. The tool is a **stack**: either an explicit one or, as here, the call stack (recursion).
 
 DFS is the natural way to find a **cycle**. Give each node one of three colours:
 
@@ -196,12 +196,12 @@ DFS is the natural way to find a **cycle**. Give each node one of three colours:
 - **grey**: on the path we are walking right now,
 - **black**: finished. We visited everything below it, and found no cycle there.
 
-If DFS ever follows an edge to a **grey** node, it went in a circle: that node is behind us on the current path. That edge is called a **back edge**.
+If DFS ever follows an edge to a **grey** node, it has found a cycle: that node is earlier on the current path. That edge is called a **back edge**.
 
 ```mermaid
 flowchart LR
     A["order<br/>(grey)"] -->|imports| B["httpapi<br/>(grey)"]
-    B -->|"imports: back edge!"| A
+    B -->|"imports: back edge"| A
     B --> C["slog<br/>(black)"]
 ```
 
@@ -246,7 +246,7 @@ func (g Graph) FindCycle() []string {
 }
 ```
 
-Why three colours and not just "seen"? With only "seen", a **diamond** looks like a cycle. `cmd/ordersd` reaches `internal/order` directly and also through `internal/httpapi`. When DFS meets `order` the second time, it is black (finished), not grey. Two roads to the same town is not a circle.
+Why three colours and not just "seen"? With only "seen", a **diamond** looks like a cycle. `cmd/ordersd` reaches `internal/order` directly and also through `internal/httpapi`. When DFS meets `order` the second time, it is black (finished), not grey. Two paths to the same node are not a cycle.
 
 One more DFS fact you will meet: the order in which nodes turn **black** (the "post-order") is a valid build order, dependencies first. A node only turns black after everything below it did.
 
@@ -383,9 +383,9 @@ hops from cmd/ordersd:
   1 internal/storage/memory
 ```
 
-Read the build order: `buildinfo`, `config` and `order` wait for nothing, so they were ready first, and they could compile at the same time. `client`, `httpapi` and `memory` become ready the moment `order` is done. The two commands come last. BFS says `cmd/ordersd` reaches five packages, all in one hop. `internal/client` is not in the list: `ordersd` never imports it. That is your dead-code check for free.
+Read the build order: `buildinfo`, `config` and `order` wait for nothing, so they were ready first, and they could compile at the same time. `client`, `httpapi` and `memory` become ready the moment `order` is done. The two commands come last. BFS says `cmd/ordersd` reaches five packages, all in one hop. `internal/client` is not in the list: `ordersd` never imports it. So the same output also shows which packages a command does not use.
 
-The `go` command has its own walk built in. `go help list` says: "It visits them in a depth-first post-order traversal, so that a package is listed only after all its dependencies." That's the DFS post-order from above:
+The `go` command has its own walk built in. `go help list` says: "It visits them in a depth-first post-order traversal, so that a package is listed only after all its dependencies." That is the DFS post-order from above:
 
 ```console
 $ go list -deps ./cmd/ordersd | grep acme
@@ -401,9 +401,9 @@ $ go list -deps ./cmd/ordersd | wc -l
 
 A different order from Kahn's, and also correct: a DAG usually has many valid topological orders. (211 is with the standard library: `ordersd` pulls in 205 packages you did not write.)
 
-### Now break it: an import cycle
+### Adding an import cycle
 
-In a **copy** of `examples/orders`, make the domain import the HTTP layer. It's the classic mistake: someone wants to reuse an HTTP helper in the domain.
+In a **copy** of `examples/orders`, make the domain import the HTTP layer. This is a common mistake: someone wants to reuse an HTTP helper in the domain.
 
 ```go
 // internal/order/service.go, in a scratch copy
@@ -567,13 +567,13 @@ Lyon      12h  Rotterdam -> Utrecht -> Arnhem -> Cologne -> Frankfurt -> Lyon
 Munich    10h  Rotterdam -> Utrecht -> Arnhem -> Cologne -> Frankfurt -> Munich
 ```
 
-Cologne in 4 hours over three roads, not 7 hours over one. Lyon in 12 hours over five roads, while the "obvious" routes (through Brussels, or Cologne's direct road) take 13.
+Cologne in 4 hours over three roads, not 7 hours over one. Lyon in 12 hours over five roads, while the more direct routes (through Brussels, or Cologne's direct road) take 13.
 
-Look at `heap pops: 12 nodes: 9`. Twelve entries came out of the heap for nine towns. The textbook version has a **decrease-key** operation: "Cologne is now 4, not 7; move it up in the heap". `container/heap` can do that with `heap.Fix`, but only if you track every item's index in the heap. The simpler trick, used above, is **lazy deletion**: push a new entry with the better time, and skip the old one when it comes out (`if done[...] { continue }`). The heap gets a bit bigger (at most one entry per edge), the code gets much simpler. Most real implementations do this.
+Look at `heap pops: 12 nodes: 9`. Twelve entries came out of the heap for nine towns. The textbook version has a **decrease-key** operation: "Cologne is now 4, not 7; move it up in the heap". `container/heap` can do that with `heap.Fix`, but only if you track every item's index in the heap. The simpler method, used above, is **lazy deletion**: push a new entry with the better time, and skip the old one when it comes out (`if done[...] { continue }`). The heap gets a bit bigger (at most one entry per edge), the code gets much simpler. Most real implementations do this.
 
 !!! warning "No negative weights"
 
-    Dijkstra trusts that a finished node can never get cheaper. A negative edge (a refund,
+    Dijkstra assumes that a finished node can never get cheaper. A negative edge (a refund,
     a "discount" hop) breaks that, and Dijkstra returns wrong answers without any error.
     For negative weights you need Bellman-Ford (O(V × E)), and with a negative **cycle**
     there is no shortest path at all.
@@ -639,7 +639,7 @@ $ git branch --contains fb83d26
 * main
 ```
 
-- `main..feature/top-orders` is **empty**: everything on the feature branch is reachable from `main` since the merge. That's how Git knows a branch is "fully merged" and lets `git branch -d` delete it.
+- `main..feature/top-orders` is **empty**: everything on the feature branch is reachable from `main` since the merge. That is how Git knows a branch is "fully merged" and lets `git branch -d` delete it.
 - The other way round, three commits are on `main` only. A rebase of `feature/top-orders` onto something would move nothing, because the set "mine but not theirs" is empty. Before a rebase, `git log --oneline upstream..HEAD` shows exactly which commits will be rewritten (see [Merging](../git/merging.md)).
 - `merge-base` of the two branch tips is `1101422`, the fork point. Git found it by walking back from both commits until the walks met.
 
@@ -666,7 +666,7 @@ fb83d26 add top-k query
 
 Both are valid topological orders of the same DAG (newest first, so "children before parents"). `--graph` uses topological order, because you cannot draw lines between branches that jump around.
 
-On a repository with a million commits these walks get expensive: Git has to open and parse every commit object. That's why Git keeps the **commit-graph** file with a **generation number** per commit: if A's generation number is smaller than B's, A cannot reach B, so a walk can stop early. It is a precomputed topological level. See [Storage](../git/storage.md) for the details; and on the [next-but-one page](probabilistic-structures.md) you will see the Bloom filters that live in the same file.
+On a repository with a million commits these walks get expensive: Git has to open and parse every commit object. That is why Git keeps the **commit-graph** file with a **generation number** per commit: if A's generation number is smaller than B's, A cannot reach B, so a walk can stop early. It is a precomputed topological level. See [Storage](../git/storage.md) for the details; and on the [next-but-one page](probabilistic-structures.md) you will see the Bloom filters that live in the same file.
 
 ### Go modules: a graph with cycles
 
@@ -694,7 +694,7 @@ golang.org/x/tools@v0.53.0 golang.org/x/mod@v0.43.0
 
 Two things in four commands:
 
-1. **A cycle.** `x/mod` requires `x/tools`, and `x/tools` requires `x/mod`. That's allowed for modules: a module is a unit of versioning, not of compilation. The **packages** inside them still form a DAG.
+1. **A cycle.** `x/mod` requires `x/tools`, and `x/tools` requires `x/mod`. That is allowed for modules: a module is a unit of versioning, not of compilation. The **packages** inside them still form a DAG.
 2. **Three edges into `x/tools`, with two versions.** `x/mod` asks for at least v0.52.0, the others for at least v0.53.0. Go's **minimal version selection** walks the graph from the main module and keeps, per module path, the **highest** of the minimum versions it saw. One walk, no solver:
 
 ```console
@@ -718,13 +718,13 @@ When you delete an owner, the garbage collector walks the edges the other way, f
 | `foreground` | Delete the dependents first (with `blockOwnerDeletion`), the owner last: a **post-order** walk   |
 | `orphan`     | Remove the edges, keep the nodes                                                                 |
 
-`foreground` is the DFS post-order from above in disguise: a node may only finish (be deleted) after everything below it is gone. And an object can have more than one owner. The garbage collector deletes it only when **all** its owners are gone: that's the "waiting for dependencies" counter of Kahn's algorithm, run backwards.
+`foreground` is the DFS post-order from above: a node may only finish (be deleted) after everything below it is gone. And an object can have more than one owner. The garbage collector deletes it only when **all** its owners are gone: that is the "waiting for dependencies" counter of Kahn's algorithm, run backwards.
 
-Cycles in owner references are possible (nothing in the API stops you), and they are a bug: with `foreground` deletion, each object waits for the other, forever. That's the general lesson of this page: **any tool that waits for "everything before me" needs a DAG, and needs to detect when it is not one.**
+Cycles in owner references are possible (nothing in the API stops you), and they are a bug: with `foreground` deletion, each object waits for the other, forever. This is the general lesson of this page: **any tool that waits for "everything before me" needs a DAG, and needs to detect when it is not one.**
 
 ## Traps
 
-- **Recursion depth.** A recursive DFS on a long chain (a history with millions of commits) is one stack frame per node. Go grows goroutine stacks, so it does not crash early like C or Java, but past the 1 GB limit (on 64-bit) the program dies with `runtime: goroutine stack exceeds 1000000000-byte limit` and `fatal error: stack overflow`. It also eats memory long before that. For deep graphs use an explicit stack (a slice).
+- **Recursion depth.** A recursive DFS on a long chain (a history with millions of commits) is one stack frame per node. Go grows goroutine stacks, so it does not crash early like C or Java, but past the 1 GB limit (on 64-bit) the program dies with `runtime: goroutine stack exceeds 1000000000-byte limit` and `fatal error: stack overflow`. It also uses a lot of memory long before that. For deep graphs use an explicit stack (a slice).
 - **Forgetting "visited".** BFS or DFS without a visited set loops forever on a cycle, and does exponential work on a DAG full of diamonds (every path is walked separately). Git histories with many merges are exactly that.
 - **Marking too late in BFS.** Mark when you enqueue, not when you dequeue, or the same node enters the queue many times.
 - **Map order.** Go randomises map iteration. A topological sort that walks a map gives a different valid order each run. Sort the nodes (as `Nodes()` does) if anyone will diff the output.
@@ -749,7 +749,7 @@ Cycles in owner references are possible (nothing in the API stops you), and they
     network route, edges have different latencies, so use Dijkstra (latencies are never
     negative).
 
-??? question "3. Why can Git history never contain a cycle, even if you try hard?"
+??? question "3. Why can Git history never contain a cycle, even on purpose?"
 
     A commit's hash is computed from its content, which includes the hashes of its
     parents. To make commit A a parent of its own ancestor B, you would need A's hash while

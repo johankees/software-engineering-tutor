@@ -12,17 +12,17 @@ Five tickets from the `orders` system:
 
 None of these is a bug in one line of code. Each one comes from a **wrong idea about how things fail**. On one machine, a function call either returns or the whole program crashes. Across a network, there is a third answer: **nothing**. No reply, no error, just silence. This page is about that silence: which kinds of failure exist, which ones your code must survive, and why a client **cannot tell** a slow server from a dead one.
 
-## The idea: ordering food by post
+## The idea: a request with no answer
 
-You live in a village with no phone. You order a pizza by letter, and you hope a pizza arrives. Then nothing comes for an hour. What happened?
+`orders` sends `PAY order-1` to `payments` and waits. No answer comes. From the client's side, several different events produce exactly this result:
 
-- The letter got **lost** on the way. The restaurant never heard of you.
-- The restaurant **closed** (crashed) before it read your letter.
-- The restaurant is **slow** tonight. The pizza is in the oven.
-- The pizza was made and sent, and the **delivery** got lost. The restaurant thinks you have it, and has your money.
-- The restaurant is **lying**: it says "sent!" but sends nothing. (Rare, but people do this.)
+- The request was **lost** on the way. `payments` never received it.
+- `payments` **crashed** before it read the request.
+- `payments` is **slow**. It is still working on the request.
+- `payments` did the work and charged the card, but the **reply** was lost. `payments` thinks the client knows.
+- `payments` is **faulty** in a worse way: it reports success but did nothing, or sends wrong data. This is rare.
 
-From your chair, all five look the same: no pizza. You can wait longer, or you can order again. If you order again, you may get **two** pizzas. That's the whole problem, and the rest of this chapter is about solving it.
+The client cannot tell these cases apart. It can wait longer, or it can send the request again. If it sends again, the card may be charged **twice**. That is the core problem, and the rest of this chapter is about solving it.
 
 ```mermaid
 sequenceDiagram
@@ -33,7 +33,7 @@ sequenceDiagram
     alt request lost (partition)
         N--xP: dropped
     else payments crashed
-        N->>P: arrives, nobody home
+        N->>P: arrives, process is down
     else payments slow
         N->>P: arrives
         Note over P: works for 2 s
@@ -89,7 +89,7 @@ During the partition, zone A can't reach the database. Its `orders-1` is **alive
 
 The partition also splits **knowledge**. Each side sees the other as dead. If both sides then decide "the other is dead, so I'm in charge", you get **split brain**: two leaders, two writers, conflicting data. [Consensus and Raft](consensus-and-raft.md) shows how a majority (quorum) prevents that.
 
-### Slow is the new dead
+### Slow is worse than dead
 
 A crashed process is the **easy** case. The kernel closes its sockets, and the next connection attempt gets a reset or `connection refused` in under a millisecond (see [RST](../networking/tcp.md#rst-connection-reset-by-peer)). Your code gets a clear error and can move on.
 
@@ -116,7 +116,7 @@ There is no way to **know** that a remote node is dead. There is only "I haven't
 - **Heartbeats.** Each node sends "I'm alive" every second. After 3 missed heartbeats, the others suspect it. Kubernetes does this: the kubelet renews a `Lease` object every few seconds, and the node controller marks the node `NotReady` when no renewal arrives within a grace period (tens of seconds by default).
 - **Adaptive detectors.** Instead of a fixed limit, measure the normal gap between heartbeats and suspect a node when the current gap is very unlikely. (The "phi accrual" detector used by Cassandra and Akka works this way.)
 
-Every detector makes a trade-off. A short timeout detects a dead node quickly, but it also declares **slow** nodes dead, and then you fail over, or retry, for nothing. A long timeout is safe from false alarms, but users wait. There is no value that is right for every case. This is a proven limit, not a lack of effort: in a system where messages can be delayed without a bound (an **asynchronous** system), no algorithm can always tell a crashed node from a slow one. (The famous form of this is the **FLP result** from 1985: no deterministic consensus algorithm can be guaranteed to finish in an asynchronous system if even one node may crash.) Real systems get around it by assuming the network is **usually** timely ("partial synchrony"), and staying **safe** even when that assumption is wrong for a while.
+Every detector makes a trade-off. A short timeout detects a dead node quickly, but it also declares **slow** nodes dead, and then you fail over, or retry, for nothing. A long timeout is safe from false alarms, but users wait. There is no value that is right for every case. This is a proven limit, not a lack of effort: in a system where messages can be delayed without a bound (an **asynchronous** system), no algorithm can always tell a crashed node from a slow one. (The best-known form of this is the **FLP result** from 1985: no deterministic consensus algorithm can be guaranteed to finish in an asynchronous system if even one node may crash.) Real systems get around it by assuming the network is **usually** timely ("partial synchrony"), and staying **safe** even when that assumption is wrong for a while.
 
 ## The eight fallacies of distributed computing
 
@@ -133,7 +133,7 @@ In the 1990s, engineers at Sun Microsystems wrote down the false assumptions tha
 | 7   | Transport cost is zero     | Serialization costs CPU, and every hop has a price                  | JSON encoding can be most of a handler's CPU. Measure ([Performance](../go/performance.md))            |
 | 8   | The network is homogeneous | Different MTUs, proxies, HTTP versions, client libraries            | A proxy with a 60 s idle timeout and a client with 90 s gives you resets ([TCP](../networking/tcp.md)) |
 
-The first fallacy is the one this page is about. The second is the one that bites code reviews: a call that looks like a function call (`client.GetOrder(ctx, id)`) is **a million times** slower than a function call, and can fail in ways a function cannot.
+The first fallacy is the one this page is about. The second is the one most often missed in code reviews: a call that looks like a function call (`client.GetOrder(ctx, id)`) is **a million times** slower than a function call, and can fail in ways a function cannot.
 
 ## Failure domains: what fails together
 
@@ -167,7 +167,7 @@ A related idea is the **blast radius**: when something fails, how much fails wit
 
 ## Try it: a proxy that breaks the network
 
-You can't pull cables in your laptop, and `tc`/`iptables` need root. So we put a small Go **proxy** between a client and a "payments" node, and let the proxy break things on purpose. The same trick is how tools like Toxiproxy work.
+You can't pull cables in your laptop, and `tc`/`iptables` need root. So we put a small Go **proxy** between a client and a "payments" node, and let the proxy break things on purpose. Tools like Toxiproxy work the same way.
 
 ```mermaid
 flowchart LR
@@ -367,7 +367,7 @@ PAY order-crash       -> error after 2ms: read tcp 127.0.0.1:45337->127.0.0.1:17
 PAY order-crash       -> error after 0s: dial tcp 127.0.0.1:17002: connect: connection refused
 ```
 
-Read it slowly. It is the whole page in 20 lines.
+Read it slowly. These 20 lines show the main points of this page.
 
 - **Three different failures, one identical result.** `blackhole`, `delay` and `dropreplies` all gave `TIMEOUT after 501ms`. The client has no way to tell them apart. Nothing in the error, the timing or the connection is different.
 - **But the truth is different.** The ledger shows `order-dropreplies` and `order-delay` were **charged**; `order-blackhole` was **not**. If `orders` retries all three timeouts, two customers pay twice. If it retries none, one order is never paid. **Neither "always retry" nor "never retry" is correct.** The only fix is to make the retry safe: an idempotency key, so a second `PAY order-delay` is recognised and not charged again. That's [Retries and idempotency](retries-and-idempotency.md).
@@ -379,8 +379,8 @@ Read it slowly. It is the whole page in 20 lines.
 !!! tip "Keep the proxy for your own tests"
 
     This proxy is 100 lines and needs no root. Put a version of it in your integration tests between your service and
-    its dependencies, and test `blackhole`, `delay` and `dropreplies` explicitly. Most services have never seen
-    `dropreplies` before production does it to them.
+    its dependencies, and test `blackhole`, `delay` and `dropreplies` explicitly. Most services meet
+    `dropreplies` for the first time in production.
 
 Clean up: the script kills both processes. Check with `pgrep -a faulty`; it should print nothing.
 
@@ -447,4 +447,4 @@ Clean up: the script kills both processes. Check with `pgrep -a faulty`; it shou
 - Redundancy needs separate **failure domains**: node, zone, region, and above all software (staged rollouts).
 - The demo: `blackhole`, `delay` and `dropreplies` gave the **same** timeout, but two of the three payments happened.
 
-Next: if you can't trust the network, can you at least trust the clock? No. [Time and ordering](time-and-ordering.md).
+Next: the network is not reliable, and neither are clocks. [Time and ordering](time-and-ordering.md).

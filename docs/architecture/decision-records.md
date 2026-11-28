@@ -228,7 +228,7 @@ $ grep -c provenance mise.lock
 33
 ```
 
-Six tools, and for each downloaded one a checksum and URL for 11 platforms (Linux, macOS and Windows variants). The 33 `provenance` lines are the 11 platforms of `actionlint`, `golangci-lint` and `python`: for those, the lock also records that the release has GitHub artifact attestations, a signed statement of where the file was built. The Python package `zensical` is locked separately, in `.mise/locks/pipx-zensical/0.1.3/uv.lock`, with all 13 packages. [mise](../toolbox/mise.md#the-second-half-of-the-mystery-what-latest-means) shows the original bug (two Go versions in one folder) and the fresh locked install; [Reproducible builds](../delivery/reproducible-builds.md) explains why the lock matters for the bytes you ship.
+Six tools, and for each downloaded one a checksum and URL for 11 platforms (Linux, macOS and Windows variants). The 33 `provenance` lines are the 11 platforms of `actionlint`, `golangci-lint` and `python`: for those, the lock also records that the release has GitHub artifact attestations, a signed statement of where the file was built. The Python package `zensical` is locked separately, in `.mise/locks/pipx-zensical/0.1.3/uv.lock`, with all 13 packages. [mise](../toolbox/mise.md#what-latest-means) shows the original bug (two Go versions in one folder) and the fresh locked install; [Reproducible builds](../delivery/reproducible-builds.md) explains why the lock matters for the bytes you ship.
 
 The commit message is good. It has the problem and the fix. What it does not have: the options that lost, the cost, and how we check that the decision holds. That is the ADR's job. Here it is, in MADR format:
 

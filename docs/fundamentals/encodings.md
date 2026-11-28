@@ -6,11 +6,11 @@ A customer signs up with the name `José`. Your API checks "name must be at most
 
 Both bugs come from one fact: **text is not characters. Text is bytes, plus a rule (an encoding) for turning bytes into characters.**
 
-## The idea: a codebook
+## The idea: a mapping from numbers to characters
 
-An **encoding** is a codebook. It says "this number means this character". Writer and reader must use the same codebook. If they don't, you get garbage like `JosÃ©`. This garbage even has a name: _mojibake_.
+An **encoding** is a mapping between numbers and characters. It says "this number means this character". Writer and reader must use the same mapping. If they don't, you get broken text like `JosÃ©`. Text broken this way has a name: _mojibake_.
 
-## ASCII: the old American codebook
+## ASCII: the original 7-bit standard
 
 ASCII (1963) uses 7 bits, so it has 128 codes:
 
@@ -22,16 +22,16 @@ ASCII (1963) uses 7 bits, so it has 128 codes:
 | 65–90  | `A`–`Z`                                    |
 | 97–122 | `a`–`z`                                    |
 
-Two nice tricks are built in:
+Two useful properties are built in:
 
 - `'a' - 'A'` = 32. Upper and lower case differ by **one bit** (`0x20`).
 - `'7' - '0'` = 7. That is how you turn a digit character into its number.
 
-The problem: ASCII has no `é`, no `ß`, no `中`, no `👋`. Many countries made their own 8-bit codebooks, all different. Files moved between countries became garbage.
+The problem: ASCII has no `é`, no `ß`, no `中`, no `👋`. Many countries made their own 8-bit encodings, all different. Files moved between countries became unreadable.
 
 ## Unicode: one list for every character
 
-**Unicode** fixes this with one giant list. Every character in every language gets a unique number called a **code point**. We write it as `U+` plus hex:
+**Unicode** fixes this with one large list. Every character in every language gets a unique number called a **code point**. We write it as `U+` plus hex:
 
 | Character | Code point |
 | --------- | ---------- |
@@ -50,7 +50,7 @@ Code points go up to U+10FFFF, so there is room for about 1.1 million characters
 
 ## UTF-8: the encoding that won
 
-You could store every code point in 4 bytes (that is UTF-32). Simple, but English text becomes 4 times bigger. **UTF-8** is smarter. It uses 1 to 4 bytes, depending on the code point:
+You could store every code point in 4 bytes (that is UTF-32). Simple, but English text becomes 4 times bigger. **UTF-8** uses less space. It uses 1 to 4 bytes, depending on the code point:
 
 | Code point range   | Bytes | Bit pattern                           |
 | ------------------ | ----- | ------------------------------------- |
@@ -59,13 +59,13 @@ You could store every code point in 4 bytes (that is UTF-32). Simple, but Englis
 | U+0800 – U+FFFF    | 3     | `1110xxxx 10xxxxxx 10xxxxxx`          |
 | U+10000 – U+10FFFF | 4     | `11110xxx 10xxxxxx 10xxxxxx 10xxxxxx` |
 
-The `x` bits hold the code point. Look how clever this design is:
+The `x` bits hold the code point. This design has three useful properties:
 
 - **ASCII is valid UTF-8.** Every old ASCII file is already UTF-8. That is why UTF-8 won the web.
 - **You always know where you are.** A byte starting with `10` is a "continuation" byte. Any other byte starts a new character. If you jump into the middle of a text, you can find the next character start.
 - **No zero bytes** inside multi-byte characters, so old C code that uses `0` as "end of string" still works.
 
-Let's encode `é` (U+00E9) by hand:
+Here is `é` (U+00E9) encoded by hand:
 
 ```text
 U+00E9       = 000 1110 1001  (11 bits needed → 2-byte form)
@@ -74,7 +74,7 @@ fill in bits   11000011 10101001
 hex            C3       A9
 ```
 
-So `é` is the two bytes `C3 A9`. Now you can explain the mojibake `Ã©`: a program read `C3 A9` with the old Latin-1 codebook, where `C3` is `Ã` and `A9` is `©`.
+So `é` is the two bytes `C3 A9`. Now you can explain the mojibake `Ã©`: a program read `C3 A9` with the old Latin-1 encoding, where `C3` is `Ã` and `A9` is `©`.
 
 ## Strings in Go: bytes, runes and characters
 
@@ -123,7 +123,7 @@ Output:
 é
 ```
 
-Read this output slowly. It shows four important rules:
+This output shows four important rules:
 
 1. `len` counts **bytes**, not characters.
 2. `for range` over a string walks **runes** (code points). Look at the index: it jumps from 1 to 3, because `é` uses bytes 1 and 2.
@@ -212,7 +212,7 @@ In Go: `encoding/hex`, `encoding/base64` (use `URLEncoding` or `RawURLEncoding` 
 ??? question "3. You see `Ã©` in your database. What happened?"
 
     UTF-8 bytes (`C3 A9` for `é`) were decoded as Latin-1 / Windows-1252 somewhere.
-    Find the place where the wrong codebook is used (often a DB connection or HTTP header setting).
+    Find the place where the wrong encoding is used (often a DB connection or HTTP header setting).
 
 ??? question "4. You send a `uint32` over TCP from an x86 server to an ARM device. Do you need to think about byte order?"
 
@@ -221,7 +221,7 @@ In Go: `encoding/hex`, `encoding/base64` (use `URLEncoding` or `RawURLEncoding` 
 
 ## Recap
 
-- An encoding is a codebook from numbers to characters. Writer and reader must agree.
+- An encoding is a mapping from numbers to characters. Writer and reader must agree.
 - Unicode gives each character a code point. UTF-8 stores code points in 1–4 bytes.
 - In Go: `string` = bytes, `rune` = code point, `len` = bytes, `range` = runes.
 - Endianness is byte order for multi-byte numbers. It matters on the wire, not in memory.

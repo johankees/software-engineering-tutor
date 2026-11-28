@@ -12,14 +12,12 @@ In production, your client almost never talks to your server directly. Something
 
 Each of these is a proxy doing exactly what it was configured to do. This page builds a load balancer in Go, puts it in front of two `ordersd` instances, and reproduces every ticket above for real.
 
-## The idea: the switchboard and the mail room
+## The idea: forward bytes, or read requests
 
-Two ways to stand in the middle of a conversation:
+There are two ways to sit between a client and a server:
 
-- **The switchboard operator (layer 4).** A call comes in. The operator picks a free line, connects the two wires, and stops listening. Fast, cheap, works for any language. But the operator has no idea what is said. A caller who stays on the line for an hour stays on **that** line for an hour.
-- **The mail room (layer 7).** Every letter is opened, read, and sent to the right desk. The mail room can send each letter to a different desk, add a note ("received from: front door"), refuse letters, retry a lost one. But it must understand the language, and reading every letter costs time.
-
-"Layer 4" and "layer 7" are the transport layer (TCP, UDP) and the application layer (HTTP) of the OSI model; see [Layers and packets](layers-and-packets.md).
+- **Layer 4 (L4): forward bytes.** When a connection comes in, the balancer picks a backend, connects the two, and copies bytes in both directions. It does not read the content. This is fast and cheap, and it works for any protocol. But the balancer decides only once, per connection. A client that keeps its connection open for an hour stays on **that** backend for an hour.
+- **Layer 7 (L7): read requests.** The proxy reads each request, picks a backend for that request, and forwards it. Because it understands the protocol, it can send each request to a different backend, add headers (for example the original client address), reject requests, and retry failed ones. But it must parse the protocol, and parsing every request costs time.
 
 ## Under the hood: L4 vs L7
 
@@ -110,7 +108,7 @@ backend=fast remote=127.0.0.1:45095
 backend=slow remote=127.0.0.1:45767
 ```
 
-L4: all three requests went to `slow`, because they shared a connection. L7: they alternate. This is the gRPC ticket. gRPC uses HTTP/2, which sends **everything** over one long-lived connection (see [HTTP/2](http.md#http2-binary-frames-on-one-connection)). Behind an L4 balancer (a plain Kubernetes `Service`, for example), each client is glued to one backend for hours. Ten backends, a few clients, one hot pod. You need an L7 balancer that understands HTTP/2 streams, or client-side balancing.
+L4: all three requests went to `slow`, because they shared a connection. L7: they alternate. This is the gRPC ticket. gRPC uses HTTP/2, which sends **everything** over one long-lived connection (see [HTTP/2](http.md#http2-binary-frames-on-one-connection)). Behind an L4 balancer (a plain Kubernetes `Service`, for example), each client stays on one backend for hours. Ten backends, a few clients, one hot pod. You need an L7 balancer that understands HTTP/2 streams, or client-side balancing.
 
 And what does the backend see? One request through each, with `curl` sending from the address `127.0.0.5`:
 
@@ -495,7 +493,7 @@ The rules:
 1. **The edge proxy never trusts incoming `X-Forwarded-For`.** It replaces the header with the connecting address.
 2. **Inner proxies append**, because their peer is a proxy you control.
 3. **The application reads from the right** and skips a configured list of its own proxies. Make that list configuration, and make it as tight as possible.
-4. **The backend must only be reachable through the proxy.** If an attacker can reach the backend directly, they write the whole header and every rule above is moot. Use a firewall or a network policy.
+4. **The backend must only be reachable through the proxy.** If an attacker can reach the backend directly, they write the whole header and every rule above is useless. Use a firewall or a network policy.
 
 ## Timeouts at every hop
 
@@ -510,11 +508,11 @@ flowchart LR
 Two rules, one for each kind of timeout:
 
 1. **Request timeouts shrink as you go inward.** The client waits longer than the proxy, the proxy longer than the backend's own budget. Then the **innermost** layer gives up first, cleanly, with a real error, and the outer layers see that error. The other way round, the client times out while the backend still works on a request nobody is waiting for, and every layer logs a different error for it. (Go's `ReverseProxy` turns a client that went away into a cancelled backend request, because the outgoing request carries `r.Context()`.)
-2. **On each connection, the client side must close idle connections before the server side does.** The side that **sends** requests on a connection must have the **shorter** idle timeout. Ignore this and you get the first ticket. Let's reproduce it.
+2. **On each connection, the client side must close idle connections before the server side does.** The side that **sends** requests on a connection must have the **shorter** idle timeout. Ignoring this causes the first ticket. The next sections reproduce it.
 
 ### The idle-timeout mismatch
 
-Picture the connection between a client and the proxy, idle in the client's pool. The proxy's `IdleTimeout` is 1 second. The client's `IdleConnTimeout` is 90 seconds, so the client thinks the connection is fine. At about 1 second:
+Take the connection between a client and the proxy, idle in the client's pool. The proxy's `IdleTimeout` is 1 second. The client's `IdleConnTimeout` is 90 seconds, so the client thinks the connection is fine. At about 1 second:
 
 ```mermaid
 sequenceDiagram
@@ -543,7 +541,7 @@ $ ./load -url http://127.0.0.1:19120/v1/orders -method POST -body "$B" -c 20 -d 
      3  error: Post "http://127.0.0.1:19120/v1/orders": read tcp 127.0.0.1:*->127.0.0.1:19120: read: connection reset by peer
 ```
 
-11 failures in 200 requests. Both error messages from the ticket. (`load` replaces the client port numbers with `*` so that equal errors are counted together.) An earlier run, before `load` did that, swept the pause around the deadline and shows how narrow the race is, and a third flavour of the same error:
+11 failures in 200 requests. Both error messages from the ticket. (`load` replaces the client port numbers with `*` so that equal errors are counted together.) An earlier run, before `load` did that, swept the pause around the deadline and shows how narrow the race is, and a third form of the same error:
 
 ```console
 $ for p in 990ms 1000ms 1010ms; do echo "== pause $p"; ./load -url http://127.0.0.1:19120/v1/orders -method POST -body "$B" -c 20 -d 10s -pause $p; done
@@ -701,9 +699,9 @@ func main() {
 
 The same race happens on **both** connections: client to load balancer, and load balancer to backend. The most common production case is the second one: the load balancer keeps idle connections to your backend **longer** than your backend keeps them open. Then the load balancer gets the reset and turns it into a `502` for the client.
 
-- **Backend `IdleTimeout` > the load balancer's idle timeout** for its backend connections. Find the balancer's value in its documentation. AWS's Application Load Balancer, for example, has a 60 second idle timeout by default, which makes `ordersd`'s `IdleTimeout: 60s` a coin toss; 75 or 120 seconds is safe.
+- **Backend `IdleTimeout` > the load balancer's idle timeout** for its backend connections. Find the balancer's value in its documentation. AWS's Application Load Balancer, for example, has a 60 second idle timeout by default, which makes `ordersd`'s `IdleTimeout: 60s` unsafe: with equal timeouts, either side may close first. 75 or 120 seconds is safe.
 - **Client `IdleConnTimeout` < the server's idle timeout** for every client you own, including the `http.Transport` inside your proxy.
-- **Make retries safe** so that the remaining races (there is always a deploy, a crash, a network blip) are harmless. Next sections.
+- **Make retries safe** so that the remaining races (there is always a deploy, a crash, a short network failure) are harmless. Next sections.
 
 ## Connection draining during deploys
 
@@ -752,25 +750,25 @@ The `orderctl list` surprise has a tempting fix: **sticky sessions** (session af
 It hides the problem instead of fixing it:
 
 - **The state still dies with the instance.** A deploy, a crash or a scale-down, and every user glued to that instance loses their data.
-- **Load is uneven.** One heavy client, or many clients behind one corporate NAT (one IP!), make one backend hot. Least connections can't help: the choice is already made.
+- **Load is uneven.** One heavy client, or many clients behind one corporate NAT (one IP), make one backend hot. Least connections can't help: the choice is already made.
 - **Draining takes forever**, because sticky clients keep coming back to the old instance.
 
 Use stickiness as an **optimisation** (a warm cache on the backend that served you last time), never for **correctness**. For correctness, the state goes into a shared store. When you do need affinity, **consistent hashing** on a meaningful key (user ID, tenant) is better than cookies: it survives proxy restarts and moves only a small part of the keys when a backend is added.
 
 ## Retries and idempotency
 
-Proxies, clients and libraries all love to retry. Retries turn a short glitch (the idle race, a deploy, one dropped connection) into a slow success instead of an error. They also have two dangers:
+Proxies, clients and libraries often retry. Retries turn a short glitch (the idle race, a deploy, one dropped connection) into a slow success instead of an error. They also have two dangers:
 
 1. **Doubling side effects.** A `POST` that timed out may have succeeded. Retrying it creates a second order. Only retry what is **idempotent** (doing it twice equals doing it once): `GET`, `PUT` of a full resource, `DELETE`, or a `POST` that carries an **idempotency key** the server stores and checks.
 2. **Retry storms.** A backend is slow because it is overloaded. Every layer retries 3 times: client, proxy, sidecar. One request becomes 27, exactly when the backend can least afford it. Retry at **one** layer, with exponential backoff and jitter, and a **retry budget** (for example: retries may add at most 10% to the traffic).
 
 What Go does for you, as we saw: `http.Transport` retries **once**, only on a **reused** connection that failed before the response started, and only for replayable requests. `httputil.ReverseProxy` itself does not retry at all; its `ErrorHandler` gets the error, and you decide. That is a sensible default. If you add retries to a proxy, retry only on errors where the request clearly never reached the backend (a refused dial, a reset before any byte was written), and only for idempotent requests.
 
-The full story (idempotency keys, at-least-once delivery, exactly-once myths) is in [Distributed systems](../distributed-systems/index.md).
+The full story (idempotency keys, at-least-once delivery, exactly-once claims) is in [Distributed systems](../distributed-systems/index.md).
 
 ## Traps
 
-- **Backends with state in memory behind a balancer.** Interchangeable backends are the whole assumption. Put state in a shared store; don't paper over it with sticky sessions.
+- **Backends with state in memory behind a balancer.** Interchangeable backends are the whole assumption. Put state in a shared store; don't hide the problem with sticky sessions.
 - **Trusting the left-most `X-Forwarded-For`.** Anyone can write it. Replace at the edge, append inside, read from the right with a list of trusted proxies.
 - **Using `ReverseProxy.Director`.** Deprecated; keeps the client's `X-Forwarded-*` and lets clients delete your headers via `Connection`. Use `Rewrite`.
 - **Backend idle timeout ≤ the load balancer's idle timeout.** Random `502`s and resets at quiet times. The side that sends requests must give up idle connections first.
@@ -778,7 +776,7 @@ The full story (idempotency keys, at-least-once delivery, exactly-once myths) is
 - **Timeouts that grow inward.** The client gives up first and the backend keeps working for nobody. Inner layers get the shorter budgets.
 - **Retries at every layer.** Multiplied load during an incident. One layer, with backoff, jitter and a budget, and only for idempotent requests.
 - **L4 balancing for HTTP/2 or gRPC.** One connection carries everything, so one backend gets it all. Use L7, or client-side balancing.
-- **Health checks that check shared dependencies, or go through another proxy.** A database blip or one proxy restart marks everything unhealthy.
+- **Health checks that check shared dependencies, or go through another proxy.** A short database outage or one proxy restart marks everything unhealthy.
 - **Leaking backend details.** Headers like our `X-Backend`, or the default `502` page of some proxies, tell attackers your internal layout.
 
 ## Check yourself
@@ -786,7 +784,7 @@ The full story (idempotency keys, at-least-once delivery, exactly-once myths) is
 ??? question "1. Behind an L4 balancer with 4 backends, a service gets traffic from 3 gRPC clients. Two backends are busy, two are idle. Why?"
 
     gRPC uses HTTP/2, which sends all requests of a client over one long-lived TCP connection. An L4
-    balancer picks a backend per connection, so each client is glued to one backend: three clients,
+    balancer picks a backend per connection, so each client is tied to one backend: three clients,
     at most three busy backends, here two (two clients landed on the same one). Use an L7 balancer that
     balances HTTP/2 streams, or client-side balancing.
 

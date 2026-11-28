@@ -2,7 +2,7 @@
 
 ## Why care?
 
-Four review comments that all came from this page's topic:
+These four review comments are all about authentication:
 
 - "The API accepts any JWT whose signature checks out. Signed by **whom**, for **which** service?"
 - "We store the access token in `localStorage`. One XSS bug, and every token on the page is gone."
@@ -13,27 +13,27 @@ Authentication answers one question: **who is making this request?** It sounds s
 
 On this page you run a real OpenID Connect provider (Dex) in Docker, walk an authorization-code-with-PKCE login using only `curl`, take a JWT apart, and break a naive JWT verifier in Go in two different ways. Then you fix it.
 
-## The idea: a hotel key card
+## The idea: log in once, then show a token
 
-You arrive at a hotel.
+Authentication has two steps:
 
-- At the **front desk** you show your passport once. The desk checks it carefully. That is the **login**: password, passkey, or a corporate identity provider.
-- The desk gives you a **key card**. The card does not contain your passport. It says "room 412, until Friday noon", and the lock can check that the hotel made it. That is a **token** (or a **session**).
-- Every **door** checks the card, not your passport. Doors are fast, and they never see your passport. That is your **API**, checking the token on every request.
-- The card **expires**. If you lose it, the desk can cancel it. Short life and revocation limit the damage of a stolen card.
+- The **login** happens once. The user proves who they are to an **identity provider**, with a password, a passkey, or a corporate login. The identity provider checks this carefully.
+- The identity provider then gives the client a **token** (or a **session**). The token does not contain the password. It says who the user is and until when it is valid, and the API can check that the identity provider issued it.
+- On **every request**, your **API** checks the token, not the password. This check is fast, and the API never sees the password.
+- The token **expires**, and the identity provider can revoke it. A short lifetime and revocation limit the damage of a stolen token.
 
-There are two kinds of card:
+There are two kinds of token:
 
-- A **reference** card: just a number. The door asks the desk "is 7731 valid?" every time. That is a **session ID** (or an opaque token). Easy to cancel, but every check needs the desk.
-- A **self-contained** card: it carries "room 412, until Friday" plus the hotel's stamp. The door checks the stamp itself. That is a **JWT**. Fast, no desk needed, but hard to cancel before it expires.
+- A **reference** token is only a random ID. The API asks the identity provider or the session store "is this ID valid?" on every request. That is a **session ID** (or an opaque token). It is easy to revoke, but every check needs a lookup.
+- A **self-contained** token carries the user, the expiry, and a signature from the identity provider. The API checks the signature itself. That is a **JWT**. It is fast and needs no lookup, but it is hard to revoke before it expires.
 
 ```mermaid
 flowchart LR
-    U[User] -->|1. passport: password, passkey| IDP[Front desk: identity provider]
-    IDP -->|2. key card: token| U
-    U -->|3. request + card| API[Door: ordersd]
-    API -->|4a. reference card: ask the desk| IDP
-    API -.->|4b. self-contained card: check the stamp with the desk's public key| API
+    U[User] -->|1. credentials: password, passkey| IDP[Identity provider]
+    IDP -->|2. token| U
+    U -->|3. request + token| API[ordersd]
+    API -->|4a. reference token: look it up| IDP
+    API -.->|4b. self-contained token: check the signature with the public key| API
 ```
 
 Three words you will see everywhere:
@@ -114,7 +114,7 @@ Set-Cookie: session=user=alicerole=admin | valid: http: invalid byte ';' in Cook
 | Attribute             | What it stops                                                                                                 |
 | --------------------- | ------------------------------------------------------------------------------------------------------------- |
 | `HttpOnly`            | `document.cookie` cannot read it, so an XSS bug cannot copy the session out                                   |
-| `Secure`              | Never sent over plain HTTP, so nobody on the café Wi-Fi sees it                                               |
+| `Secure`              | Never sent over plain HTTP, so nobody on a shared network can read it                                         |
 | `SameSite=Lax`        | Not sent on cross-site subrequests and POSTs. Main CSRF defence. `Strict` is stricter; `None` is off          |
 | `__Host-` name prefix | The browser rejects the cookie unless it is `Secure`, `Path=/` and has no `Domain`; subdomains can't plant it |
 
@@ -142,7 +142,7 @@ There used to be many flows. Today two cover almost everything (the others are d
 - **Authorization code + PKCE**, when a **human** logs in (web, mobile, CLI). The browser goes to the identity provider, the user logs in **there**, and the browser comes back with a one-time **code**. The client swaps the code for tokens.
 - **Client credentials**, when a **service** calls a service and no human is involved: `billing-job` sends its own client ID and secret (or better, a signed assertion) and gets a token for itself.
 
-Dead flows: **implicit** (tokens in the URL fragment, visible to the browser history and any script) and **resource owner password** (the client sees the user's password, which is the thing OAuth was invented to avoid).
+Deprecated flows: **implicit** (tokens in the URL fragment, visible to the browser history and any script) and **resource owner password** (the client sees the user's password, which is the thing OAuth was invented to avoid).
 
 ### PKCE: proof that you started the login
 
@@ -272,7 +272,7 @@ $ curl -s http://127.0.0.1:5556/dex/.well-known/openid-configuration | jq .
 (The `claims_supported` list at the end is cut.) What to read in it:
 
 - `issuer` must match, **character for character**, the `iss` in every token, and the URL you configured.
-- `id_token_signing_alg_values_supported: ["RS256"]`. This issuer signs with RS256 only. So your verifier should accept RS256 only. Hold that thought.
+- `id_token_signing_alg_values_supported: ["RS256"]`. This issuer signs with RS256 only. So your verifier should accept RS256 only. The attack later on this page depends on this.
 - `code_challenge_methods_supported` includes `plain`. Never use it: `plain` sends the verifier itself as the challenge, which gives a thief everything. Use `S256`.
 - `grant_types_supported` does not list `client_credentials`, even though the config asked for it. Discovery tells you what the server **really** offers; trust it over your config file. <!-- TODO(real-output): client credentials token from Dex; check Dex v2.44 docs for how to enable the grant. -->
 
@@ -377,7 +377,7 @@ To **verify** a JWT you must check, in this order:
 3. The signature is valid over the exact `header.payload` bytes.
 4. `iss` is the expected issuer, `aud` contains **your** service, `exp` is in the future (`nbf`, if present, is in the past), with a small leeway for clock skew.
 
-Most JWT disasters skip step 1 or step 4.
+Most JWT vulnerabilities come from skipping step 1 or step 4.
 
 ## Try it: break a naive JWT verifier
 
@@ -663,7 +663,7 @@ The rule is the same for humans and services: **short-lived credentials, minted 
 - **Authentication** proves **who**. A login produces a credential (session cookie or token) that every request carries. Bearer means: whoever holds it is you.
 - **Sessions** keep state on the server and revoke instantly. **JWTs** carry their state and are checked offline, so keep them short-lived.
 - Session cookies: random ID from `crypto/rand`, `HttpOnly`, `Secure`, `SameSite=Lax`, `__Host-` prefix. Never data in the cookie.
-- **OAuth 2** delegates access: **authorization code + PKCE** for humans, **client credentials** for services. Implicit and password flows are dead.
+- **OAuth 2** delegates access: **authorization code + PKCE** for humans, **client credentials** for services. Implicit and password flows are deprecated.
 - **OIDC** adds the **ID token**, **discovery** (`/.well-known/openid-configuration`) and **JWKS** (public keys by `kid`). Discovery's `issuer` must match exactly.
 - A JWT is `header.payload.signature`, readable by anyone. Verify with **your** algorithm, **your** keys by `kid`, then `iss`, `aud`, `exp`. The naive verifier accepted `alg=none`, an HS256 forgery keyed with the public key, a wrong audience and an expired token.
 - **Passkeys** remove the shared secret and stop phishing by signing the origin.

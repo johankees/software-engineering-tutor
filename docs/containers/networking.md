@@ -9,17 +9,15 @@ Four tickets that all live on this page:
 - "The logs show every client as `172.17.0.1`. Where are the real client IPs?"
 - "We closed port 8080 in the firewall. It is still open from the internet."
 
-In [Namespaces and cgroups](../linux/namespaces-and-cgroups.md#network-namespaces-one-cable-unplugged) you saw that a new network namespace has only a loopback interface, and it is down. In [Layers and packets](../networking/layers-and-packets.md#try-it-watch-arp-happen) you joined two namespaces with a veth pair, by hand. Docker does exactly that, plus three more things: a **bridge** to connect many containers, **NAT** rules to reach them from outside, and a small **DNS server** so they find each other by name. On this page you find every one of those pieces on a real machine.
+In [Namespaces and cgroups](../linux/namespaces-and-cgroups.md#network-namespaces-a-separate-network-stack) you saw that a new network namespace has only a loopback interface, and it is down. In [Layers and packets](../networking/layers-and-packets.md#try-it-watch-arp-happen) you joined two namespaces with a veth pair, by hand. Docker does exactly that, plus three more things: a **bridge** to connect many containers, **NAT** rules to reach them from outside, and a small **DNS server** so they find each other by name. On this page you find every one of those pieces on a real machine.
 
-## The idea: flats, a hallway switch and a doorman
+## The idea: a bridge, NAT and a DNS server
 
-Back to the apartment building.
-
-- Each container is a **flat** with its own phone line (a network namespace with its own `eth0`).
-- The phone cable from each flat runs to a **switch in the hallway** (the bridge, `docker0`). All flats on one switch can call each other directly.
-- The building has **one** street address (the host's IP). To call out, a flat's call goes through the building's reception, which puts the building's number on it (masquerading, a kind of NAT).
-- To call **in**, a visitor asks reception for "port 8081". A **doorman** walks them to flat 5, port 8080 (port publishing: a NAT rule or a proxy process).
-- A **phone book** in each flat knows the names of the neighbours on the same switch (the embedded DNS server at `127.0.0.11`).
+- Each container has its own **network namespace**, with its own `eth0` interface.
+- A **veth pair** (a virtual cable with two ends) connects each container's `eth0` to a **bridge** on the host (`docker0`). A bridge is a software switch: all containers on one bridge can reach each other directly.
+- The host has **one** address on the network. Outgoing traffic from a container leaves with the host's address as its source (**masquerading**, a kind of NAT, network address translation).
+- Incoming traffic to a published host port, for example 8081, is sent on to the container's port, for example 8080 (**port publishing**: a NAT rule or a proxy process).
+- On user-defined networks, a **DNS server** at `127.0.0.11` resolves the names of other containers on the same network.
 
 ```mermaid
 flowchart LR
@@ -87,12 +85,12 @@ $ readlink /sys/class/net/veth976bb0d/master
 ../docker0
 ```
 
-Read it as a cable:
+Read it as the two ends of one cable:
 
 - In the container: `eth0` is ifindex 2, peer 248.
 - On the host: `veth976bb0d` is ifindex 248, peer 2, and its **master** is `docker0`. It is plugged into the switch.
 
-Careful: ifindex numbers are only unique **per namespace**. On a busy host, many veths show `@if2`, because every container's `eth0` happens to be number 2 in its own namespace. So always search from the container side (its `iflink`) to the host. That is the only direction that gives one answer.
+Note: ifindex numbers are only unique **per namespace**. On a busy host, many veths show `@if2`, because every container's `eth0` happens to be number 2 in its own namespace. So always search from the container side (its `iflink`) to the host. That is the only direction that gives one answer.
 
 The two ends really are in different namespaces. Compare the namespace inodes, as in [the namespaces page](../linux/namespaces-and-cgroups.md#the-eight-namespaces):
 
@@ -207,7 +205,7 @@ One `docker-proxy` per address family. `-use-listen-fd` means `dockerd` opened t
 
 ### Which one carried my request?
 
-`ordersd` doesn't log client addresses, so here is a tiny server that answers with its own TCP connection table. BusyBox `nc -e` runs a script for each connection, and `netstat` inside shows who is on the other end:
+`ordersd` doesn't log client addresses, so here is a small server that answers with its own TCP connection table. BusyBox `nc -e` runs a script for each connection, and `netstat` inside shows who is on the other end:
 
 ```console
 $ docker run -d --name tutor-net-echo -p 8082:8080 alpine:3.22 sh -c '
@@ -377,11 +375,11 @@ $ docker run --rm --network tutor-net --cap-add NET_ADMIN alpine:3.22 sh -c 'apk
 -A DOCKER_POSTROUTING -s 127.0.0.11/32 -p udp -m udp --sport 58470 -j SNAT --to-source :53
 ```
 
-(Another container than the `netstat` one, so other random ports.) Queries to `127.0.0.11:53` are rewritten to the real port, and replies get source port 53 back, so the resolver in your program never notices. The same DNAT idea as `-p`, in miniature.
+(Another container than the `netstat` one, so other random ports.) Queries to `127.0.0.11:53` are rewritten to the real port, and replies get source port 53 back, so the resolver in your program never notices. This is the same DNAT idea as `-p`, on a smaller scale.
 
 The consequence: DNS inside the container depends on `dockerd`. If you edit `/etc/resolv.conf` in the image, or mount your own, you lose container names.
 
-### Networks are walls
+### Networks isolate containers
 
 Containers on different networks can't talk, even by IP address. The host can reach both bridges:
 
@@ -411,7 +409,7 @@ default via 172.17.0.1 dev eth0
 {"status":"ok"}
 ```
 
-This is how Docker Compose works: one network per project, every service on it, service names in DNS. A "frontend" and "backend" network with only the API on both is a cheap wall around your database.
+This is how Docker Compose works: one network per project, every service on it, service names in DNS. A "frontend" and "backend" network with only the API on both is a simple way to isolate your database.
 
 ## Under the hood: `none` and `host`
 

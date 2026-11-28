@@ -2,7 +2,7 @@
 
 ## Why care?
 
-Four tickets about "what comes next":
+Four typical tickets about which item comes next:
 
 - "The dashboard shows the 10 biggest orders of the day. Each refresh sorts a million orders, takes 120 ms and allocates 16 MB."
 - "Our in-memory job queue uses `q = q[1:]`. Memory keeps growing, though the queue is never longer than 1,000 items."
@@ -11,11 +11,11 @@ Four tickets about "what comes next":
 
 All four are about **ordering work without sorting everything**. A **heap** always knows the smallest (or biggest) item and nothing more, which is exactly what "top 10", "next deadline" and "most urgent job" need. A **queue** hands things out in arrival order. Both are inside the Go runtime: every `time.Timer` sits in a heap, and every runnable goroutine sits in a queue. This page shows both, in `container/heap` and in the runtime source.
 
-## The idea: the emergency room
+## The idea: only the smallest item is kept in place
 
-An emergency room doesn't treat patients in arrival order, and it doesn't keep a perfectly sorted list either. The nurse only needs to answer one question, fast: **who is the most urgent right now?** When a new patient arrives, they get compared with a few others and slot in roughly where they belong. When a doctor is free, the most urgent patient goes in, and the next most urgent moves up.
+Many tasks need only one answer, quickly: **which item is the most urgent right now?** They do not need arrival order, and they do not need a fully sorted list. A new item is compared with a few others and moves to roughly the right place. When the most urgent item is removed, the next most urgent one moves up.
 
-That is a **heap**: a tree with one rule, **every parent is smaller than (or equal to) its children**. That's all. Siblings are in no particular order. The smallest item is always at the top:
+A **heap** does this. It is a tree with one rule: **every parent is smaller than (or equal to) its children**. There is no other rule. Siblings are in no particular order. The smallest item is always at the top:
 
 ```mermaid
 flowchart TB
@@ -47,7 +47,7 @@ A heap is a **complete** binary tree: every level is full except maybe the last,
 - the children of index `i` are at `2*i+1` and `2*i+2`
 - the parent of index `i` is at `(i-1)/2`
 
-The tree above is the slice `[10:00 11:00 12:00 14:00 15:00 17:00]`. No node allocations, no pointer chasing: the cache-friendly lesson from [Trees](trees.md), built in.
+The tree above is the slice `[10:00 11:00 12:00 14:00 15:00 17:00]`. No node allocations, no pointer chasing: the cache lesson from [Trees](trees.md) applies directly.
 
 Two moves keep the rule true:
 
@@ -68,7 +68,7 @@ flowchart LR
 
 ### `container/heap`, line by line
 
-Go's `container/heap` is these two moves and nothing else. You bring the slice; it brings the algorithm. From `$GOROOT/src/container/heap/heap.go`:
+Go's `container/heap` is these two moves and nothing else. You provide the slice; the package provides the algorithm. From `$GOROOT/src/container/heap/heap.go`:
 
 ```go
 type Interface interface {
@@ -130,7 +130,7 @@ func down(h Interface, i0, n int) bool {
 }
 ```
 
-Read `Pop` closely: it swaps the root with the **last** element, sifts the new root down over the first `n` elements only, and **then** calls your `Pop`, which cuts the old root off the end. That's why your `Pop` is so simple.
+Read `Pop` closely: it swaps the root with the **last** element, sifts the new root down over the first `n` elements only, and **then** calls your `Pop`, which cuts the old root off the end. That is why your `Pop` is so simple.
 
 `Init` builds a heap from an unsorted slice in **O(n)**, not O(n log n):
 
@@ -154,7 +154,7 @@ It skips the second half (those are leaves, already valid heaps of one) and sift
 
 ## Try it in Go: the 10 biggest orders
 
-The dashboard wants the top 10 of a million orders by amount. The obvious way sorts everything:
+The dashboard wants the top 10 of a million orders by amount. The direct way sorts everything:
 
 ```go
 // TopKSort sorts a copy of all orders. O(n log n) time, O(n) memory.
@@ -165,7 +165,7 @@ func TopKSort(orders []Order, k int) []Order {
 }
 ```
 
-The heap way keeps only the best 10 seen so far, in a **min**-heap. The root is the **smallest of the top 10**: the one to throw out when something bigger comes along. It sounds backwards, but it's the trick:
+The heap way keeps only the best 10 seen so far, in a **min**-heap. The root is the **smallest of the top 10**: the one to remove when a bigger order arrives. A min-heap for the biggest items may look backwards, but it is the correct choice:
 
 ```go
 // Order is the part of an order this page needs.
@@ -228,7 +228,7 @@ BenchmarkTopK/heap-of-10-16       	    1368	    937162 ns/op	     344 B/op	     
 - **119 ms vs 0.94 ms: 126 times faster.** Sorting does about n × log2(n) ≈ 20 million comparisons. The heap does one comparison per order (`o.AmountCents > h[0].AmountCents`) and almost always stops there: a random order rarely beats the current top 10. Only the few that do pay log2(10) ≈ 3 more steps.
 - **16 MB vs 344 bytes.** The sort needs its own copy of all orders (1 million × 16 bytes). The heap holds 10.
 - **12 allocations** in the heap version: the slice, and one per `heap.Push`, because `Push(x any)` boxes each `Order` into an interface. A small price here. In a hot loop, keep the heap code but write it for your concrete type, as the runtime does below.
-- **It streams.** `TopKHeap` looks at each order once and keeps O(k) memory, so it works on a channel or a database cursor with a billion rows. Sorting can't.
+- **It streams.** `TopKHeap` looks at each order once and keeps O(k) memory, so it works on a channel or a database cursor with a billion rows. Sorting cannot.
 
 For a whole sorted result, sort. For "the first k of n" with k much smaller than n, use a heap.
 
@@ -304,13 +304,13 @@ ship ord-1 by 14:00
 ship ord-5 by 15:00
 ```
 
-- The **heap array** is the tree from the start of this page. Here it happens to come out sorted, but that is luck: the heap only promises that every parent is earlier than its children. Push the same deadlines in another order and the array changes.
+- The **heap array** is the tree from the start of this page. Here it happens to come out sorted, but that is chance: the heap only promises that every parent is earlier than its children. Push the same deadlines in another order and the array changes.
 - `ord-3` was the **last** element, a leaf. After its deadline changed to 09:30, `heap.Fix` sifted it up to the root in two swaps. No search: the `index` field said where it was.
 - `old[len(old)-1] = nil` in `Pop`: the backing array still has a slot pointing to the item. Clearing it lets the garbage collector free popped items.
 
 ## Under the hood: the Go runtime's timer heap
 
-Every `time.Sleep`, `time.After`, `time.AfterFunc`, `context.WithTimeout` and network deadline is a **timer**, and every timer waits in a heap. Not one global heap: **one per P**, the scheduler's processor ([G-M-P](../fundamentals/processes-and-threads.md#how-go-runs-goroutines-the-g-m-p-model)), so goroutines on different cores don't fight over one lock. From `$GOROOT/src/runtime/time.go`:
+Every `time.Sleep`, `time.After`, `time.AfterFunc`, `context.WithTimeout` and network deadline is a **timer**, and every timer waits in a heap. Not one global heap: **one per P**, the scheduler's processor ([G-M-P](../fundamentals/processes-and-threads.md#how-go-runs-goroutines-the-g-m-p-model)), so goroutines on different cores do not compete for one lock. From `$GOROOT/src/runtime/time.go`:
 
 ```go
 // A timers is a per-P set of timers.
@@ -338,7 +338,7 @@ type timerWhen struct {
 }
 ```
 
-The `when` is copied **next to** the pointer, so comparing two entries reads the slice only, never the timer structs. Then the surprise, a little further down:
+The `when` is copied **next to** the pointer, so comparing two entries reads the slice only, never the timer structs. A little further down is a less common choice:
 
 ```go
 const timerHeapN = 4
@@ -433,11 +433,11 @@ BenchmarkDHeap/d=8-16             	       6	 172135825 ns/op	       0 B/op	     
 ...
 ```
 
-(The same run as the top-k benchmark.) All three are within the noise of each other: about 180 ms for 2 million operations, 90 ns each. For this workload, the arity doesn't matter much; random pops are dominated by cache misses at the bottom of an 8 MB heap. The timer heap's workload is different: many more pushes than full pops (timers are mostly added and stopped), and push is where a shorter tree helps most. The honest lesson: the runtime authors chose 4 for their workload, and your workload needs its own benchmark.
+(The same run as the top-k benchmark.) All three are within the noise of each other: about 180 ms for 2 million operations, 90 ns each. For this workload, the arity (the number of children per node) does not matter much; random pops are dominated by cache misses at the bottom of an 8 MB heap. The timer heap's workload is different: many more pushes than full pops (timers are mostly added and stopped), and push is where a shorter tree helps most. The lesson: the runtime authors chose 4 for their workload, and your workload needs its own benchmark.
 
-### Stopped timers are zombies
+### Stopped timers stay in the heap
 
-What happens on `t.Stop()`? The timer may be in **another** P's heap, and removing from the middle of a heap needs that P's lock. So the runtime doesn't:
+On `t.Stop()`, the timer may be in **another** P's heap, and removing from the middle of a heap needs that P's lock. So the runtime does not remove it:
 
 ```go
 // stop stops the timer t. It may be on some other P, so we can't
@@ -445,9 +445,9 @@ What happens on `t.Stop()`? The timer may be in **another** P's heap, and removi
 // It will be removed in due course by the P whose heap it is on.
 ```
 
-The timer becomes a **zombie**: still in the heap, marked as dead, counted in `ts.zombies`. The owning P removes zombies when they reach the top of the heap (`cleanHead`), or sweeps the whole heap (`adjust`) when there are many. Stop is O(1); the cleanup is batched.
+The timer becomes a **zombie** (the runtime's term for a dead entry): still in the heap, marked as dead, counted in `ts.zombies`. The owning P removes zombies when they reach the top of the heap (`cleanHead`), or sweeps the whole heap (`adjust`) when there are many. Stop is O(1); the cleanup is batched.
 
-And a timer whose **channel** nobody waits on isn't in a heap at all. `needsAdd` decides:
+A timer whose **channel** nobody waits on is not in a heap at all. `needsAdd` decides:
 
 ```go
 	need := t.state&timerHeaped == 0 && t.when > 0 && (!t.isChan || t.blocked > 0)
@@ -500,7 +500,7 @@ PASS
 ok  	example.com/heaps	11.673s
 ```
 
-About 170-220 ns whatever the heap size. The new timer (30 minutes) is earlier than all the pending ones (1 hour), so it sifts all the way to the root: log4(1,000,000) ≈ 10 levels at most, each a cheap comparison of two `int64`s in the same slice. `Stop` just marks it. The 112 bytes are the `time.Timer` itself. A million timeouts are fine; the logarithm is on your side.
+About 170-220 ns whatever the heap size. The new timer (30 minutes) is earlier than all the pending ones (1 hour), so it sifts all the way to the root: log4(1,000,000) ≈ 10 levels at most, each a cheap comparison of two `int64`s in the same slice. `Stop` just marks it. The 112 bytes are the `time.Timer` itself. A million timeouts are fine, because the cost grows only with the logarithm of the heap size.
 
 ## Queues: first in, first out
 
@@ -538,13 +538,13 @@ PASS
 ok  	example.com/heaps	30.926s
 ```
 
-### The slice queue leaks forward
+### The slice queue keeps reallocating
 
-`q = q[1:]` looks free, and it's fast. But **45 B/op** with **0 allocs/op** is a warning sign: on average every operation allocates 45 bytes, in rare big chunks. Here's why. `q[1:]` moves the start of the slice forward in the **same** backing array; the slots before it can never be used again. `append` keeps writing at the end. When it reaches the capacity, it allocates a new, bigger array and copies the 1,000 live items. The queue "walks" through memory, reallocating again and again, though it never holds more than 1,001 items. (Growth is on [Big-O in practice](big-o.md).)
+`q = q[1:]` looks free, and it is fast. But **45 B/op** with **0 allocs/op** is a warning sign: on average every operation allocates 45 bytes, in rare big chunks. The reason: `q[1:]` moves the start of the slice forward in the **same** backing array; the slots before it can never be used again. `append` keeps writing at the end. When it reaches the capacity, it allocates a new, bigger array and copies the 1,000 live items. The queue "walks" through memory, reallocating again and again, though it never holds more than 1,001 items. (Growth is on [Big-O in practice](big-o.md).)
 
-Worse with pointers: the dead slots before `q[0]` still point to old jobs until the next reallocation, so the GC can't free them. That's the second ticket. Fine for a short-lived local; wrong for a long-running queue.
+It is worse with pointers: the dead slots before `q[0]` still point to old jobs until the next reallocation, so the GC cannot free them. This explains the second ticket. Fine for a short-lived local; wrong for a long-running queue.
 
-### A ring buffer: head and tail chase each other
+### A ring buffer: a fixed array that wraps around
 
 A **ring buffer** (circular buffer) is a fixed array with a head index and a size. Push writes after the last item, wrapping around to index 0 at the end; Pop reads at the head and moves it forward:
 
@@ -592,11 +592,11 @@ func (r *Ring[T]) Pop() (T, bool) {
 }
 ```
 
-12.5 ns, 0 bytes: the fastest, and its memory is fixed forever. A full ring makes you **decide** what happens: refuse (back-pressure), drop the oldest, or block. That decision is a feature, not a limitation.
+12.5 ns, 0 bytes: the fastest, and its memory is fixed forever. A full ring makes you **decide** what happens: refuse (back-pressure), drop the oldest, or block. Having to make that decision is useful: the queue cannot grow without limit.
 
 ### A buffered channel is a ring buffer with a lock
 
-`make(chan Order, 1000)` is exactly that: a ring buffer (`buf`, `sendx`, `recvx`, as on [Concurrency](../go/concurrency.md#under-the-hood-what-a-channel-is)), plus a lock and queues of waiting goroutines. Here is the send path in `$GOROOT/src/runtime/chan.go`, the wrap-around plainly visible:
+`make(chan Order, 1000)` is exactly that: a ring buffer (`buf`, `sendx`, `recvx`, as on [Concurrency](../go/concurrency.md#under-the-hood-what-a-channel-is)), plus a lock and queues of waiting goroutines. Here is the send path in `$GOROOT/src/runtime/chan.go`, with the wrap-around clearly visible:
 
 ```go
 	if c.qcount < c.dataqsiz {
@@ -616,12 +616,12 @@ func (r *Ring[T]) Pop() (T, bool) {
 	}
 ```
 
-40 ns instead of 12.5: you pay for the lock even with one goroutine. For a queue **between goroutines**, the channel is the right tool: it blocks when full or empty, which is back-pressure for free. For a queue inside one goroutine, a plain ring buffer is three times cheaper.
+40 ns instead of 12.5: you pay for the lock even with one goroutine. For a queue **between goroutines**, the channel is the right tool: it blocks when full or empty, which gives back-pressure without extra code. For a queue inside one goroutine, a plain ring buffer is three times cheaper.
 
 ### `container/list` and `container/ring`
 
 - **`container/list`** is a doubly linked list: 78 ns and **2 allocations** per push-and-pop (a list element, and the boxed `any` value). It is the slowest here. Use it only when you need to remove items from the **middle** in O(1), like the classic LRU cache.
-- **`container/ring`** is _not_ a ring buffer. It is a **circular linked list**: `ring.New(n)` makes n linked elements, each holding an `any`. It's handy for "keep the last n things", where overwriting the oldest is the point:
+- **`container/ring`** is _not_ a ring buffer. It is a **circular linked list**: `ring.New(n)` makes n linked elements, each holding an `any`. It is useful for "keep the last n things", where overwriting the oldest is the point:
 
 ```go
 // Command recent keeps the last 3 orders seen in a container/ring.
@@ -684,7 +684,7 @@ The fourth ticket: 1,000 runnable goroutines, 4 cores. They wait in **queues**, 
 ```
 
 - **`runq`** is a ring buffer, like `Ring[T]`, but with ever-growing `head` and `tail` counters and `% 256` on every access. "Accessed without lock": only the owning P adds, others may only **steal** with atomic operations.
-- **`runnext`** is a one-slot fast lane. When goroutine A sends on a channel and wakes B, B goes into `runnext` and runs next, with A's leftover time slice. A producer-consumer pair then ping-pongs without waiting behind 255 others.
+- **`runnext`** is a single priority slot. When goroutine A sends on a channel and wakes B, B goes into `runnext` and runs next, with A's leftover time slice. A producer and a consumer then take turns without waiting behind 255 others.
 
 `runqput` in `$GOROOT/src/runtime/proc.go` shows what happens when the ring is full:
 
@@ -704,7 +704,7 @@ retry:
 	goto retry
 ```
 
-`runqputslow` moves **half** of the local queue (128 goroutines) plus the new one to the **global run queue**, a linked list behind a lock. So no local queue ever holds more than 256, and an idle P can find work in the global queue. Idle Ps also **steal** half of another P's local queue. And so that two goroutines that keep waking each other can't hog a P forever, the scheduler looks at the global queue first every 61st time:
+`runqputslow` moves **half** of the local queue (128 goroutines) plus the new one to the **global run queue**, a linked list behind a lock. So no local queue ever holds more than 256, and an idle P can find work in the global queue. Idle Ps also **steal** half of another P's local queue. And so that two goroutines that keep waking each other cannot keep a P forever, the scheduler looks at the global queue first every 61st time:
 
 ```go
 	// Check the global runnable queue once in a while to ensure fairness.
@@ -713,7 +713,7 @@ retry:
 	if pp.schedtick%61 == 0 && !sched.runq.empty() {
 ```
 
-Watch it happen. This program starts 1,000 CPU-bound goroutines ("price" each order) from `main`:
+To see this, run a program that starts 1,000 CPU-bound goroutines ("price" each order) from `main`:
 
 ```go
 // Command busy starts 1,000 CPU-bound goroutines, one per order to
@@ -760,12 +760,12 @@ SCHED 1217ms: gomaxprocs=4 idleprocs=0 threads=5 spinningthreads=0 needspinning=
 priced 1000 orders in 1.418s
 ```
 
-- `runqueue=645` is the **global** queue; `[ 106 10 14 76 ]` are the four **local** rings. `main` ran on one P and created goroutines faster than they finished. Its ring filled at 256, spilled half to the global queue, filled again, spilled again: that's how 645 ended up in the global queue.
+- `runqueue=645` is the **global** queue; `[ 106 10 14 76 ]` are the four **local** rings. `main` ran on one P and created goroutines faster than they finished. Its ring filled at 256, spilled half to the global queue, filled again, spilled again: that is how 645 ended up in the global queue.
 - No local number is ever above 256. The rings are fixed size; the overflow goes global.
 - The other Ps took work from the global queue and by stealing: after 400 ms all four rings are busy and the counts even out. `schedticks` grow at the same rate on every P: fair sharing.
 - The total drains as goroutines finish, and none starves: the 61-tick rule keeps pulling from the global queue even while local queues are full.
 
-The page on [Concurrency](../go/concurrency.md) covers how to use goroutines well; this is the queue they stand in.
+The page on [Concurrency](../go/concurrency.md) covers how to use goroutines well; this section showed the queues they wait in.
 
 ## Traps
 
@@ -775,9 +775,9 @@ The page on [Concurrency](../go/concurrency.md) covers how to use goroutines wel
 - **Sorting for top-k.** O(n log n) time and O(n) memory, to use 10 items. A heap of k is O(n log k) and O(k), and it streams.
 - **Expecting a heap to be sorted.** Only index 0 is guaranteed. Iterating the slice gives heap order, not sorted order.
 - **`q = q[1:]` as a long-lived queue.** It reallocates forever and keeps popped pointers alive. Use a ring buffer or a channel.
-- **Forgetting to clear popped slots.** In `Pop`, set the old slot to the zero value, or the GC can't free what it points to.
-- **`container/list` as a default queue.** Two allocations per item and pointer chasing. It's for O(1) removal from the middle, not FIFO.
-- **`container/ring` as a bounded queue.** It's a circular linked list of `any`, with no head, tail or "full". Use a slice-based ring buffer.
+- **Forgetting to clear popped slots.** In `Pop`, set the old slot to the zero value, or the GC cannot free what it points to.
+- **`container/list` as a default queue.** Two allocations per item and pointer chasing. It is for O(1) removal from the middle, not FIFO.
+- **`container/ring` as a bounded queue.** It is a circular linked list of `any`, with no head, tail or "full". Use a slice-based ring buffer.
 
 ## Check yourself
 
@@ -826,6 +826,6 @@ The page on [Concurrency](../go/concurrency.md) covers how to use goroutines wel
 - **Top-k**: a min-heap of size k. 126× faster and 16 MB lighter than sorting a million orders, and it works on a stream.
 - The **runtime timer heap** is per-P, **4-ary**, works on `[]timerWhen` with no interface, and shifts instead of swapping. `Stop` leaves a zombie that is cleaned later. Channel timers are only in a heap while someone waits on them. A million timers barely change the cost of one more.
 - **Queues**: a **ring buffer** is the fastest and has fixed memory. A **buffered channel** is a ring buffer with a lock, right between goroutines. `q = q[1:]` reallocates forever. `container/list` is for removal from the middle; `container/ring` is a circular linked list, good for "last n".
-- The **scheduler** keeps a 256-slot ring per P, a `runnext` fast lane, and a global queue for overflow. It steals between Ps and checks the global queue every 61 ticks for fairness. `GODEBUG=schedtrace=200` shows the queue lengths.
+- The **scheduler** keeps a 256-slot ring per P, a `runnext` priority slot, and a global queue for overflow. It steals between Ps and checks the global queue every 61 ticks for fairness. `GODEBUG=schedtrace=200` shows the queue lengths.
 
 Next: when items are connected, not just ordered. [Graphs](graphs.md).

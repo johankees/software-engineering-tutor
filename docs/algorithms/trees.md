@@ -2,7 +2,7 @@
 
 ## Why care?
 
-Four tickets from teams that "just store things":
+Four typical tickets from teams that store data in memory:
 
 - "The in-memory order index was fast in the demo. In production, lookups take 8 µs and get slower every day."
 - "We sort 50,000 orders on every page view, just to show the 20 between two dates."
@@ -11,11 +11,11 @@ Four tickets from teams that "just store things":
 
 Every one of these is about **trees**. A tree keeps data **sorted** in a shape where a lookup touches only a few nodes, not all of them. You already use several every day: the B-tree behind every database index ([Indexes](../databases/indexes.md)), the radix trees inside HTTP routers, and the decision tree inside Go's own `http.ServeMux`. This page shows how they work, why the plain textbook tree breaks on real data, and how to see the difference with a benchmark.
 
-## The idea: the guessing game
+## The idea: discard half at each step
 
-You think of a number between 1 and 1,000. I guess 500. You say "higher". I guess 750. "Lower." 625... Each answer throws away **half** of what is left, so I need at most 10 guesses (2^10 = 1,024).
+To find a number between 1 and 1,000, compare it with 500. If it is bigger, compare it with 750; if smaller, with 250; and so on. Each comparison discards **half** of the remaining range, so at most 10 comparisons are needed (2^10 = 1,024).
 
-A **binary search tree** (BST) is that game, written down. Every node holds one key. Everything smaller lives in its **left** subtree, everything bigger in its **right** subtree. To find a key, start at the top (the **root**) and go left or right at every node:
+A **binary search tree** (BST) stores keys so that a lookup follows exactly these comparisons. Every node holds one key. Everything smaller lives in its **left** subtree, everything bigger in its **right** subtree. To find a key, start at the top (the **root**) and go left or right at every node:
 
 ```mermaid
 flowchart TB
@@ -27,9 +27,9 @@ flowchart TB
     N75 --> N88["order 88"]
 ```
 
-Looking for order 62: bigger than 50, go right; smaller than 75, go left; found. Three steps for seven orders. The number of steps is the **height** of the tree. If the tree is nicely **balanced**, the height is about log2(n): 20 steps for a million orders.
+Looking for order 62: bigger than 50, go right; smaller than 75, go left; found. Three steps for seven orders. The number of steps is the **height** of the tree. If the tree is **balanced** (both sides of every node have about the same height), the height is about log2(n): 20 steps for a million orders.
 
-The catch is that word "if". The shape of a plain BST depends on the **order you insert** the keys. And real data often arrives in the worst possible order.
+That condition matters. The shape of a plain BST depends on the **order you insert** the keys, and real data often arrives in the worst possible order.
 
 ## Under the hood: a binary search tree in Go
 
@@ -85,7 +85,7 @@ func get(n *node, key int64) (int64, bool) {
 }
 ```
 
-`Insert` walks down exactly like `Get`, and hangs the new node where the walk falls off the tree. `p` is a pointer to the pointer it will change (the root, or some node's `left` or `right`), so there is no special case for an empty tree. (`height` walks the tree with an explicit stack and returns the longest path; it is in the scratch module but not interesting.)
+`Insert` walks down exactly like `Get`, and attaches the new node where the walk reaches a nil child. `p` is a pointer to the pointer it will change (the root, or some node's `left` or `right`), so there is no special case for an empty tree. (`height` walks the tree with an explicit stack and returns the longest path; it is in the scratch module and not shown here.)
 
 ### Why balance matters: orders arrive sorted
 
@@ -187,15 +187,15 @@ ok  	example.com/trees	17.600s
 
 Divide by 10,000 to get the cost of one lookup:
 
-| Structure                   | Per lookup | Shape                               |
-| --------------------------- | ---------- | ----------------------------------- |
-| BST, sorted input           | ~8,000 ns  | a list: O(n)                        |
-| BST, random input           | ~75 ns     | height 34                           |
-| AVL, sorted input           | ~73 ns     | height 14: O(log n)                 |
-| Sorted slice, binary search | ~59 ns     | the same guessing game, no pointers |
-| `map`                       | ~11 ns     | hash, no order at all               |
+| Structure                   | Per lookup | Shape                         |
+| --------------------------- | ---------- | ----------------------------- |
+| BST, sorted input           | ~8,000 ns  | a list: O(n)                  |
+| BST, random input           | ~75 ns     | height 34                     |
+| AVL, sorted input           | ~73 ns     | height 14: O(log n)           |
+| Sorted slice, binary search | ~59 ns     | the same halving, no pointers |
+| `map`                       | ~11 ns     | hash, no order at all         |
 
-The degenerate tree is **over 100 times slower** than the balanced one, on the same data, with the same code for `Get`. Only the insert order differs. And it gets worse every day: with n orders, each lookup costs n steps, so the total work for n lookups grows as n². That's the first ticket. (Numbers vary from run to run; on your machine they will differ. Run with `-count` and look at the spread, as on [Big-O in practice](big-o.md).)
+The degenerate tree is **over 100 times slower** than the balanced one, on the same data, with the same code for `Get`. Only the insert order differs. And it gets worse every day: with n orders, each lookup costs n steps, so the total work for n lookups grows as n². This explains the first ticket. (Numbers vary from run to run; on your machine they will differ. Run with `-count` and look at the spread, as on [Big-O in practice](big-o.md).)
 
 !!! note "If you don't need order, use a map"
 
@@ -328,10 +328,10 @@ ok  	example.com/trees	11.702s
 
 (10,000 random lookups per iteration, the AVL tree built from shuffled input.) Per lookup: AVL about **275 ns**, binary search about **133 ns**, map about **18 ns**. All three did the expected number of steps: 20-ish for the tree and the slice, 1-ish for the map. The difference is **where the steps land in memory**:
 
-- Each AVL node is a separate 40-byte allocation (48 bytes in Go's allocator). A million of them take about 48 MB, three times this CPU's 16 MiB L3 cache. Almost every step down the tree is a **cache miss**: the CPU waits for RAM, around 80-100 ns, before it even knows where to go next. That's **pointer chasing**.
+- Each AVL node is a separate 40-byte allocation (48 bytes in Go's allocator). A million of them take about 48 MB, three times this CPU's 16 MiB L3 cache. Almost every step down the tree is a **cache miss**: the CPU waits for RAM, around 80-100 ns, before it knows where to go next. This is called **pointer chasing**.
 - The sorted slice is 8 MB of `int64`, packed together. It fits in L3, and the first few steps of every search land on the same few hot cache lines.
 
-Same O(log n), twice the speed. The lesson from [Memory: caches](../fundamentals/memory.md#caches-why-the-same-work-can-be-2-slower), applied to trees: **fewer, bigger nodes beat many small ones**. Push that idea all the way and you get the B-tree.
+Same O(log n), twice the speed. The lesson from [Memory: caches](../fundamentals/memory.md#caches-why-the-same-work-can-be-2-slower), applied to trees: **fewer, bigger nodes beat many small ones**. Taken further, this idea leads to the B-tree.
 
 ## B-trees: wide nodes for slow memory
 
@@ -383,12 +383,12 @@ $ go run ./cmd/fanout
    10000000000       34        9        5
 ```
 
-Ten billion keys in **five** levels. That is the whole trick behind database indexes:
+Ten billion keys in **five** levels. This is the main reason database indexes use B-trees:
 
 - **A node is a disk page.** PostgreSQL uses 8 kB pages. On [Indexes](../databases/indexes.md#under-the-hood-a-real-b-tree) you looked inside a real one: a leaf holds 262 UUID keys, an internal page about 205 children, and a million orders need **three levels**. Reading one page from disk or SSD costs the same whether you use one byte of it or all of it, so you want each page to do as much work as possible.
 - **The top levels stay in memory.** The root and the internal pages are few and used by every lookup, so they live in the buffer cache. A lookup usually costs one real read: the leaf.
 - **Leaves are linked** to their neighbours. Most databases use the **B+tree** variant: all keys live in the leaves, and internal nodes only guide the search. A range query ("orders from 09:00 to 10:00") finds the first leaf, then walks right along the chain. No going back up the tree. This is why an index serves `ORDER BY` and `BETWEEN` for free.
-- **Inserts split, they don't rotate.** When a leaf is full, it splits into two half-full leaves and pushes one separator key up to its parent. If the parent is full, it splits too. The tree grows **at the root**, so every leaf is always at the same depth: a B-tree is balanced by construction.
+- **Inserts split nodes instead of rotating them.** When a leaf is full, it splits into two half-full leaves and pushes one separator key up to its parent. If the parent is full, it splits too. The tree grows **at the root**, so every leaf is always at the same depth: a B-tree is balanced by construction.
 
 The same idea works in RAM, where the "page" is the 64-byte cache line. A B-tree node with 16 to 64 keys in a small array uses every cache line it loads. That is why in-memory sorted indexes, for example the key index in etcd, use a B-tree (`google/btree`) instead of a red-black tree.
 
@@ -415,7 +415,7 @@ flowchart TB
 (✓ marks a node where a key ends.) Two things make tries useful:
 
 - **Lookup cost depends on the key length, not on the number of keys.** Finding `customer-1999` takes 13 steps whether there are 10 or 10 million keys.
-- **Prefix questions are natural.** "All customers starting with `customer-19`" means: walk 11 steps down, then everything below that node is the answer. No scanning keys that don't match. That's the autocomplete ticket.
+- **Prefix questions are natural.** "All customers starting with `customer-19`" means: walk 11 steps down, then everything below that node is the answer. No scan over keys that do not match. This solves the autocomplete ticket.
 
 A minimal trie, with a map of children per node:
 
@@ -542,7 +542,7 @@ func (root *routingNode) addPattern(p *pattern, h Handler) {
 }
 ```
 
-And the heart of matching. Read the three steps: **literal first, then single wildcard, then multi wildcard**. That order _is_ the "most specific wins" rule:
+Next, the core of matching. Read the three steps: **literal first, then single wildcard, then multi wildcard**. That order _is_ the "most specific wins" rule:
 
 ```go
 func (n *routingNode) matchPath(path string, matches []string) (*routingNode, []string) {
@@ -588,7 +588,7 @@ func (n *routingNode) matchPath(path string, matches []string) (*routingNode, []
 }
 ```
 
-(`// ...` marks comment lines left out.) It is a depth-first search: try the literal child, and if that whole subtree fails, come back (**backtrack**) and try the wildcard child. The `matches` slice collects the wildcard values on the way down; that's where `r.PathValue("id")` gets its answer.
+(`// ...` marks comment lines left out.) It is a depth-first search: try the literal child, and if that whole subtree fails, come back (**backtrack**) and try the wildcard child. The `matches` slice collects the wildcard values on the way down; `r.PathValue("id")` reads its answer from there.
 
 One more detail, from `$GOROOT/src/net/http/mapping.go`. The `children` field is not a plain map:
 
@@ -705,7 +705,7 @@ Follow each line of output through it:
 - `/orders/export` and `/orders/42` both start at `GET → orders`. `export` is a literal child, so it wins for `export`; `42` has no literal child and falls to `{id}`.
 - **HEAD** has no subtree of its own. `matchMethodAndPath` tries `HEAD`, then `GET` ("GET matches HEAD too"), then the no-method subtree.
 - **DELETE** matches no path in any method. The mux then asks `matchingMethods` which methods _would_ match, and answers 405 with an `Allow` header instead of 404.
-- `GET /orders/{id}` and `GET /orders/{id}/items/{sku}` share the `{id}` node: it is a leaf (it has a pattern) **and** an interior node (it has children). That's why one struct does both jobs.
+- `GET /orders/{id}` and `GET /orders/{id}/items/{sku}` share the `{id}` node: it is a leaf (it has a pattern) **and** an interior node (it has children). That is why one struct does both jobs.
 - `GET /a/b/c` shows the backtracking. Under `GET` there is no `a`, so the search moves to the any-method subtree. There `a → b` is a literal match, but `b` has only the child `z`, not `c`: dead end. Back up to `a`, try its wildcard child `{x}` with `x="b"`, then `c`: match.
 
 ### Is the router slower with 100,000 routes?
@@ -753,7 +753,7 @@ PASS
 ok  	example.com/trees	11.012s
 ```
 
-About 180-190 ns, flat, from 10 to 100,000 routes. With 10 routes, the `GET` node's children live in the small slice; at 1,000 and 100,000 they are in a map. Either way it's one lookup per segment. The one allocation is the `matches` slice for `{id}`. The answer to the fourth ticket: no, the 400th route costs nothing at request time.
+About 180-190 ns, flat, from 10 to 100,000 routes. With 10 routes, the `GET` node's children live in the small slice; at 1,000 and 100,000 they are in a map. Either way it is one lookup per segment. The one allocation is the `matches` slice for `{id}`. The answer to the fourth ticket: no, the 400th route costs nothing at request time.
 
 ### Conflicts are caught when you register
 
@@ -773,7 +773,7 @@ panic: pattern "GET /{resource}/latest" (registered at example.com/trees/cmd/con
 	GET /orders/{id} matches "/orders/id", but GET /{resource}/latest doesn't.
 ```
 
-That's a gift: an ambiguous route table fails at startup, in your tests, not as a wrong handler in production. Register all routes in a function your tests call.
+This is useful: an ambiguous route table fails at startup, in your tests, not as a wrong handler in production. Register all routes in a function your tests call.
 
 ## Traps
 
@@ -781,8 +781,8 @@ That's a gift: an ambiguous route table fails at startup, in your tests, not as 
 - **A tree where a map would do.** If you never need order, ranges or "next key", a `map` is several times faster and simpler.
 - **Re-sorting on every request.** Sorting 50,000 orders to show 20 is O(n log n) per page view. Keep the data sorted (a B-tree, or a database index) and read a range. Or, for "the top 20", use a heap (next page).
 - **Counting steps, not cache misses.** Two O(log n) structures can differ by 2× or more. Many small heap-allocated nodes mean pointer chasing. Prefer packed arrays and wide nodes; measure with a benchmark at **realistic size**, bigger than the caches.
-- **A trie with a map per node, for random keys.** Memory explodes (261,389 nodes for 20,000 IDs above). Use a radix tree, or a sorted slice with `strings.HasPrefix` and binary search for the start of the range.
-- **Writing your own balanced tree.** Deletion in a red-black tree is famously easy to get wrong. Use a tested package, or a sorted slice if writes are rare.
+- **A trie with a map per node, for random keys.** Memory use grows very large (261,389 nodes for 20,000 IDs above). Use a radix tree, or a sorted slice with `strings.HasPrefix` and binary search for the start of the range.
+- **Writing your own balanced tree.** Deletion in a red-black tree is well known to be hard to get right. Use a tested package, or a sorted slice if writes are rare.
 - **Ambiguous HTTP patterns.** Two patterns where neither is more specific make `ServeMux` panic. Register routes in tests, so the panic happens in CI.
 
 ## Check yourself

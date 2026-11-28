@@ -8,17 +8,17 @@ Three questions that confuse many experienced engineers:
 - "We have the same 2 MB logo in 40 folders. Does the repo store it 40 times?"
 - "Is SHA-1 broken? Can someone forge a commit in our repo?"
 
-You can answer all three once you know what Git actually stores. It is surprisingly little: four kinds of **objects**, each named by the hash of its own bytes.
+You can answer all three once you know what Git actually stores. It is very little: four kinds of **objects**, each named by the hash of its own bytes.
 
-## The idea: a warehouse with labels made from the content
+## The idea: content-addressed storage
 
-Think of a warehouse where every box gets a label. The label is not a number from a counter. The label is a **fingerprint of what is inside the box**.
+Git stores every piece of data as an **object**. The name of an object is not a number from a counter. The name is a **hash of the object's content**: a fixed-length value computed from the bytes.
 
-- Put the same thing in two boxes, and they get the same label. So the warehouse keeps only one.
-- Change one byte inside, and the label changes completely. So a box can never be changed in secret.
-- If you know a label, you can check the box: compute the fingerprint again and compare.
+- The same content always gives the same name. So Git stores it only once.
+- Change one byte, and the name changes completely. So an object can never be changed without anyone noticing.
+- If you know a name, you can check the content: compute the hash again and compare.
 
-This is called **content-addressable storage**. Git's warehouse is `.git/objects/`. The fingerprint is a SHA-1 hash (or SHA-256, see below). There are four kinds of box:
+This is called **content-addressable storage**. Git's object database is `.git/objects/`. The hash is SHA-1 (or SHA-256, see below). There are four kinds of object:
 
 ```mermaid
 flowchart LR
@@ -45,7 +45,7 @@ Git does not hash the file alone. It hashes a small **header** plus the content:
 <type> <size in bytes>\0<content>
 ```
 
-Let's prove it. Make a file and ask Git for its hash:
+To check this, make a file and ask Git for its hash:
 
 ```console
 $ echo 'hello git' > hello.txt
@@ -60,7 +60,7 @@ $ printf 'blob 10\0hello git\n' | sha1sum
 8d0e41234f24b6da002d962a26c2495ea16a425f  -
 ```
 
-Same hash. There is no magic. Your file has this hash in **every** Git repository in the world (that uses SHA-1).
+Same hash. Your file has this hash in **every** Git repository in the world (that uses SHA-1).
 
 ### Where the object lives on disk
 
@@ -133,7 +133,7 @@ The first column is the **mode**. Git knows only five:
 
 Look at `a.txt` and `b.txt`: two names, **one blob**. Identical content is stored once, whatever its name or folder. That answers the logo question: 40 copies of the same logo cost one blob.
 
-The symlink blob holds just the path it points to:
+The symlink blob holds only the path it points to:
 
 ```console
 $ git cat-file -p 8d14cbf
@@ -162,7 +162,7 @@ $ git cat-file tree fe58e2a | xxd
 00000040: 6a42 5f                                  jB_
 ```
 
-Read it: `40000 cmd`, a zero byte, then `b9 27 0d f7 ...` (the `cmd` tree's hash). Then `100644 hello.txt`, a zero byte, and `8d 0e 41 23 ...`: our `hello git` blob. Two small surprises: a tree's mode is stored as `40000` without the leading zero, and entries are always sorted by name, so the same directory always gives the same tree hash.
+Read it: `40000 cmd`, a zero byte, then `b9 27 0d f7 ...` (the `cmd` tree's hash). Then `100644 hello.txt`, a zero byte, and `8d 0e 41 23 ...`: our `hello git` blob. Two details may surprise you: a tree's mode is stored as `40000` without the leading zero, and entries are always sorted by name, so the same directory always gives the same tree hash.
 
 ## Under the hood: commits
 
@@ -186,7 +186,7 @@ Because the commit includes the tree hash and the parent hash, **its hash covers
 
 ## Try it: build a commit with plumbing only
 
-No `git add`, no `git commit`. Just the plumbing that they use inside. In an empty repo:
+No `git add`, no `git commit`. Only the plumbing that they use inside. In an empty repo:
 
 ```console
 $ echo "hello git" | git hash-object -w --stdin
@@ -229,7 +229,7 @@ $ cat .git/refs/heads/main
 
 A real commit on a real branch. That is all `git commit` does: `write-tree`, `commit-tree` with the current `HEAD` as parent, and `update-ref`.
 
-One fun detail: we never wrote the files to disk. So Git sees them as deleted:
+One detail: the files were never written to disk. So Git sees them as deleted:
 
 ```console
 $ git status --short

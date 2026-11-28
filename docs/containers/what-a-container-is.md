@@ -10,17 +10,17 @@ Three questions that come up in every team that ships containers:
 
 All three have the same answer: a container is **not** a small machine. It is one normal Linux process, plus files Docker keeps for it. In [Namespaces and cgroups](../linux/namespaces-and-cgroups.md) you built that process by hand with `unshare`. On this page you start `ordersd` with `docker run`, then look at it **from the host**, and find every piece Docker added.
 
-## The idea: the flat you built, now from a builder
+## The idea: the same process, set up by a tool
 
-On the Linux page, a container was a flat with frosted windows (namespaces) and an electricity meter with a fuse (cgroups). You built one yourself: you made the walls with `unshare`, carried the furniture in by hand (a `rootfs` directory with one binary), and plugged nothing into the network.
+On the Linux page, you built a container by hand. Namespaces limited what the process could see. Cgroups limited what it could use. You created the namespaces with `unshare`, filled a `rootfs` directory with one binary, and set up no network.
 
-Docker is a building company that does the same job, every time, from a **kit**:
+Docker does the same job in a repeatable way, from three parts:
 
-- The **kit** is the image: the furniture (files, in layers) and an instruction sheet (which program to run, as which user, with which environment).
-- The **crew** is the runtime: it puts up the walls, installs the meter, and moves the tenant in.
-- The **company** also plugs in a phone line (networking), and keeps a **logbook** of everything the tenant shouts (stdout and stderr).
+- The **image** holds the files (in layers) and a config: which program to run, as which user, with which environment.
+- The **runtime** creates the namespaces and cgroups, and starts the program inside them.
+- Docker also sets up **networking**, and **logging**: it saves everything the process writes to stdout and stderr.
 
-The flat itself is the same as yours. A container is still a process in namespaces and cgroups. Docker just makes it repeatable.
+The result is the same as yours. A container is still a process in namespaces and cgroups. Docker makes the setup repeatable.
 
 ```mermaid
 flowchart LR
@@ -75,9 +75,9 @@ $ curl -sS localhost:18080/healthz
 
 (This machine's Docker has no `buildx` plugin, so `docker build` uses the old builder. The image is the same kind of image; [Building images](building-images.md) covers BuildKit.)
 
-Now forget Docker for a moment. Where is this thing?
+Now look at the container from the host, without Docker's commands.
 
-### It is a process. Here is its PID
+### The process and its PID
 
 ```console
 $ pid=$(docker inspect -f '{{.State.Pid}}' tutor-orders); echo $pid
@@ -91,7 +91,7 @@ Uid:	65532	65532	65532	65532
 NSpid:	267149	1
 ```
 
-There it is, in the host's normal process list: PID 267149 on the host, PID 1 inside (`NSpid`), running as UID 65532 (the `nonroot` user of the distroless image). Its parent is not `dockerd` and not `docker`. It is a small **shim** process, whose own parent is PID 1 (systemd). That is why `containerd` can restart without killing your containers (and `dockerd` too, with `live-restore` turned on). [Runtimes](runtimes.md) takes this chain apart.
+The container is in the host's normal process list: PID 267149 on the host, PID 1 inside (`NSpid`), running as UID 65532 (the `nonroot` user of the distroless image). Its parent is not `dockerd` and not `docker`. It is a small **shim** process, whose own parent is PID 1 (systemd). That is why `containerd` can restart without killing your containers (and `dockerd` too, with `live-restore` turned on). [Runtimes](runtimes.md) takes this chain apart.
 
 ```mermaid
 flowchart LR
@@ -105,7 +105,7 @@ flowchart LR
 
 `runc` sets up the box and exits. The shim stays, holds the container's stdout and stderr, and collects its exit code.
 
-### Its namespaces
+### The namespaces
 
 As a normal user, you cannot read another user's namespace links:
 
@@ -154,9 +154,9 @@ Compare the numbers (same number = same namespace):
 | cgroup    | 4026531835 | 4026531835 | **yes** | `CgroupnsMode: host`, Docker's default on a cgroup v1 host like this one                |
 | time      | 4026531834 | 4026531834 | **yes** | Docker never makes a time namespace                                                     |
 
-Your `box.sh` made seven new namespaces. Docker, by default, makes five. The missing **user** namespace is the big one: it is why "root in a container" is real root on the host. [Container security](security.md) comes back to it.
+Your `box.sh` made seven new namespaces. Docker, by default, makes five. The missing **user** namespace matters most: it is why "root in a container" is real root on the host. [Container security](security.md) comes back to it.
 
-`docker inspect` tells you the same story in its own words:
+`docker inspect` shows the same settings:
 
 ```console
 $ docker inspect tutor-orders | jq '.[0].HostConfig | {NetworkMode, CgroupnsMode, IpcMode, PidMode, UsernsMode}'
@@ -187,7 +187,7 @@ An empty `PidMode` and `UsernsMode` mean "the default": a new PID namespace, and
     container version of the `nsenter` trick from the Linux page. Kubernetes calls it an
     ephemeral debug container (`kubectl debug`).
 
-### Its cgroups
+### The cgroups
 
 `/proc/<pid>/cgroup` is readable by anyone:
 
@@ -211,7 +211,7 @@ $ cat /proc/$pid/cgroup
 0::/docker/19039eb5dc8b4f4b7582755c9bddcb951c6c958776f23674db6ed89d0c94e329
 ```
 
-This is the [hybrid machine](../linux/namespaces-and-cgroups.md#this-machine-hybrid-and-honest-about-it) from the Linux page: one line per v1 tree. In every tree, the container has its own cgroup, named `/docker/<container id>`. The host sees the full path because the cgroup namespace is shared. Inside the container, `/proc/self/cgroup` shows the same long path.
+This is the [hybrid machine](../linux/namespaces-and-cgroups.md#this-machine-hybrid-mode) from the Linux page: one line per v1 tree. In every tree, the container has its own cgroup, named `/docker/<container id>`. The host sees the full path because the cgroup namespace is shared. Inside the container, `/proc/self/cgroup` shows the same long path.
 
 Remember how your user-level `MemoryMax=64M` was accepted and ignored? Docker's daemon runs as root, so it writes the v1 files directly, and the limits are real:
 
@@ -228,7 +228,7 @@ $ cat /sys/fs/cgroup/memory/docker/$id/memory.limit_in_bytes /sys/fs/cgroup/cpu/
 
 256 MiB, 150 ms of CPU per 100 ms period (1.5 CPUs), 100 tasks. Without flags (the first container), the memory limit is `9223372036854771712` (no limit) and the CPU quota is `-1`. **A container has no limits unless you ask for them.** On a pure cgroup v2 host the same flags write `memory.max`, `cpu.max` and `pids.max`, under `/sys/fs/cgroup/system.slice/docker-<id>.scope/` when Docker uses the systemd cgroup driver.
 
-### Its root filesystem
+### The root filesystem
 
 `/proc/<pid>/mountinfo` is readable too. The first line is the container's `/`:
 
@@ -243,7 +243,7 @@ An [overlayfs](../linux/filesystems.md#under-the-hood-overlayfs-the-container-fi
 
 ### The image config became the process
 
-The image carries an instruction sheet, and Docker followed it. Read the process's environment and working directory (again from a helper, because they are private to UID 65532):
+The image carries a config, and Docker followed it. Read the process's environment and working directory (again from a helper, because they are private to UID 65532):
 
 ```console
 $ tr '\0' ' ' < /proc/$pid/cmdline; echo
@@ -282,7 +282,7 @@ Seccomp_filters:	2
 
 No effective capabilities (it is not root), and `Seccomp: 2` means a seccomp **filter** is active: Docker's default profile blocks a list of risky system calls. [Container security](security.md) decodes both.
 
-### Its network
+### The network
 
 ```console
 $ docker inspect tutor-orders | jq '.[0].NetworkSettings.Networks.bridge | {IPAddress, Gateway}'
@@ -294,7 +294,7 @@ $ docker inspect tutor-orders | jq '.[0].NetworkSettings.Networks.bridge | {IPAd
 
 Your box had only `lo`. Docker gave this one a veth pair into the `docker0` bridge, the address `172.17.0.3`, and a NAT rule that sends host port 18080 to container port 8080. That is how `curl localhost:18080` reached it. [Container networking](networking.md) follows the packet.
 
-### Its logs
+### The logs
 
 `ordersd` writes JSON lines to stdout. The shim holds the other end of that pipe and Docker's logging driver (`json-file` by default) writes every line to a file on the host:
 
@@ -308,7 +308,7 @@ json-file /var/lib/docker/containers/19039eb5dc8b4f4b7582755c9bddcb951c6c958776f
 
 That file lives as long as the container. That is the `/var/lib/docker/containers` directory that fills disks (see Traps). This is also why the "log to stdout" advice from [Logging with `slog`](../go/services.md#logging-with-slog) works: the runtime collects it, and in Kubernetes the node's log agent reads these files.
 
-### It stops like a process
+### Stopping and starting
 
 `docker stop` sends `SIGTERM` to PID 1, waits up to 10 seconds, then sends `SIGKILL`. `ordersd` handles `SIGTERM` (see [Signals and process lifetime](../linux/signals-and-processes.md)). Start a second copy and stop it:
 
@@ -366,7 +366,7 @@ $ docker run --rm golang:1.27 sh -c 'uname -r; head -1 /etc/os-release'
 PRETTY_NAME="Debian GNU/Linux 13 (trixie)"
 ```
 
-"Debian in a container on Ubuntu" means Debian's **files** running on the host's kernel. And the host's kernel here is not Ubuntu's either: it is Microsoft's. That is the twist on this machine:
+"Debian in a container on Ubuntu" means Debian's **files** running on the host's kernel. And the host's kernel here is not Ubuntu's either: it is Microsoft's. This machine adds one more layer:
 
 ```console
 $ systemd-detect-virt

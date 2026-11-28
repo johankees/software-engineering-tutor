@@ -2,7 +2,7 @@
 
 ## Why care?
 
-You already use Vim keys. You can move with `hjkl`, save with `:w`, maybe use `ciw`. And still, some days feel slow:
+You already use Vim keys. You can move with `hjkl`, save with `:w`, maybe use `ciw`. And still, some days are slow:
 
 - You make the same edit on ten lines by hand, because a macro feels like too much work.
 - "Go to definition" takes two seconds, or jumps to the wrong place, and you don't know which part is slow.
@@ -21,9 +21,9 @@ Vim's normal mode is not a list of shortcuts. It is a small language with **verb
 | Noun (motion)      | `w` word, `}` paragraph, `f,` to the next comma, `G` end of file     |
 | Noun (text object) | `iw` inner word, `i(` inside parentheses, `at` a tag, `ip` paragraph |
 
-`d3w` = delete three words. `ci"` = change inside the quotes. `yap` = yank a paragraph. Once you learn a new verb, it works with every noun you know. That's why Vim users get faster for years, while users of other editors stop improving after a few months.
+`d3w` = delete three words. `ci"` = change inside the quotes. `yap` = yank a paragraph. Once you learn a new verb, it works with every noun you know. That's why Vim users can keep getting faster for years: each new verb or noun works with everything they already know.
 
-The best part of the language is **`.`**, repeat the last change. A "change" is one verb + noun, or everything you typed in one visit to insert mode. So design your edits to be repeatable. Here is a real headless run (`nvim --clean --headless`): change `user` to `acct` on one line, then repeat it on the next line with `.`:
+The most useful part of the language is **`.`**, repeat the last change. A "change" is one verb + noun, or everything you typed in one visit to insert mode. So design your edits to be repeatable. Here is a real headless run (`nvim --clean --headless`): change `user` to `acct` on one line, then repeat it on the next line with `.`:
 
 ```text
 -- before
@@ -52,11 +52,11 @@ Every yank, delete and change goes into a **register**. The important ones:
 | `+`, `*`    | The system clipboard (through a clipboard provider)          |
 | `.` `:` `/` | Last inserted text, last command line, last search           |
 
-A classic surprise: you yank a word, delete a line, and `p` pastes the deleted line. The yank is still safe in `"0`, so `"0p` pastes it.
+A common surprise: you yank a word, delete a line, and `p` pastes the deleted line. The yank is still safe in `"0`, so `"0p` pastes it.
 
-### Macros are just registers
+### Macros are registers
 
-`qa` starts recording keys into register `a`, `q` stops, and `@a` plays it. There is nothing special about a macro: it is **text in a register**. So you can set it directly, and even edit it like text. A real run:
+`qa` starts recording keys into register `a`, `q` stops, and `@a` plays it. A macro is only **text in a register**. So you can set it directly, and even edit it like text. A real run:
 
 ```text
 -- before: alpha / beta / gamma
@@ -71,7 +71,7 @@ A classic surprise: you yank a word, delete a line, and `p` pastes the deleted l
 ### Marks, the jumplist and the quickfix list
 
 - **Marks**: `ma` sets mark `a` in this file, `` `a `` jumps back to it. Capital marks (`mA`) are global: they remember the file too.
-- **Jumplist**: every "big" jump (search, `G`, go-to-definition) is recorded. `Ctrl+o` goes back, `Ctrl+i` forward. After `gd` into a library, `Ctrl+o` brings you home.
+- **Jumplist**: every "big" jump (search, `G`, go-to-definition) is recorded. `Ctrl+o` goes back, `Ctrl+i` forward. After `gd` into a library, `Ctrl+o` brings you back.
 - **Changelist**: `g;` and `g,` walk through the places you edited.
 - **Quickfix list**: a list of positions (file, line, message) for the whole editor. Search results, compiler errors and LSP references can all land there. `:cnext`/`:cprev` walk it, and `:cdo s/old/new/ | update` runs a command on every entry: a project-wide edit with full control.
 
@@ -89,7 +89,7 @@ This setup maps `Tab` / `Shift+Tab` to the next and previous **buffer**, and hid
 
 ### Two processes, one API
 
-Neovim is a server with a UI attached. When you run `nvim` in a terminal, you actually get **two processes**:
+Neovim is a server with a UI attached. When you run `nvim` in a terminal, you get **two processes**:
 
 ```text
 $ ps -o pid,ppid,tty,args --pid 132205 --ppid 132205
@@ -102,7 +102,7 @@ The first is the terminal UI (TUI). It owns the PTY. The second, `nvim --embed`,
 
 ### Lua, `runtimepath` and `stdpath`
 
-Neovim embeds **LuaJIT**, so config and plugins are Lua. When you `require("config.lazy")`, Lua searches a `lua/` folder in every directory of the **`runtimepath`**. Plugins are just folders added to it. With this setup:
+Neovim embeds **LuaJIT**, so config and plugins are Lua. When you `require("config.lazy")`, Lua searches a `lua/` folder in every directory of the **`runtimepath`**. Plugins are folders added to it. With this setup:
 
 ```text
 ~/.config/nvim
@@ -118,7 +118,7 @@ Neovim embeds **LuaJIT**, so config and plugins are Lua. When you `require("conf
 ~/.local/state/nvim/lazy/readme
 ```
 
-Only 11 entries at start-up, but this config has 61 plugins. The rest are added later, when needed. Where do things go? `stdpath()` follows XDG:
+Only 11 entries at start-up, but this config has 61 plugins. The rest are added later, when needed. `stdpath()` decides where files go, and it follows XDG:
 
 ```text
 config = ~/.config/nvim
@@ -307,7 +307,7 @@ Highlighting, indentation, folding and text objects like "select this function" 
 
 A **picker** is a fuzzy finder in a floating window: files, grep results, buffers, symbols, diagnostics. This setup chooses snacks.nvim's picker (`vim.g.lazyvim_picker = "snacks"`) and shows hidden files in the file picker and explorer.
 
-It also adds a custom picker on `<leader>fs`: **tmux sessions**. It runs `tmux list-sessions -F '#{session_name} #{session_path}'`, groups sessions of agent worktrees (under `~/.cache/agent/worktrees/`) below their parent repository, shows `git status -sb` of the selected one as a preview, and on Enter runs `tmux switch-client -t <name>`. Neovim, tmux and git, glued together with 150 lines of Lua. That's the power of an editor that is also a programming platform.
+It also adds a custom picker on `<leader>fs`: **tmux sessions**. It runs `tmux list-sessions -F '#{session_name} #{session_path}'`, groups sessions of agent worktrees (under `~/.cache/agent/worktrees/`) below their parent repository, shows `git status -sb` of the selected one as a preview, and on Enter runs `tmux switch-client -t <name>`. Neovim, tmux and git are combined in 150 lines of Lua. This is possible because the editor is also a programming platform.
 
 ## This setup's own choices
 
@@ -315,8 +315,8 @@ It also adds a custom picker on `<leader>fs`: **tmux sessions**. It runs `tmux l
 | ---------------------------------- | ----------------------------------------------------------------------------------------------- |
 | `U` → `<C-r>`                      | Redo on `U`, next to `u` for undo. (Vim's own `U`, "undo line", is rarely useful.)              |
 | `Tab` / `S-Tab`                    | Next and previous buffer                                                                        |
-| `+` / `-`                          | Increment / decrement the number under the cursor (`Ctrl+A` is the tmux prefix here!)           |
-| auto-save on `InsertLeave`, 500 ms | The file is written when you leave insert mode. No more `:w`                                    |
+| `+` / `-`                          | Increment / decrement the number under the cursor (`Ctrl+A` is the tmux prefix here)            |
+| auto-save on `InsertLeave`, 500 ms | The file is written when you leave insert mode. No need for `:w`                                |
 | `BufWritePre` → `%s/\s\+$//e`      | Strip trailing whitespace on every save, in every file                                          |
 | relative numbers toggle            | Relative numbers in normal mode (for `5j`), absolute in insert mode and in unfocused windows    |
 | `spell = true`                     | Spell check everywhere (but off in terminal buffers); `<leader>!` adds a word to the dictionary |
@@ -325,7 +325,7 @@ It also adds a custom picker on `<leader>fs`: **tmux sessions**. It runs `tmux l
 
 The OSC 52 block deserves a closer look. Copying uses `vim.ui.clipboard.osc52`. But **pasting** reads the unnamed register instead of asking the terminal, because an OSC 52 _read_ is a round trip through SSH and tmux, and (as the comment in `options.lua` says) can hang for up to 10 seconds.
 
-The `+`/`-` mapping is a nice example of the whole toolbox as one system: tmux took `Ctrl+A` as its prefix, so the editor moves "increment" to another key.
+The `+`/`-` mapping shows that the tools in this chapter work as one system: tmux took `Ctrl+A` as its prefix, so the editor moves "increment" to another key.
 
 ## Try it: health checks
 
@@ -373,14 +373,14 @@ vim.lsp:                                                                    ✅
   The lesson: if you only want the default, don't restate a list. Every list you write replaces one.
 
 - **The same happens to `directoryFilters`.** The setup's gopls `directoryFilters` list replaces LazyVim's list. Here it repeats LazyVim's entries and adds one (`-**/.terraform`), which is right. If you shorten such a list, you lose entries without a warning.
-- **A typo is not an error in Lua.** `options.lua` used to set `g.gui_font_fize = 16` (typo) and then read `g.gui_font_size`, which is `nil`. LuaJIT formats `nil` as text, so there is no error, just a wrong value:
+- **A typo is not an error in Lua.** `options.lua` used to set `g.gui_font_fize = 16` (typo) and then read `g.gui_font_size`, which is `nil`. LuaJIT formats `nil` as text, so there is no error, only a wrong value:
 
   ```text
   $ nvim --headless -c 'lua print(vim.o.guifont)' -c 'qa!'
   Iosevka NF:hnil
   ```
 
-  After fixing the name, the same check prints `Iosevka NF:h16`. Harmless in a terminal (only GUIs use `guifont`), but a nice example: check your settings headless.
+  After fixing the name, the same check prints `Iosevka NF:h16`. Harmless in a terminal (only GUIs use `guifont`), but it shows why you should check your settings headless.
 
 - **Auto-save runs your save hooks.** auto-save.nvim calls `silent! write`, so every `InsertLeave` also runs the `BufWritePre` hooks: conform formatting and the whitespace strip. Text can move under your cursor when you leave insert mode, and the file on disk changes much more often. Tools that watch files (test runners, `go run` with reload) will fire a lot.
 - **`Ctrl+l` no longer clears the screen.** vim-tmux-navigator takes `Ctrl+h/j/k/l` in Neovim and in tmux. In a shell pane, `Ctrl+l` now moves to the right pane. Type `clear` instead.
@@ -415,7 +415,7 @@ vim.lsp:                                                                    ✅
 ## Recap
 
 - Normal mode is a language: verb + count + noun. Make changes repeatable with `.`.
-- Registers are named clipboards; macros are just registers; marks, the jumplist and the quickfix list move you around the project.
+- Registers are named clipboards; macros are text in registers; marks, the jumplist and the quickfix list move you around the project.
 - Neovim is an RPC server with a separate TUI. Lua plugins live in folders on the `runtimepath`; `stdpath` follows XDG.
 - lazy.nvim loads plugins on triggers and pins them in `lazy-lock.json`. LazyVim is a distribution you override with specs. Tables merge, lists replace.
 - LSP is JSON-RPC between Neovim and gopls. Treesitter gives the syntax tree. conform formats, nvim-lint lints, DAP debugs with Delve.

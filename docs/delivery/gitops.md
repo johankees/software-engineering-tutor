@@ -2,7 +2,7 @@
 
 ## Why care?
 
-Questions that should have a one-line answer, and often don't:
+These questions should have a one-line answer. Often they do not:
 
 - "What version of `ordersd` runs in production right now?"
 - "Who changed the replica count on Friday, and why?"
@@ -13,14 +13,14 @@ In a push-based setup, the answers are spread over CI logs, shell histories and 
 
 On this page you install Flux on the `kind` cluster, let it deploy an app from a public Git repository, break the cluster by hand, and watch Flux repair it. Then you build the repository layout for `ordersd` with staging and production, and promote a version with one commit.
 
-## The idea: the building plans in the site office
+## The idea: Git holds the desired state, a controller enforces it
 
-A builder works from the plans in the site office. If a worker moves a wall "because it looked better", the site manager walks by, compares the wall with the plans, and has it moved back. If the owner wants a different wall, they don't talk to the worker: they get the architect to change the plans, and the site manager does the rest.
+In GitOps, a Git repository describes what should run. A controller in the cluster reads it and changes the cluster to match. It does this again at a fixed interval, not only once.
 
-- The **plans** are the Git repository.
-- The **site manager** is the GitOps controller (Flux or Argo CD). It walks by every few minutes.
-- The **worker who moved a wall** is someone running `kubectl edit` in production.
-- **Changing the plans** is a pull request.
+- The **Git repository** holds the desired state.
+- The **GitOps controller** (Flux or Argo CD) compares the cluster with Git every few minutes and fixes any difference.
+- A **hand edit** in production, such as `kubectl edit`, is a difference. The controller reverts it.
+- To **change** what runs, you open a pull request against the repository.
 
 ```mermaid
 flowchart LR
@@ -363,7 +363,7 @@ The image is back, the Service is back (with a **new** ClusterIP: anything that 
 
 ### Whose fields does Flux remove?
 
-That surprise is worth one more experiment. Add two annotations, one with plain `kubectl`, one with a different field manager (as an operator or another tool would), then make Flux reconcile at once with `flux reconcile`:
+One more experiment explains this result. Add two annotations, one with plain `kubectl`, one with a different field manager (as an operator or another tool would), then make Flux reconcile at once with `flux reconcile`:
 
 ```console
 $ kubectl -n tutor-gitops annotate deploy/podinfo tutor/by-kubectl=yes
@@ -391,9 +391,9 @@ The `kubectl` annotation is gone, the `tutor-tool` one stayed. kustomize-control
 
 `flux reconcile` itself is just an annotation (`reconcile.fluxcd.io/requestedAt`) on the Kustomization. The controller watches for it and runs at once. Use it after a merge, so you don't wait for the interval. A Git webhook into notification-controller's `Receiver` does the same automatically.
 
-## Under the hood: Argo CD, the other big one
+## Under the hood: Argo CD
 
-Argo CD does the same job with a different shape. The `argocd` CLI is not installed on this machine, so here is the concept only:
+Argo CD is the other widely used GitOps controller. It does the same job with a different design. The `argocd` CLI is not installed on this machine, so here is the concept only:
 
 | Topic          | Flux                                              | Argo CD                                                   |
 | -------------- | ------------------------------------------------- | --------------------------------------------------------- |
@@ -592,7 +592,7 @@ After the merge, Flux in the production cluster fetches the new commit and rolls
 Patterns you will meet:
 
 - **Folder per environment, one branch** (this page). Simple, and `git diff` shows the difference. Most teams start here.
-- **Branch per environment**. Promotion is a merge between branches. Sounds neat, but branches drift apart with hotfixes, and merges carry changes you did not mean to promote. Avoid it.
+- **Branch per environment**. Promotion is a merge between branches. It looks simple, but branches drift apart with hotfixes, and merges carry changes you did not mean to promote. Avoid it.
 - **Automated promotion**. CI writes the new tag to staging (a commit, or a pull request). After tests pass in staging, a job opens the pull request for production. Flux's image-automation controllers can also watch a registry and commit new tags matching a policy.
 - **Pin by digest**. `newTag: v2` can be moved to another image by anyone who can push tags. Production overlays should use `digest: sha256:...` (Kustomize `images` supports it), the same digest that passed staging. See [Building images](../containers/building-images.md).
 
@@ -657,7 +657,7 @@ Patterns you will meet:
 ## Recap
 
 - **GitOps**: desired state in Git; a controller in the cluster pulls it and reconciles **continuously**.
-- **Pull beats push** for security (no cluster credentials in CI) and for drift (fixed within an interval).
+- **Pull is better than push** for security (no cluster credentials in CI) and for drift (fixed within an interval).
 - **Flux**: source-controller turns a Git commit into an artifact; kustomize-controller builds, applies with server-side apply, prunes by inventory, and checks health.
 - **Drift**: Flux reverts changes to fields in Git, and fields written by `kubectl`. Fields from other controllers stay. `flux diff` shows drift; `flux suspend`/`resume` stop and start the loop; `flux reconcile` runs it now.
 - **Argo CD**: same idea, one `Application` object, a web UI, and `selfHeal` to revert drift.

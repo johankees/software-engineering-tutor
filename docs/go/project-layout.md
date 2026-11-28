@@ -4,7 +4,7 @@
 
 You join a team. The service has a package called `utils` with 60 files. There is also `common`, `helpers` and `models`. Everything imports everything. You want to move one function, and the compiler says `import cycle not allowed`. Every exported name is used by some other team, so you cannot change anything without a meeting.
 
-None of the code is "wrong". The problem is the **structure**. In Go, structure means **packages**: how you cut the code into folders, what each package is allowed to see, and which way the imports point. Get this right, and a codebase of 200,000 lines still feels small.
+None of the code is "wrong". The problem is the **structure**. In Go, structure means **packages**: how you cut the code into folders, what each package is allowed to see, and which way the imports point. With a good structure, a codebase of 200,000 lines is still easy to navigate.
 
 ## The idea: a package is a small product
 
@@ -14,7 +14,7 @@ In Go, a **package** is one folder of `.go` files. It is the unit of:
 - **visibility**: names starting with a capital letter (`Service`) are visible outside the package, lowercase names (`validate`) are not;
 - **design**: other code sees only the package's exported API.
 
-So think of every package as a **small product** with users (the code that imports it). A good product does one thing, has a clear name, and has a small, stable API.
+So treat every package as a **small product** with users (the code that imports it). A good package does one thing, has a clear name, and has a small, stable API.
 
 !!! quote "Go proverb"
 
@@ -38,7 +38,7 @@ package example.com/cycle/a
 
 Other languages allow cycles. Go forbids them, for two reasons: builds stay fast (packages compile in a clear order, see [The Go toolchain](toolchain.md#under-the-hood-why-go-compiles-so-fast)), and **design stays clean**. A cycle means two packages are really one package, or a third concept is hiding between them. The compiler forces you to find it.
 
-## Start flat, grow when it hurts
+## Start flat, add packages when needed
 
 !!! abstract "Convention: start with the simplest layout"
 
@@ -46,7 +46,7 @@ Other languages allow cycles. Go forbids them, for two reasons: builds stay fast
     of the code gets its own clear purpose, or when you need a second binary. Do not start a new
     project by copying a big template with 15 empty folders.
 
-    **Why:** folders are not free. Every package boundary is a decision about API and visibility.
+    **Why:** folders have a cost. Every package boundary is a decision about API and visibility.
     Empty folders made "just in case" lock you into a structure before you understand the problem.
     In Go, moving code between packages later is easy, because tools like `gopls` rename and move
     symbols for you.
@@ -86,7 +86,7 @@ examples/orders/
     └── config/             # configuration from flags and environment
 ```
 
-Every choice in this tree has a reason. Let's go through them.
+Every choice in this tree has a reason. The sections below explain each one.
 
 ### `cmd/<name>/`: one folder per binary, and keep `main` thin
 
@@ -186,7 +186,7 @@ models/order.go           controllers/order.go      services/order.go
 models/customer.go        controllers/customer.go   services/customer.go
 ```
 
-In Go, this style hurts:
+In Go, this style causes problems:
 
 - To understand "orders", you open four packages.
 - `services` imports `models` and `repositories`; soon `models` needs a helper from `services`: **import cycle**.
@@ -218,7 +218,7 @@ flowchart TD
 - Everything else points **toward** the domain.
 - Only the `main` packages know about everything, because they do the wiring.
 
-But wait: the `order.Service` needs to save orders, and saving is done by `storage/memory`. If `order` imported `memory`, the arrow would point the wrong way. The solution is an **interface, defined in the package that uses it**:
+There is one problem: the `order.Service` needs to save orders, and saving is done by `storage/memory`. If `order` imported `memory`, the arrow would point the wrong way. The solution is an **interface, defined in the package that uses it**:
 
 ```go
 // Package order is the orders domain: types, business rules and the
@@ -271,8 +271,8 @@ func NewService(repo Repository) *Service {
 
     **Why:** the package name is part of every call: `retry.Do(...)` tells the reader something;
     `util.Do(...)` does not. A vague name also has no boundary, so _anything_ can go in, and it
-    becomes the package that everybody imports and that imports everybody: the perfect place for
-    import cycles. If you have a helper and no good package for it, keep it unexported next to the
+    becomes the package that everybody imports and that imports everybody. This makes import
+    cycles very likely. If you have a helper and no good package for it, keep it unexported next to the
     code that uses it, or give it a small package with a real name.
 
 Good package names, from the standard library: `bytes`, `context`, `errors`, `http`, `json`, `slog`, `time`. Short, lowercase, one word, no underscores, no `mixedCaps`. Details and the reasons behind them are on [Conventions](conventions.md).
@@ -355,7 +355,7 @@ A company repo with many services. Two options:
 - **Everything exported "just in case".** Exported names in `internal/` are fine, but in a library every capital letter is a promise. Start unexported; export when someone needs it.
 - **`models` package with every struct.** It soon causes cycles and leaks persistence details (database tags, JSON tags) into everything.
 - **Interfaces next to the implementation** (`type OrderRepository interface` in `storage/memory`). The domain then imports storage to get the interface, which reverses the arrow. Define it in the consumer.
-- **Logic in `main`.** Untestable, and `os.Exit` skips your `defer`s. Keep `main` to wiring.
+- **Logic in `main`.** It cannot be tested, and `os.Exit` skips your `defer`s. Keep `main` to wiring.
 - **Deep nesting** like `internal/app/core/domain/order/entity`. Go prefers broad and shallow. Each extra level is extra reading in every import.
 
 ## Check yourself

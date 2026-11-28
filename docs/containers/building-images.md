@@ -10,13 +10,13 @@ Three tickets you will meet:
 
 A `Dockerfile` looks like a shell script. It is not. Every line makes a **layer**, every layer has a **cache key**, and the order of the lines decides how much work a rebuild must do. On this page you take the `ordersd` [Dockerfile](../go/services.md) apart line by line, and you measure what each choice costs: rebuild time, image size, and whether two builds give the same digest.
 
-## The idea: a recipe with a photo after every step
+## The idea: a cache key for every step
 
-Imagine a cook who takes a photo after every step of a recipe. Next time, the cook walks down the recipe and compares: "Same step, same ingredients as last time? Then I skip the work and use the photo."
+The builder saves the result of every step as a layer. Each layer has a **cache key**, made from the step and its inputs. On the next build, the builder goes through the steps in order and compares keys. If the step and its inputs are the same as last time, it reuses the saved layer and skips the work.
 
-The moment one step is different, every photo **after** it is useless. A changed step 3 means steps 3, 4, 5 and 6 must be cooked again, even if they did not change.
+As soon as one key is different, the builder cannot reuse any layer **after** it, because each layer builds on the one before. A changed step 3 means steps 3, 4, 5 and 6 run again, even if they did not change.
 
-That is the build cache. The photos are layers. So the rule writes itself: **put the steps that rarely change first, and the steps that change all the time last.**
+This gives one rule: **put the steps that rarely change first, and the steps that change all the time last.**
 
 ```mermaid
 flowchart TB
@@ -221,7 +221,7 @@ This Docker uses the containerd image store, so `docker image ls` shows the disk
 | `alpine:3.22`                       | 22.6 MB | 6.76 MB               | A shell, `apk`, BusyBox tools, CA certificates                  |
 | `golang:1.27` (no multi-stage)      | 1.31 GB | 320 MB                | A full Debian, the Go toolchain, `git`, `gcc`                   |
 
-"Nothing" is a bigger deal than it sounds. A small probe program asks the questions a real service asks at start-up: can I verify TLS certificates, can I load a time zone, who am I?
+"Nothing" causes real failures. A small probe program asks the questions a real service asks at start-up: can I verify TLS certificates, can I load a time zone, who am I?
 
 ```go
 // Command probe reports what a base image gives a static Go binary.
@@ -314,7 +314,7 @@ $ ls -l p1 p2 | awk '{print $5, $9}'
     never in production.
 
     **Why:** it gives the service the files it needs (certificates, time zones, a non-root user) and
-    nothing an attacker could use. `scratch` saves 0.7 MB of download and costs you three bugs.
+    nothing an attacker could use. `scratch` saves 0.7 MB of download and causes three bugs.
 
 ## Build flags that matter inside an image
 
@@ -478,12 +478,12 @@ $ sha256sum oci5.tar oci6.tar
 
 Same image, same bytes. `SOURCE_DATE_EPOCH` **alone** is not enough: two builds with it but without `rewrite-timestamp` gave two different tarballs (`cb50837d...` and `797284fb...`). In CI, use the commit time: `SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)`.
 
-Two honest limits:
+Two limits:
 
 - On this machine, `rewrite-timestamp=true` with `--load` failed: `exporter option "rewrite-timestamp" conflicts with "unpack"`. The containerd image store unpacks images as it stores them. Export to an OCI tarball instead, or push straight to a registry (`--output type=image,push=true,rewrite-timestamp=true`, not tested here: no registry in this run).
 - Reproducible also means **pinned inputs**. `FROM golang:1.27` today and next week may be different images. Pin by digest (`crane digest golang:1.27`), and let a bot like Renovate or Dependabot bump the digest in a pull request.
 
-## SBOM: what is in the box
+## SBOM: the list of packages in the image
 
 A Software Bill of Materials lists every package in the image. `syft` reads the Debian package database in distroless **and** the module list Go embeds in every binary (the same data as `go version -m`):
 

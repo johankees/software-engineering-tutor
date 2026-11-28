@@ -2,17 +2,17 @@
 
 ## Why care?
 
-The invoice endpoint of the orders service is slow. In the team chat, five people have five theories: "it's the JSON", "it's the database", "Go's GC is slow", "we need a cache", "rewrite it in Rust". Two days later someone runs a profiler. The real cause is one line that builds a string in a loop. Fixing it makes the endpoint **29× faster**. None of the five theories was right.
+The invoice endpoint of the orders service is slow. The team suggests several causes: the JSON encoding, the database, a slow GC, a missing cache. Two days later someone runs a profiler. The real cause is one line that builds a string in a loop. Fixing it makes the endpoint **29× faster**. None of the suggested causes was right.
 
-This happens all the time, and it teaches the most important rule of performance work:
+This is common, and it shows the most important rule of performance work:
 
-> **Measure first. Guess never.**
+> **Measure first. Do not guess.**
 
 Go has excellent measuring tools built in: benchmarks, `pprof`, the execution trace, GC traces. This page teaches you how to use them, how to read what they say, and what to change once you know.
 
-## The idea: a doctor, not a mechanic
+## The idea: measure, change, measure again
 
-A good doctor doesn't start by operating. They take measurements, find the cause, treat it, and measure again to see if it worked. Performance work is the same loop:
+Performance work is a loop. You measure, find the cause, change one thing, and measure again to see if the change worked:
 
 ```mermaid
 flowchart LR
@@ -124,10 +124,10 @@ How to read one line:
 | `-16`           | GOMAXPROCS during the run                                           |
 | `8029`          | How many times the loop body ran                                    |
 | `157291 ns/op`  | Time per call: 157 µs to render 200 lines. That is a lot.           |
-| `418549 B/op`   | Bytes allocated on the heap per call: 409 KiB for ~4 KiB of output! |
+| `418549 B/op`   | Bytes allocated on the heap per call: 409 KiB for ~4 KiB of output. |
 | `599 allocs/op` | Heap allocations per call: 3 per line                               |
 
-The numbers already tell a story. The output is about 4 KB, but we allocate **100 times** that.
+The numbers already show the problem. The output is about 4 KB, but we allocate **100 times** that.
 
 ## Step 2: profile to find **where**
 
@@ -159,7 +159,7 @@ go tool pprof -top -cum invoice.test cpu.out
 
 - **flat** = time spent in the function's own code. **cum** = flat + everything it called.
 - `runtime.concatstrings` (27%) is the `out += ...` line: string concatenation.
-- `runtime.gcBgMarkWorker` (22%) is the **garbage collector**, cleaning up after us.
+- `runtime.gcBgMarkWorker` (22%) is the **garbage collector**, freeing the memory that `Render` allocated.
 - `runtime.mallocgc` (18%) is heap allocation.
 
 So less than half of the CPU goes to `Render` itself, and most of _that_ is copying strings and allocating. The memory profile confirms it. `-sample_index=alloc_space` means "total bytes allocated", and `-list` shows them per source line:
@@ -280,7 +280,7 @@ The two allocations left are the buffer and the final `string(buf)` conversion (
 
 ### Comparing properly: `benchstat`
 
-Eyeballing numbers is fine for a 29× change. For a 5% change it is not: benchmark results are **noisy** (other programs, CPU frequency scaling, the GC). The Go team's tool [`benchstat`](https://pkg.go.dev/golang.org/x/perf/cmd/benchstat) reads both files and does the statistics for you:
+Comparing numbers by eye is fine for a 29× change. For a 5% change it is not: benchmark results are **noisy** (other programs, CPU frequency scaling, the GC). The Go team's tool [`benchstat`](https://pkg.go.dev/golang.org/x/perf/cmd/benchstat) reads both files and does the statistics for you:
 
 ```sh
 go tool benchstat old.txt new.txt   # with benchstat added as a tool in go.mod (see Modules)
@@ -342,7 +342,7 @@ The second run looks 1% slower (5.804 µs vs 5.745 µs), but benchstat prints `~
     `go get -tool golang.org/x/perf/cmd/benchstat` and run them with `go tool benchstat`. Everyone
     on the team, and CI, uses the same version. See [Modules and dependencies](modules.md).
 
-## Reducing allocations: the usual moves
+## Reducing allocations: common fixes
 
 Most Go performance work in services is **allocation work**, because allocations cost twice: once to allocate, and again in the GC. The common fixes, in the order you should try them:
 
@@ -493,9 +493,9 @@ go version -m invoicer | grep pgo
     is enough for most teams. A profile from a benchmark is worse than one from production,
     because it shows the benchmark's hot paths, not your users'.
 
-## The GC: two knobs, used rarely
+## The GC: two settings, rarely changed
 
-Go's garbage collector is **concurrent**: it does most of its work while your program runs, with very short pauses. You can't choose a different GC, and that's on purpose: one GC, tuned by the Go team, with only **two knobs**. (Compare the JVM, where GC tuning flags are a career.)
+Go's garbage collector is **concurrent**: it does most of its work while your program runs, with very short pauses. You can't choose a different GC, and that's on purpose: one GC, tuned by the Go team, with only **two settings**. (The JVM, by contrast, has many GC tuning flags.)
 
 You can watch it work with `GODEBUG=gctrace=1`:
 
@@ -510,7 +510,7 @@ gc 2 @0.005s 6%: 0.086+0.22+0.19 ms clock, 1.3+0/0.24/0.035+3.1 ms cpu, 3->3->0 
 
 Read it left to right: GC cycle number, time since start, **% of CPU used by GC so far**, then wall-clock times of the phases (a short stop, concurrent marking, a short stop), and `3->4->1 MB`: heap size at start, at end, and **live** heap after marking. `4 MB goal` is where the next cycle will start.
 
-### Knob 1: `GOGC`
+### Setting 1: `GOGC`
 
 `GOGC=100` (the default) means "start the next GC when the heap has grown 100% over the live heap of the last cycle". Live heap 100 MB → next GC at about 200 MB (plus a little for stacks and globals). Small programs like this one get a minimum goal of 4 MB, which is why the trace above says `4 MB goal` with only 1 MB live. Higher values mean fewer GC cycles and more memory. Here's the same program (it does 20,000 renders with the _old_ code, so lots of garbage):
 
@@ -520,7 +520,7 @@ Read it left to right: GC cycle number, time since start, **% of CPU used by GC 
 | `GOGC=400`                  | 13        |
 | `GOGC=off GOMEMLIMIT=64MiB` | 3         |
 
-### Knob 2: `GOMEMLIMIT`
+### Setting 2: `GOMEMLIMIT`
 
 `GOMEMLIMIT` (Go 1.19+) is a **soft memory limit** for the whole Go runtime. When the heap gets close to it, the GC runs more often, whatever `GOGC` says. With `GOGC=off GOMEMLIMIT=64MiB`, the GC does nothing until memory approaches 64 MiB: only 3 cycles.
 
@@ -539,11 +539,11 @@ Read it left to right: GC cycle number, time since start, **% of CPU used by GC 
     it at about 50% of CPU to avoid a total "death spiral"), so the service becomes very slow
     instead of failing fast.
 
-The best GC tuning is still **fewer allocations**. The invoice fix above cut GC work by 99% without touching a knob.
+The best GC tuning is still **fewer allocations**. The invoice fix above cut GC work by 99% without changing a setting.
 
 ## `GOMAXPROCS` in containers
 
-`GOMAXPROCS` is the number of Ps: how many goroutines can run Go code at the same time (see [Processes, threads and system calls](../fundamentals/processes-and-threads.md)). For a long time it defaulted to the number of CPUs on the **machine**. In Kubernetes, a pod limited to 2 CPUs on a 64-core node got `GOMAXPROCS=64`, and the kernel's CPU quota then throttled it hard, causing ugly latency spikes. Teams fixed this with the `go.uber.org/automaxprocs` package.
+`GOMAXPROCS` is the number of Ps: how many goroutines can run Go code at the same time (see [Processes, threads and system calls](../fundamentals/processes-and-threads.md)). For a long time it defaulted to the number of CPUs on the **machine**. In Kubernetes, a pod limited to 2 CPUs on a 64-core node got `GOMAXPROCS=64`, and the kernel's CPU quota then throttled it hard, causing large latency spikes. Teams fixed this with the `go.uber.org/automaxprocs` package.
 
 Since **Go 1.25** this is built in. If your `go.mod` says `go 1.25` or newer, the default `GOMAXPROCS` takes into account:
 
@@ -581,7 +581,7 @@ GOMAXPROCS=3 go run ./cmd/invoicer    # GOMAXPROCS: 3 NumCPU: 16
 
     `for b.Loop()` (Go 1.24+) excludes setup before the loop from timing automatically, and
     prevents the compiler from optimising away the measured call. With `b.N` you need
-    `b.ResetTimer()` and tricks to keep results alive, and it's easy to get wrong.
+    `b.ResetTimer()` and extra code to keep results alive, and it's easy to get wrong.
 
 ??? question "2. In a CPU profile, what's the difference between `flat` and `cum`?"
 
@@ -613,7 +613,7 @@ GOMAXPROCS=3 go run ./cmd/invoicer    # GOMAXPROCS: 3 NumCPU: 16
 - **`pprof`**: CPU for time, heap with `alloc_space` for garbage, `-list` for the exact line, `-http` for flame graphs.
 - Most wins are **fewer allocations**: pre-size, append, avoid boxing, check escape analysis, pool only where proven.
 - Serve pprof on a **private** admin port. Use the **execution trace** and the **flight recorder** for latency problems.
-- **PGO**: commit `default.pgo` next to `main`, get free CPU wins.
+- **PGO**: commit `default.pgo` next to `main` for CPU gains with no code change.
 - GC: leave `GOGC`, set **`GOMEMLIMIT`** in containers. `GOMAXPROCS` is container-aware since Go 1.25.
 
 Next: [Building a CLI](cli.md), where everything so far comes together in a real program.

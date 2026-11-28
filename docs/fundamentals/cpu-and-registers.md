@@ -6,15 +6,15 @@ A teammate says: "Don't worry, the compiler inlines that." Another says: "This l
 
 These are CPU-level arguments. You don't need to write assembly to join them. But you need a clear picture of what the CPU does, and you need to be able to **look** at what Go produces. This page gives you both.
 
-## The idea: a very fast, very simple worker
+## The idea: a fast machine for simple instructions
 
-Picture a worker at a small desk.
+A CPU works with three things:
 
-- The **desk** has a few small trays. These are **registers**. The worker can only do math on things that are on the desk.
-- Behind the worker is a huge **warehouse** of shelves. This is **memory** (RAM). It holds everything else, but walking there is slow.
-- The worker follows a **list of tiny instructions**: "take box 12 from the warehouse to tray A", "add tray B to tray A", "if tray A is zero, jump to step 40".
+- A few small storage slots inside the chip. These are **registers**. The CPU can only do math on values that are in registers.
+- **Memory** (RAM) outside the chip. It holds everything else, but it is much slower to reach than a register.
+- A **list of simple instructions**, such as "load the value at address 12 into register A", "add register B to register A", "if register A is zero, jump to instruction 40".
 
-The worker is incredibly fast (billions of steps per second) but also incredibly simple. Every line of Go you write becomes many of these tiny steps.
+The CPU is very fast (billions of steps per second), but each step is very simple. Every line of Go you write becomes many of these steps.
 
 ## The fetch–decode–execute loop
 
@@ -92,7 +92,7 @@ func main() {
 }
 ```
 
-The `//go:noinline` comment stops the compiler from copying `add` into `main`. Without it, the compiler would just compute `5` at compile time, and there would be nothing to see.
+The `//go:noinline` comment stops the compiler from copying `add` into `main`. Without it, the compiler would compute `5` at compile time, and there would be nothing to see.
 
 Ask the compiler to print the assembly:
 
@@ -118,13 +118,13 @@ And in `main`:
     CALL    main.add(SB)
 ```
 
-Look how small it is!
+The code is very small:
 
 - `main` puts `2` into register `AX` and `3` into `BX`, then calls `add`.
 - `add` is **one instruction**: `AX = AX + BX`. Then `RET`. The result is in `AX`.
 - `48 01 d8 c3` is the real machine code: 4 bytes. `48 01 d8` is `ADDQ BX, AX`, and `c3` is `RET`.
 
-No memory was touched for the arguments. Everything happened on the desk.
+No memory was touched for the arguments. Everything happened in registers.
 
 ### The Go register ABI
 
@@ -134,7 +134,7 @@ The rules for "where do arguments and results go" are called the **calling conve
 AX, BX, CX, DI, SI, R8, R9, R10, R11
 ```
 
-Before Go 1.17, all arguments went through the stack in memory. The switch to registers made typical Go programs about 5% faster, with no code changes. That's the power of this layer.
+Before Go 1.17, all arguments went through the stack in memory. The switch to registers made typical Go programs about 5% faster, with no code changes. Details at this layer can change the speed of every program.
 
 Two other registers have fixed jobs in Go on amd64:
 
@@ -158,13 +158,13 @@ This compares the stack pointer with a limit stored in the goroutine. If the sta
 
 ## Why modern CPUs are faster than "one instruction per tick"
 
-A CPU at 4 GHz does 4 billion clock **cycles** per second. But a modern core finishes _several_ instructions per cycle. Three tricks make that possible:
+A CPU at 4 GHz does 4 billion clock **cycles** per second. But a modern core finishes _several_ instructions per cycle. Three techniques make that possible:
 
-1. **Pipelining.** Like a car factory line: while one instruction executes, the next is being decoded and the one after that is being fetched.
+1. **Pipelining.** The CPU splits each instruction into stages and works on several instructions at once: while one instruction executes, the next is being decoded and the one after that is being fetched.
 2. **Out-of-order execution.** If instruction 2 waits for slow memory, the CPU runs instructions 3, 4 and 5 first (when they don't depend on 2), and puts the results in the right order later.
 3. **Branch prediction.** At an `if`, the CPU does not wait to know the answer. It **guesses**, and starts running that path. A right guess is free. A wrong guess means throwing away the work: about 15–20 cycles lost.
 
-The third point has a famous effect. A loop with an `if` over **sorted** data is often much faster than the same loop over **random** data. With sorted data the `if` gives the same answer many times in a row, so the guesses are right.
+The third point has a well-known effect. A loop with an `if` over **sorted** data is often much faster than the same loop over **random** data. With sorted data the `if` gives the same answer many times in a row, so the guesses are right.
 
 !!! note "What this means for you"
 
@@ -174,7 +174,7 @@ The third point has a famous effect. A loop with an `if` over **sorted** data is
 
 ## Multiple cores
 
-A modern CPU has many **cores**. Each core is a full worker with its own registers, its own instruction pointer, and its own small caches. 8 cores = 8 workers running at the same time, each on its own list of instructions.
+A modern CPU has many **cores**. Each core is a complete processor with its own registers, its own instruction pointer, and its own small caches. 8 cores can run 8 lists of instructions at the same time.
 
 Your Go program uses this through goroutines. Go asks: "how many cores do I have?" (`runtime.NumCPU()`) and by default runs goroutines on that many threads at once. See [Processes and threads](processes-and-threads.md).
 
@@ -183,13 +183,13 @@ Your Go program uses this through goroutines. Go asks: "how many cores do I have
 !!! warning "Trap: \"fewer lines of Go = faster\""
 
     One short line like `s = append(s, x)` can mean a function call, a memory allocation and a copy.
-    A long, boring loop can become five instructions. Lines of code do not measure work. Instructions,
+    A long, simple loop can become five instructions. Lines of code do not measure work. Instructions,
     memory access and allocations do.
 
 !!! warning "Trap: benchmarking code that the compiler removed"
 
     If the result of your computation is never used, the compiler may delete it. Your benchmark then
-    measures nothing and looks amazingly fast. Use `b.Loop()` (Go 1.24+) in benchmarks: the compiler
+    measures nothing and looks very fast. Use `b.Loop()` (Go 1.24+) in benchmarks: the compiler
     will not optimize away function calls inside a `for b.Loop()` loop.
 
 ## Check yourself

@@ -9,7 +9,7 @@ You almost never create a Pod yourself. You create a **workload**, and a control
 - "Run one log agent on every node." That is a **DaemonSet**.
 - "Run this migration once, and retry it if it fails." That is a **Job**. "Every night at 2:00" makes it a **CronJob**.
 
-Pick the wrong one, or misunderstand the one you picked, and you get the classic messages:
+Pick the wrong one, or misunderstand the one you picked, and you get messages like these:
 
 - "The rollout is `successful`, but for 20 seconds some users got `502 Bad Gateway`."
 - "`kubectl apply` says `configured`, but nothing changed. The rollout is stuck, and nobody noticed."
@@ -17,15 +17,15 @@ Pick the wrong one, or misunderstand the one you picked, and you get the classic
 
 This page builds each workload for the `orders` service, watches the controllers work, and then breaks a rollout on purpose. It uses the ideas from [Reconciliation](reconciliation.md) (controllers, owner references) and [Pods](pods.md) (probes, termination).
 
-## The idea: a restaurant chain, a recipe card and a kitchen crew
+## The idea: a Deployment manages ReplicaSets, a ReplicaSet manages Pods
 
-Think of a restaurant chain.
+A Deployment works in two layers:
 
-- The **Deployment** is the chain manager. They hold the **recipe card** (the Pod template) and one number: "we want 4 cooks".
-- Every version of the recipe card gets its own **kitchen crew**: a **ReplicaSet**. The crew's only job is "keep exactly N cooks with this card".
-- The **Pods** are the cooks.
+- The **Deployment** holds the **Pod template** (the spec for each Pod) and one number: the wanted count of Pods, for example 4.
+- Every version of the Pod template gets its own **ReplicaSet**. A ReplicaSet has one job: keep exactly N Pods that match its template.
+- The **Pods** are created by the ReplicaSet.
 
-When the recipe changes, the manager does not re-train the cooks. They hire a new crew with the new card and grow it, and shrink the old crew at the same time. Old crews are not fired: they stay on the books with 0 cooks, so the manager can grow one again if the new recipe is bad. That is a rollback.
+When the template changes, the Deployment does not change the existing Pods. It creates a new ReplicaSet with the new template and scales it up, and at the same time scales the old ReplicaSet down. Old ReplicaSets are not deleted: they stay with 0 Pods, so the Deployment can scale one up again if the new version is bad. That is a rollback.
 
 ```mermaid
 flowchart TD
@@ -37,7 +37,7 @@ flowchart TD
     RS2 -->|owns| P4[Pod]
 ```
 
-The other workloads are different crews for different jobs. A StatefulSet is a crew where every cook has a name tag and a fixed station. A DaemonSet puts exactly one cook in every restaurant. A Job is a catering order: cook until it is done, then go home.
+The other workloads manage Pods in other ways. A StatefulSet gives every Pod a fixed name and its own disk. A DaemonSet runs exactly one Pod on every node. A Job runs Pods until a task is done, and then stops.
 
 ## Under the hood: Deployments
 
@@ -139,7 +139,7 @@ Scaling (`kubectl scale --replicas=6`) does not change the template, so the hash
 
 ### A rolling update, step by step
 
-Two knobs control a rolling update:
+Two fields control a rolling update:
 
 | Field            | Means                                                 | Default | Rounding               |
 | ---------------- | ----------------------------------------------------- | ------- | ---------------------- |
@@ -404,14 +404,14 @@ No refused connections. Both rounds also have a few timeouts. They are not from 
 
 ## Under the hood: StatefulSets
 
-A Deployment's Pods are cattle: random names, any order, any one can be replaced by any other. Databases, Kafka brokers and etcd members can't work like that. Member 2 must stay member 2, with its own disk and its own DNS name. A **StatefulSet** gives each Pod:
+A Deployment's Pods are interchangeable: random names, any order, any one can be replaced by any other. Databases, Kafka brokers and etcd members can't work like that. Member 2 must stay member 2, with its own disk and its own DNS name. A **StatefulSet** gives each Pod:
 
 - A **stable name**: `<statefulset>-0`, `-1`, `-2`. A replacement Pod gets the same name.
 - A **stable DNS name** through a headless Service: `tutor-db-1.tutor-db.tutor-workloads.svc.cluster.local` (see [Services and cluster DNS](services-and-dns.md)).
 - **Its own volume** through `volumeClaimTemplates`. The volume follows the name, not the Pod (see [Storage](storage.md)).
 - **Order**: by default (`podManagementPolicy: OrderedReady`), Pod `n` starts only when Pod `n-1` is ready, and scaling down removes the highest number first.
 
-Here `ordersd` plays the database (it has no disk, so no volumes yet):
+Here `ordersd` stands in for the database (it has no disk, so no volumes yet):
 
 ```yaml
 apiVersion: v1
@@ -793,7 +793,7 @@ deleting old orders
 
 The number in the Job name is the scheduled time, in **minutes since 1970**. So two Jobs for the same minute get the same name, and the API refuses the second. To run one now, by hand: `kubectl create job tutor-cleanup-manual --from=cronjob/tutor-cleanup`. To stop it: `kubectl patch cronjob tutor-cleanup -p '{"spec":{"suspend":true}}'`.
 
-The fields that decide what happens on bad days:
+The fields that decide what happens when something goes wrong:
 
 | Field                        | Default                            | What it decides                                                                     |
 | ---------------------------- | ---------------------------------- | ----------------------------------------------------------------------------------- |
@@ -809,7 +809,7 @@ Two warnings. First, `Allow` is the default: a report that sometimes takes longe
 
 - **No readiness probe.** A rollout then trusts "container started". A version that crashes after 10 seconds replaces every good Pod. Add a readiness probe, and `minReadySeconds` for slow failures.
 - **Nobody watches the rollout.** `kubectl apply` returns at once. `ProgressDeadlineExceeded` is just a condition, and there is no automatic rollback. Run `kubectl rollout status` in CI and fail the pipeline on exit code 1.
-- **`rollout undo` in a GitOps world.** It changes the cluster, not Git. The next sync rolls the bad version out again. Revert the commit.
+- **`rollout undo` with GitOps.** It changes the cluster, not Git. The next sync rolls the bad version out again. Revert the commit.
 - **Shutting down too fast.** `SIGTERM` and endpoint removal race. Keep serving for a few seconds after `SIGTERM` (`ORDERS_SHUTDOWN_DELAY`, or a `preStop` sleep), and keep `terminationGracePeriodSeconds` larger than delay plus drain time.
 - **`maxSurge` is not a memory budget.** Terminating Pods don't count, so a rollout can briefly run many more Pods than `replicas + maxSurge`.
 - **Changing a Deployment's selector.** `spec.selector` is immutable in `apps/v1`. Plan your labels before the first deploy.

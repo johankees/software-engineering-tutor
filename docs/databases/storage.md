@@ -8,20 +8,20 @@ Three tickets that all trace back to this page:
 - "The first query after a restart is slow. The same query a second later is fast."
 - "Disk usage keeps growing, but we never add rows. We only update them."
 
-A database is not magic. It is a program that keeps your rows in files, in fixed-size blocks, and writes a diary of every change before it touches those blocks. Once you can see the blocks and the diary, most "strange" database behaviour stops being strange.
+A database is a program that keeps your rows in files, in fixed-size blocks. It writes a log record for every change before it changes those blocks. Once you can see the blocks and the log, most unexpected database behaviour has a clear cause.
 
 On this page you look inside a real PostgreSQL table, byte by byte, and inside its write-ahead log. At the end you compare PostgreSQL's design (B-trees, update in place) with the other big family (LSM trees, used by RocksDB and Cassandra).
 
-## The idea: a ring binder and a diary
+## The idea: fixed-size pages and a write-ahead log
 
-Think of a big ring binder in an office.
+PostgreSQL stores data in a few simple parts.
 
-- Every **page** in the binder has the same size. You never write half a row on one page and half on the next. You take out a whole page, change it, and put it back.
-- Each page has a small **table of contents** at the top: "row 1 starts at line 40, row 2 at line 32...". Rows are written from the bottom of the page up. The table of contents grows from the top down. When they meet, the page is full.
-- Next to the binder lies a **diary**. Before anybody changes a page, they first write one line in the diary: "page 500, row 1: status is now `cancelled`." The diary is only ever written at the end, never in the middle, so writing to it is fast.
-- Once in a while, somebody copies all changed pages back into the archive cabinet. That is a **checkpoint**. After it, the old diary lines are not needed anymore.
+- A table file is a sequence of **pages** of the same size (8 kB). A row never spans two pages. To change a row, PostgreSQL reads the whole page into memory, changes it there, and later writes the whole page back.
+- Each page starts with a small array of **line pointers**: "row 1 starts at byte 8128, row 2 at byte 8064...". Rows are written from the end of the page towards the start. The line pointer array grows from the start towards the end. When the two meet, the page is full.
+- Next to the table files is the **write-ahead log** (WAL). Before PostgreSQL changes a page, it first appends a record to the WAL: "page 500, row 1: status is now `cancelled`." PostgreSQL only appends to the end of the WAL, so writing to it is fast.
+- From time to time, PostgreSQL writes all changed pages from memory to the table files. That is a **checkpoint**. After it, the older WAL records are no longer needed for recovery.
 
-If the office burns down (a crash), you take the archive pages and replay the diary from the last checkpoint. Nothing is lost.
+After a crash, PostgreSQL starts from the table files as of the last checkpoint and replays the WAL from that point. No committed change is lost.
 
 ```mermaid
 flowchart LR
@@ -32,7 +32,7 @@ flowchart LR
     WAL -.->|"after a crash: replay"| HEAP
 ```
 
-The important arrow is the one with `fsync`. A commit is durable when its diary line is on disk. The table pages can follow minutes later.
+The important arrow is the one with `fsync`. A commit is durable when its WAL record is on disk. The table pages can follow minutes later.
 
 ## Setup: your own PostgreSQL
 
@@ -198,7 +198,7 @@ Bob moved from `(0,2)` to `(0,4)`. PostgreSQL did not overwrite the old row. It 
 
 The order of rows in `SELECT` changed too. Without `ORDER BY`, a table has no order. You get the rows in the order they happen to lie in the file.
 
-Don't trust `pageinspect`? Ask the disk. After a `CHECKPOINT` (more on that below), the page is in the file, and `od` shows both bobs:
+You can confirm this on disk. After a `CHECKPOINT` (more on that below), the page is in the file, and `od` shows both bobs:
 
 ```console
 $ docker exec tutor-pg sh -c 'od -A d -t x2 -N 24 /var/lib/postgresql/18/docker/base/16389/16464'
@@ -415,7 +415,7 @@ tps = 1812.095206 (without initial connection time)
 
 `synchronous_commit=off` makes `COMMIT` return **before** the `fsync`. Three times faster, and a crash can lose the last few hundred milliseconds of commits that the client was told had succeeded. The database stays consistent; it just "forgets" those transactions. That can be fine for a click counter, never for a payment. You can set it per transaction (`SET LOCAL synchronous_commit = off`), so you don't need to choose for the whole server.
 
-!!! warning "fsync must tell the truth"
+!!! warning "fsync must be reliable"
 
     All of this assumes that when `fsync` returns, the data survives a power cut. Some disks and
     virtual disks lie: they report success while the data is still in a volatile cache. Then
@@ -491,7 +491,7 @@ rmgr: Btree       len (rec/tot):     53/  7457, tx:        801, lsn: 0/1C5C1930,
 rmgr: Transaction len (rec/tot):     46/    46, tx:        801, lsn: 0/1C5C3670, prev 0/1C5C1930, desc: COMMIT 2026-11-26 22:20:43.102603 UTC
 ```
 
-Read it as a story:
+Step by step:
 
 1. Page 500 was full (the bulk insert packed it). The new row version had to go to another page, 934. Before PostgreSQL lets go of page 500 to go and find room, it marks the old row as locked (`LOCK`, with a copy of page 500).
 2. `UPDATE` writes the new version on page 934 (a copy of it, and of the visibility map page).

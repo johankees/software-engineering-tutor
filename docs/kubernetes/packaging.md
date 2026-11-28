@@ -13,12 +13,12 @@ You never write one manifest. You write one for dev, one for staging, one for ea
 
 This page packages `ordersd` both ways, deploys it to the `kind` cluster from [Architecture](architecture.md), and then looks at the part both tools share: how `kubectl apply` decides who owns which field.
 
-## The idea: tracing paper vs a form with blanks
+## The idea: patching YAML vs filling in templates
 
-Two ways to make 14 slightly different floor plans of the same house.
+There are two ways to produce 14 slightly different sets of manifests from one source.
 
-- **Kustomize is tracing paper.** You draw the house once, on the bottom sheet (the **base**). For each customer you put a sheet of tracing paper on top (an **overlay**) and draw only the changes: "move this wall", "3 bedrooms, not 1". The bottom sheet is a real, complete plan. You can read it alone. Every layer is a real plan too.
-- **Helm is a form with blanks.** You write the plan once, with holes in it: "number of bedrooms: \_\_\_". For each customer you fill in a sheet of answers (the **values**). The form alone is not a plan: you can't read it without the answers, and the form's author decided which questions you may answer.
+- **Kustomize patches complete YAML.** You write the manifests once, as a **base**. For each environment you write an **overlay** that lists only the changes: "3 replicas, not 1", "log level debug". The base is valid, complete YAML that you can read and apply on its own. Each overlay's output is complete YAML too.
+- **Helm fills in templates.** You write the manifests once, with placeholders: `replicas: {{ .Values.replicaCount }}`. For each environment you supply a set of **values**. A template on its own is not valid YAML: you can't read the result without the values, and the chart author decides which fields can be set.
 
 ```mermaid
 flowchart LR
@@ -181,7 +181,7 @@ Two ways to patch, and the difference matters:
 | Patch type                  | Looks like             | Lists                                        | Use when                                |
 | --------------------------- | ---------------------- | -------------------------------------------- | --------------------------------------- |
 | Strategic merge (`path:`)   | a partial object       | merged by a key (`name` for containers, env) | adding or changing fields; most patches |
-| JSON 6902 (`op:` + `path:`) | a list of instructions | addressed by index (`/containers/0/env/0`)   | removing fields, or exact surgery       |
+| JSON 6902 (`op:` + `path:`) | a list of instructions | addressed by index (`/containers/0/env/0`)   | removing fields, or exact changes       |
 
 The JSON patch above says `env/0`. If someone adds a variable at the top of the base's `env` list, the patch silently changes the wrong variable. Strategic merge would match by `name` instead.
 
@@ -261,7 +261,7 @@ Read it carefully, because three things happened that you did not write:
 
 1. **The ConfigMap got a hash suffix**: `ordersd-config-b9dgk46c2m`. The hash is computed from its content.
 2. **The reference was rewritten too.** `envFrom` in the Deployment now says `tutor-prod-ordersd-config-b9dgk46c2m`. Kustomize knows which fields point at ConfigMaps, Secrets and Services, and fixes them when it renames things.
-3. **`namePrefix` renamed every object**, but **not the labels**. The selector is still `app: ordersd`. Keep that in mind; it bites in a minute.
+3. **`namePrefix` renamed every object**, but **not the labels**. The selector is still `app: ordersd`. Keep that in mind; it causes a problem later on this page.
 
 Why the hash? A [ConfigMap used as env vars](config-and-secrets.md) is read once, at container start. Changing it does nothing to running pods. With a hash in the name, new content means a **new name**, which changes the Deployment's pod template, which starts a rollout. Config change and rollout become one step, and `kubectl rollout undo` brings back the old config too, because the old ConfigMap is still there.
 
@@ -287,7 +287,7 @@ ordersd/templates/tests/test-connection.yaml
 ordersd/values.yaml
 ```
 
-The scaffold is generic: it runs `nginx`, uses the Service port as the container port, and has 161 lines of values for things `ordersd` doesn't need. Delete what you don't use (`hpa`, `ingress`, `httproute`, `serviceaccount`, `tests`, `NOTES.txt`). A chart with 40 knobs nobody uses is 40 places for a bug.
+The scaffold is generic: it runs `nginx`, uses the Service port as the container port, and has 161 lines of values for things `ordersd` doesn't need. Delete what you don't use (`hpa`, `ingress`, `httproute`, `serviceaccount`, `tests`, `NOTES.txt`). A chart with 40 values nobody uses has 40 places for a bug.
 
 ### Templates are Go `text/template`
 
@@ -358,7 +358,7 @@ resources:
     memory: 64Mi
 ```
 
-The important part is the thing Helm does **not** know: **it generates text, not objects.** `nindent 8` means "newline, then 8 spaces". Helm does not know that `labels:` needs a map, or that `replicas:` needs a number. It glues strings and hopes the result is valid YAML for the API. Get an indent wrong and you get a field in the wrong place, often without an error.
+The important part is the thing Helm does **not** know: **it generates text, not objects.** `nindent 8` means "newline, then 8 spaces". Helm does not know that `labels:` needs a map, or that `replicas:` needs a number. It joins strings, and nothing checks that the result is valid YAML for the API. Get an indent wrong and you get a field in the wrong place, often without an error.
 
 ### Values: where the answers come from
 
@@ -379,7 +379,7 @@ service/tutor-orders-ordersd created (server dry run)
 Error from server (BadRequest): error when creating "STDIN": Deployment in version "v1" cannot be handled as a Deployment: json: cannot unmarshal string into Go struct field DeploymentSpec.spec.replicas of type int32
 ```
 
-Helm rendered garbage happily. Only the API server said no, and it said no **after** it accepted the Service. A real install would now be half done. The fix is a `values.schema.json` next to `values.yaml`. Helm checks values against it before rendering:
+Helm rendered the invalid value without an error. Only the API server refused it, and it said no **after** it accepted the Service. A real install would now be half done. The fix is a `values.schema.json` next to `values.yaml`. Helm checks values against it before rendering:
 
 ```json
 {
@@ -407,7 +407,7 @@ ordersd:
 - at '/logLevel': value must be one of 'debug', 'info', 'warn', 'error'
 ```
 
-A values schema is the chart's API contract. Treat it like the request validation in [Services](../go/services.md): reject bad input at the door, with a clear message.
+A values schema is the chart's API contract. Treat it like the request validation in [Services](../go/services.md): reject bad input early, with a clear message.
 
 ### Releases are stored in the cluster
 
@@ -641,7 +641,7 @@ service/tutor-dev-ordersd    ClusterIP   10.96.61.46     <none>        80/TCP   
 service/tutor-prod-ordersd   ClusterIP   10.96.120.228   <none>        80/TCP    2s    app=ordersd
 ```
 
-Everything is green. Look at the `SELECTOR` column. Then ask each Service which pods it sends traffic to (EndpointSlices, from [Services and DNS](services-and-dns.md)):
+Everything looks healthy. Look at the `SELECTOR` column. Then ask each Service which pods it sends traffic to (EndpointSlices, from [Services and DNS](services-and-dns.md)):
 
 ```console
 $ kubectl -n tutor-packaging get endpointslices \
@@ -710,7 +710,7 @@ tutor-prod-ordersd-config-892tt8fmd9   2      19s
 tutor-prod-ordersd-config-b9dgk46c2m   2      63s
 ```
 
-The old one stays. That's good for rollbacks, and it's garbage after a while. `kubectl apply --prune` can delete objects that are no longer in your files, but `kubectl apply --help` still calls it Alpha ("not yet complete. Do not use unless you are aware of what the current state is"). GitOps tools (Argo CD, Flux) do this pruning for you, and so does Helm for objects that leave the chart.
+The old one stays. That is good for rollbacks, but after a while the old ones are unused. `kubectl apply --prune` can delete objects that are no longer in your files, but `kubectl apply --help` still calls it Alpha ("not yet complete. Do not use unless you are aware of what the current state is"). GitOps tools (Argo CD, Flux) do this pruning for you, and so does Helm for objects that leave the chart.
 
 Clean up:
 
@@ -803,7 +803,7 @@ The common enterprise answer is **both**: install third-party software from its 
 - **`--reuse-values` freezes old values.** It reuses the last release's values and ignores new defaults in the chart's `values.yaml`. Pass the same `-f` files every time instead.
 - **Chart version in the pod template.** Every chart release restarts every pod. Keep `helm.sh/chart` out of `spec.template.metadata.labels`.
 - **`apply` is not a transaction.** When one object fails, the ones before it are already changed. Run `kubectl diff` (exit code 2) first.
-- **Two owners for one field.** CI applies `replicas: 3`, an HPA wants 7. With server-side apply you get a conflict; with client-side apply they fight silently. Remove the field from the manifest that should not own it.
+- **Two owners for one field.** CI applies `replicas: 3`, an HPA wants 7. With server-side apply you get a conflict; with client-side apply they overwrite each other silently. Remove the field from the manifest that should not own it.
 - **Old generated ConfigMaps pile up.** Hash-suffixed ConfigMaps and Secrets are never deleted by `kubectl apply`. Prune them with your GitOps tool.
 
 ## Check yourself
@@ -826,8 +826,8 @@ The common enterprise answer is **both**: install third-party software from its 
 
 ??? question "3. CI applies with `--server-side --field-manager=ci`. An HPA scales the Deployment. The next CI run fails with `conflict with \"horizontal-pod-autoscaler\"`. What's the right fix?"
 
-    Not `--force-conflicts` in CI: that would set replicas back on every run and fight the
-    HPA. The HPA should own `.spec.replicas`, so remove `replicas` from the manifest (or
+    Not `--force-conflicts` in CI: that would set replicas back on every run and undo the
+    HPA's changes. The HPA should own `.spec.replicas`, so remove `replicas` from the manifest (or
     the overlay) that CI applies. Then CI no longer claims the field, and there is no
     conflict.
 

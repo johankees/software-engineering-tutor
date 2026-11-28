@@ -12,15 +12,15 @@ Five tickets:
 
 All five come from one wrong belief: **that timestamps from different machines can be compared**. Each machine has its own clock, and those clocks disagree, jump, and drift. On one machine, "what happened first?" is easy. Across machines, it needs a different tool. This page shows what clocks really do, how Go protects you on one machine, and the three **logical clocks** (Lamport, vector, hybrid) that distributed systems use instead of trusting wall time.
 
-## The idea: three villages, three church clocks
+## The idea: clocks disagree, messages give an order
 
-Three villages each have a church clock. Nobody has a phone. Each clock is set by hand, roughly, once a week, when the postman brings the time from the city.
+Every machine has its own clock, and each clock is corrected only from time to time, over the network.
 
-- The clocks **disagree** right now: one is 2 minutes ahead (**skew**, or offset).
-- Each one runs at its own speed: one gains 3 seconds a day (**drift**).
-- When the postman comes, someone moves the hands. The clock **jumps**, maybe backwards.
+- The clocks **disagree** at any moment: one may be 2 minutes ahead of another. This difference is **skew** (or offset).
+- Each clock runs at a slightly different speed: one may gain 3 seconds a day. This is **drift**.
+- When a clock is corrected, it can **jump**, also backwards.
 
-Now someone writes a letter at 10:05 by village A's clock, and the reply is written at 10:03 by village B's clock. Was the reply written before the letter? Of course not: **you can't answer a letter you haven't received**. That is the key insight of logical clocks: **messages give an order that clocks can't**. If B received A's letter before writing its reply, the reply came after, whatever the clocks say.
+Now machine A sends a message at 10:05 by its own clock, and machine B writes a reply at 10:03 by its own clock. Was the reply written before the message? No: **B cannot reply to a message it has not received**. That is the key idea behind logical clocks: **messages give an order that clocks cannot**. If B received A's message before it wrote the reply, the reply came after, whatever the clocks say.
 
 ```mermaid
 sequenceDiagram
@@ -67,7 +67,7 @@ Two real numbers to look at:
 - **`Frequency: -56.730ppm`**: the correction timesyncd applies to the crystal's speed. Without it, this clock would be off by about 57 µs every second: about 5 seconds a day.
 - **`Delay: 14.048ms`**: the round trip to the time server. NTP can't know if the request or the reply was slower, so its accuracy is limited to about half of this: **±7 ms at best**, before any other error.
 
-So: **two machines' wall clocks always differ**, usually by milliseconds, sometimes by seconds, and either one can jump at any moment. Leap seconds add more fun: some systems repeat a second, others "smear" it over hours. Cloud providers offer better clocks (for example, PTP-based time with known error bounds), and Google's Spanner database is built on clocks that report their own uncertainty, but no clock is exact.
+So: **two machines' wall clocks always differ**, usually by milliseconds, sometimes by seconds, and either one can jump at any moment. Leap seconds add another problem: some systems repeat a second, others "smear" it over hours. Cloud providers offer better clocks (for example, PTP-based time with known error bounds), and Google's Spanner database is built on clocks that report their own uncertainty, but no clock is exact.
 
 ### Go's `time.Time` carries both clocks
 
@@ -115,7 +115,7 @@ after JSON:      2026-11-27 07:12:54.631287803 +0100 CET
 - **`==` compares the struct**, including the monotonic part (and the location). The same instant gave `false`. Always compare times with `Equal`, `Before`, `After` or `Compare`.
 - **JSON (and `MarshalText`, `MarshalBinary`, `Gob`) drop the monotonic reading.** A time that crossed a process boundary is wall time only. From then on, comparisons and subtractions use the wall clock, with all its jumps.
 
-The rule from the Go docs: **the wall clock is for telling time, the monotonic clock is for measuring time.** Timeouts, deadlines, latency, rate limiters, TTLs inside one process: monotonic, which `time.Now()` + `Sub`/`Since`/`Until` already give you. "When did this order ship?", shown to a human or stored in a database: wall time. "Which of these two events on two machines came first?": **neither**. Read on.
+The rule from the Go docs: **the wall clock is for telling time, the monotonic clock is for measuring time.** Timeouts, deadlines, latency, rate limiters, TTLs inside one process: monotonic, which `time.Now()` + `Sub`/`Since`/`Until` already give you. "When did this order ship?", shown to a human or stored in a database: wall time. "Which of these two events on two machines came first?": **neither**. The rest of this page covers that case.
 
 ### Injecting a clock
 
@@ -208,7 +208,7 @@ after 24h0m0s   ahead by 4.32s
 after 168h0m0s  ahead by 30.24s
 ```
 
-That's the first ticket. `shipped` happened **after** `paid` in real time, and even **because of** it (shipping read `paid` first). But its timestamp is earlier, so LWW throws it away. No error, no log line: the update silently vanishes. Skew only has to be bigger than the time between two writes, and 200 ms is not unusual after an NTP hiccup.
+That's the first ticket. `shipped` happened **after** `paid` in real time, and even **because of** it (shipping read `paid` first). But its timestamp is earlier, so LWW throws it away. No error, no log line: the update silently vanishes. Skew only has to be bigger than the time between two writes, and 200 ms is not unusual after a short NTP problem.
 
 The drift lines show why clocks need constant correction: at 50 ppm, a machine that loses its NTP server is 4 seconds off after a day. Remember the laptop above needed a −57 ppm correction.
 
@@ -245,7 +245,7 @@ Here `a → b → c → g`: creating the order caused the charge, which caused t
 
 ## Lamport clocks: one counter per process
 
-The rules are tiny:
+The rules are short:
 
 - Each process keeps a counter `L`.
 - Before each local event or send: `L = L + 1`. A message carries the sender's `L`.
@@ -266,7 +266,7 @@ The guarantee: **if `a → b`, then `L(a) < L(b)`**. A reply always gets a bigge
 
 But the guarantee only goes one way. `L(a) < L(b)` does **not** mean `a → b`. Lamport numbers can't tell you that two events were concurrent.
 
-## Vector clocks: one counter per process, per process
+## Vector clocks: a counter for every process
 
 A **vector clock** keeps a counter for **every** process: "how many events of each process do I know about?"
 
@@ -356,7 +356,7 @@ e vs c: Lamport 2 < 3? true   vector says: concurrent
 That "concurrent" answer is what a replicated store needs. Take the fourth ticket: two agents edit the delivery address on two replicas.
 
 - If the new version's vector is **after** the stored one, the writer had seen the old value: replace it. No conflict.
-- If they are **concurrent**, neither writer saw the other's change. Don't pick one by timestamp: keep **both** ("siblings") and let the application, or the user, merge them. Amazon's Dynamo paper made this famous (the shopping cart that merges two concurrent versions), and Riak worked this way.
+- If they are **concurrent**, neither writer saw the other's change. Don't pick one by timestamp: keep **both** ("siblings") and let the application, or the user, merge them. Amazon's Dynamo paper made this widely known (the shopping cart that merges two concurrent versions), and Riak worked this way.
 
 The cost: one entry per process (or per replica, in practice) that ever wrote. With thousands of short-lived clients, vectors grow without bounds, so real systems keep one entry per **replica**, not per client, and prune old entries. Variants such as **version vectors** and **dotted version vectors** fix details of this.
 

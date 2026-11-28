@@ -2,29 +2,29 @@
 
 ## Why care?
 
-Four sentences you will hear in a security review:
+Four statements that come up in security reviews:
 
 - "The container runs as root, but that's fine, it's a container."
 - "We need `--privileged`, otherwise it doesn't work."
 - "The scanner found 300 vulnerabilities in the image."
 - "How do we know the image in production is the one CI built?"
 
-The first two are wrong in a dangerous way. The last two have good answers, if you know what an image contains and how to prove where it came from.
+The first two are wrong, and dangerous. The last two have good answers, if you know what an image contains and how to prove where it came from.
 
-A container is a normal Linux process (see [What a container is](what-a-container-is.md)). The kernel is **shared** with the host and every other container. So container security is about one question: if the process in the box is taken over, how much of the kernel and the host can the attacker reach? Docker answers with several layers, each one small. On this page you peel them off one at a time and measure each one on a real machine.
+A container is a normal Linux process (see [What a container is](what-a-container-is.md)). The kernel is **shared** with the host and every other container. So container security is about one question: if the process in the box is taken over, how much of the kernel and the host can the attacker reach? Docker answers with several layers of protection, each one small. On this page you remove them one at a time and measure each one on a real machine.
 
-## The idea: a hotel room, not a safe
+## The idea: several small layers of defence
 
-A container is like a hotel room.
+No single setting isolates a container completely. Each one limits a different thing:
 
-- The **user** you are (root or not) is like being a guest or the hotel manager. A manager in room 12 is still the manager.
-- **Capabilities** are the keys on your key ring. Root normally has every key. Docker takes most of them away at the door.
-- **Seccomp** is the list of phone numbers reception will connect. Dial a forbidden one (a kernel function you have no business calling) and the line is dead.
-- **no-new-privileges** means: you can't pick up a manager's key card on the way, even if one is lying around.
-- A **read-only root** is a room with the furniture bolted down. You can use it, not change it.
-- **Image scanning and signing** happen before you check in: is the luggage what the label says, and who packed it?
+- The **user** (root or not) decides which files and processes the container can touch. Without a user namespace, root in a container is root on the host.
+- **Capabilities** split root's power into separate rights. Docker removes most of them when it starts the container.
+- **Seccomp** is a filter on system calls. A call that is not on the allowed list (a kernel function a normal service never needs) fails.
+- **no-new-privileges** stops a process from gaining rights later, for example by running a setuid binary.
+- A **read-only root** filesystem lets the process read and run its files, but not change them.
+- **Image scanning and signing** happen before the container runs: does the image contain known vulnerable packages, and who built it?
 
-None of these is a wall. All of them together are a solid defence.
+None of these is enough alone. Together they are a strong defence.
 
 ```mermaid
 flowchart TB
@@ -60,9 +60,9 @@ $ cat /proc/360991/uid_map
          0          0 4294967295
 ```
 
-(The PIDs come from `docker inspect --format '{{.State.Pid}}'`.) The `uid_map` says: "UID 0 inside is UID 0 outside, for all 4 billion IDs". That is the **identity map**: the container is **not** in its own user namespace. Compare the one-ID map from `unshare -Ur` in [Namespaces and cgroups](../linux/namespaces-and-cgroups.md#user-namespaces-root-but-only-at-home). Root in this container is root on the host, with a smaller key ring.
+(The PIDs come from `docker inspect --format '{{.State.Pid}}'`.) The `uid_map` says: "UID 0 inside is UID 0 outside, for all 4 billion IDs". That is the **identity map**: the container is **not** in its own user namespace. Compare the one-ID map from `unshare -Ur` in [Namespaces and cgroups](../linux/namespaces-and-cgroups.md#user-namespaces-root-inside-unprivileged-outside). Root in this container is root on the host, with fewer capabilities.
 
-You can see it the moment a container writes to a host directory:
+You can see this as soon as a container writes to a host directory:
 
 ```console
 $ docker run --rm -v "$PWD:/data" alpine:3.22 touch /data/by-root
@@ -76,7 +76,7 @@ total 0
 ```
 
 - Root in the container made a file owned by **real root** on the host.
-- UID 65532 is a stranger to the host directory (owned by 1000), so normal permission rules say no.
+- UID 65532 is not the owner of the host directory (owned by 1000), so normal permission rules refuse the write.
 - `--user` with your own IDs is the usual fix for "my build container leaves root-owned files behind".
 
 UIDs are just numbers. The kernel does not care about names in the image's `/etc/passwd`; UID 65532 is "nonroot" in distroless and nobody at all on the host.
@@ -84,12 +84,12 @@ UIDs are just numbers. The kernel does not care about names in the image's `/etc
 !!! warning "The `docker` group is root"
 
     Anyone who can talk to `/var/run/docker.sock` can run
-    `docker run -v /:/host --privileged ...` and own the machine. `dockerd` runs as root and
+    `docker run -v /:/host --privileged ...` and take full control of the machine. `dockerd` runs as root and
     does what it is asked. Treat membership of the `docker` group like `sudo` without a
     password. On this machine, the user is in that group, and that's how every example on
     this page runs without `sudo`.
 
-### Fixing it for real: user namespaces
+### The real fix: user namespaces
 
 Two ways to make container root harmless, both covered in [Runtimes](runtimes.md):
 
@@ -107,7 +107,7 @@ Each process has five sets in `/proc/<pid>/status`. The two that matter here:
 - **CapEff**, effective: what the kernel checks right now.
 - **CapBnd**, bounding: the upper limit. Nothing the process does (not even running a setuid-root program) can get a capability outside this set.
 
-### Docker's default key ring
+### Docker's default capabilities
 
 The alpine container, running as root:
 
@@ -123,7 +123,7 @@ $ capsh --decode=00000000a80425fb
 0x00000000a80425fb=cap_chown,cap_dac_override,cap_fowner,cap_fsetid,cap_kill,cap_setgid,cap_setuid,cap_setpcap,cap_net_bind_service,cap_net_raw,cap_sys_chroot,cap_mknod,cap_audit_write,cap_setfcap
 ```
 
-Each bit is one capability (bit 0 is `cap_chown`, bit 10 is `cap_net_bind_service`, and so on). Docker gives root **14** of them. Missing, among others: `cap_sys_admin`, `cap_net_admin`, `cap_sys_ptrace`, `cap_sys_module`, `cap_sys_time`. You feel it at once:
+Each bit is one capability (bit 0 is `cap_chown`, bit 10 is `cap_net_bind_service`, and so on). Docker gives root **14** of them. Missing, among others: `cap_sys_admin`, `cap_net_admin`, `cap_sys_ptrace`, `cap_sys_module`, `cap_sys_time`. The effect is immediate:
 
 ```console
 $ docker run --rm alpine:3.22 sh -c "ip link add d0 type dummy; date -s 2020-01-01 >/dev/null; mount -t tmpfs none /mnt"
@@ -134,7 +134,7 @@ $ docker run --rm --cap-add NET_ADMIN alpine:3.22 sh -c "ip link add d0 type dum
 dummy ok
 ```
 
-"Are you root?" Yes, and it still fails. Root without the key is not enough.
+The process is root, and the call still fails. Root without the capability is not enough.
 
 Now `ordersd`, running as UID 65532:
 
@@ -192,7 +192,7 @@ $ docker logs tutor-sec-p80 2>&1 | tail -1
 
 For most Go services the answer is simple: `--cap-drop ALL` and add nothing.
 
-### `--privileged`: every key, every door
+### `--privileged`: all capabilities and all devices
 
 ```console
 $ docker run --rm --privileged alpine:3.22 grep -E '^Cap(Prm|Eff|Bnd)' /proc/self/status
@@ -222,7 +222,7 @@ Seccomp:	2
 Seccomp_filters:	2
 ```
 
-`Seccomp: 2` is filter mode (`0` is off, `1` the old strict mode). The surprise is `Seccomp_filters: 2`. Look at the host:
+`Seccomp: 2` is filter mode (`0` is off, `1` the old strict mode). The unexpected part is `Seccomp_filters: 2`. Look at the host:
 
 ```console
 $ grep -E '^Seccomp' /proc/1/status /proc/self/status
@@ -267,7 +267,7 @@ net-ns ok
 Three runs, two different guards:
 
 1. **Default**: both fail. `0x10000000` is `CLONE_NEWUSER`, `0x40000000` is `CLONE_NEWNET`.
-2. **Seccomp off**: the user namespace now works. Remember, any user may create one (see [Namespaces and cgroups](../linux/namespaces-and-cgroups.md#user-namespaces-root-but-only-at-home)). So **seccomp** was the only thing that blocked it. The network namespace still fails: that one needs `CAP_SYS_ADMIN`, a **capability** check.
+2. **Seccomp off**: the user namespace now works. Remember, any user may create one (see [Namespaces and cgroups](../linux/namespaces-and-cgroups.md#user-namespaces-root-inside-unprivileged-outside)). So **seccomp** was the only thing that blocked it. The network namespace still fails: that one needs `CAP_SYS_ADMIN`, a **capability** check.
 3. **With `CAP_SYS_ADMIN`**: Docker's profile allows namespace flags when the container has that capability, and the capability check passes too.
 
 Both errors look the same: `Operation not permitted`. A blocked syscall and a missing capability are indistinguishable from inside. When something fails only in a container, test with `seccomp=unconfined` and with `--cap-add` (on a test machine) to see which guard it is.
@@ -304,7 +304,7 @@ Root, all default capabilities, and `mkdir` says "Permission denied". Real profi
 
 ## Under the hood: no new privileges
 
-A **setuid** binary runs as its owner, not as the caller. `passwd` and `sudo` work this way. In a container that is a way back up: a non-root process runs a setuid-root binary and becomes root again (with the capabilities in the bounding set). To show it, a tiny Go program that prints its real and effective UID:
+A **setuid** binary runs as its owner, not as the caller. `passwd` and `sudo` work this way. In a container that is a way back up: a non-root process runs a setuid-root binary and becomes root again (with the capabilities in the bounding set). To show it, a small Go program that prints its real and effective UID:
 
 ```go
 // Command ids prints the real and effective UID and the NoNewPrivs flag.
@@ -402,7 +402,7 @@ Seccomp:	2
 Seccomp_filters:	2
 ```
 
-Non-root, zero capabilities, no way up, seccomp on, nothing writable but a small `noexec` tmpfs, and only reachable from loopback. The service works exactly as before. Distroless adds one more layer for free: there is no shell to land in.
+Non-root, zero capabilities, no way up, seccomp on, nothing writable but a small `noexec` tmpfs, and only reachable from loopback. The service works exactly as before. Distroless adds one more layer at no cost: there is no shell for an attacker to use.
 
 ```console
 $ docker exec tutor-sec-orders sh
@@ -415,7 +415,7 @@ In Kubernetes, the same settings live in the pod's `securityContext`: `runAsNonR
 
 Everything above limits what a compromised process can do. Now: how likely is it to be compromised, through code you didn't write?
 
-### SBOM: the list of ingredients
+### SBOM: a list of every component
 
 A **software bill of materials** lists every package in an image, with versions and IDs. `syft` reads the image layers and finds Debian packages (from `/var/lib/dpkg`), Go modules (from the build info inside the binary, see [Modules](../go/modules.md)), and much more:
 
@@ -465,7 +465,7 @@ What to know before you read a scan report:
 - **"Present" is not "reachable".** A scanner flags a vulnerable function in the Go standard library even if you never call it. `govulncheck` (pinned in `examples/orders`, `make vuln`) analyses the call graph and reports only what your code can actually reach. Use the scanner for the OS packages, `govulncheck` for the Go code.
 - **Scan again later.** An image that was clean last month is not clean now; the databases grow. Scan in CI **and** on a schedule against what runs in production.
 
-### Signing: who built this?
+### Signing: proving who built an image
 
 A tag like `tutor-ordersd:dev` can point anywhere tomorrow. A digest (`sha256:...`) is exact, but says nothing about **who** made it. A **signature** binds a digest to a key, so a deploy can refuse anything CI didn't sign.
 
@@ -482,7 +482,7 @@ Private key written to cosign.key
 Public key written to cosign.pub
 ```
 
-`unshare -Urn` runs cosign in an empty network namespace (see [Namespaces and cgroups](../linux/namespaces-and-cgroups.md#network-namespaces-one-cable-unplugged)), so nothing can leave the machine. That matters, because by default cosign talks to the public Sigstore services even with a local key:
+`unshare -Urn` runs cosign in an empty network namespace (see [Namespaces and cgroups](../linux/namespaces-and-cgroups.md#network-namespaces-a-separate-network-stack)), so nothing can leave the machine. That matters, because by default cosign talks to the public Sigstore services even with a local key:
 
 ```console
 $ unshare -Urn cosign sign-blob --key cosign.key --bundle ordersd.spdx.json.bundle -y ordersd.spdx.json
@@ -564,7 +564,7 @@ Always sign and verify by **digest**, never by tag: `cosign sign repo/app@sha256
 
 - **"It's in a container, root is fine."** Without a user namespace, container root is host root with 14 capabilities. A kernel bug or a mounted host path (`-v /:/host`, the Docker socket) is all it takes. Set `USER` in the image.
 - **`--privileged` as a fix.** It turns off capabilities, seccomp and device isolation together. Find the one `--cap-add` or `--device` you need.
-- **Mounting `/var/run/docker.sock`.** CI runners and "Docker-in-Docker" setups love it. It gives the container full control of the host's Docker, which is root on the host.
+- **Mounting `/var/run/docker.sock`.** CI runners and "Docker-in-Docker" setups often do it. It gives the container full control of the host's Docker, which is root on the host.
 - **Non-root, but setuid binaries in the image.** Without `no-new-privileges`, one setuid-root file is a way back to root and the bounding set. Distroless and scratch have none; Debian and Alpine bases have several (`su`, `mount`, `passwd`).
 - **"Operation not permitted" means many things.** Missing capability, seccomp, read-only mount, `no-new-privileges`, AppArmor. Change one guard at a time, on a test machine, to find which.
 - **A read-only root breaks hidden writes.** Some libraries write to `$HOME`, `/tmp` or a cache dir at start-up. Mount a small `tmpfs` there; don't drop `--read-only`.
@@ -629,6 +629,6 @@ Always sign and verify by **digest**, never by tag: `cosign sign repo/app@sha256
 
 ## You finished Containers
 
-You can now take a container apart: the namespaces and cgroups of its process, the layers and digests of its image, the Dockerfile that builds it small and fast, the runtimes that start it, the veth cable and NAT rules that connect it, and the guards that keep a compromised process in its box.
+You can now take a container apart: the namespaces and cgroups of its process, the layers and digests of its image, the Dockerfile that builds it small and fast, the runtimes that start it, the veth cable and NAT rules that connect it, and the guards that limit what a compromised process can reach.
 
 Next: [Kubernetes](../kubernetes/index.md). It runs these same containers on many machines. A pod is containers sharing one network namespace, a `securityContext` is the flags from this page, and a Service is NAT rules again, at cluster scale.

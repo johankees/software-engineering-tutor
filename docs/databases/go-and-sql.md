@@ -10,17 +10,17 @@ Five tickets from Go services that talk to PostgreSQL:
 - "Some order lists are silently shorter than they should be. No error in the logs."
 - "Under heavy checkout traffic, 5% of orders fail with `could not serialize access`."
 
-None of these is a bug in PostgreSQL. They come from the layer between your code and the database: the **connection pool**, the **context**, the **rows** object, and the **transaction**. This page shows each one doing the wrong thing on purpose, with real runs, and then gives `ordersd` a real PostgreSQL store.
+None of these is a bug in PostgreSQL. They come from the layer between your code and the database: the **connection pool**, the **context**, the **rows** object, and the **transaction**. This page makes each one fail on purpose, with real runs, and then gives `ordersd` a real PostgreSQL store.
 
-## The idea: a taxi rank
+## The idea: a pool of reusable connections
 
-Your service is a hotel. Guests (requests) need rides to the airport (the database).
+Your service handles requests, and many of them need the database.
 
-- Hiring a new taxi for every guest is slow: the driver has to come from far away. That's opening a new connection: a TCP handshake, maybe TLS, authentication, and a new server process on the PostgreSQL side.
-- So the hotel keeps a **taxi rank**: a few taxis waiting outside. A guest takes one, rides, and the taxi comes back to the rank. That's the **connection pool**. In Go, it is `*sql.DB`.
-- The rank has a **maximum size**. With 4 taxis and 20 guests, 16 guests wait in the lobby. Nobody is driving faster; they just wait.
-- A guest who keeps the taxi waiting outside a shop and never says "I'm done" (no `rows.Close()`) takes that taxi out of service. A few of those, and the rank is empty forever.
-- The airport has a limited number of parking spaces (`max_connections`). Ten hotels with 50 taxis each don't fit at an airport with 100 spaces.
+- Opening a new connection for every request is slow. It needs a TCP handshake, maybe TLS, authentication, and a new server process on the PostgreSQL side.
+- So the service keeps a **connection pool**: a set of open connections. A request borrows one, runs its queries, and returns it to the pool. In Go, the pool is `*sql.DB`.
+- The pool has a **maximum size**. With 4 connections and 20 concurrent requests, 16 requests wait for a free connection. The queries do not run faster; the requests just wait.
+- Code that borrows a connection and never returns it (no `rows.Close()`) takes that connection out of the pool. After a few of those, the pool is empty and stays empty.
+- The database has a limit on connections (`max_connections`). Ten pods with 50 connections each do not fit into a database that allows 100.
 
 ```mermaid
 flowchart LR
@@ -68,7 +68,7 @@ db, err := sql.Open("pgx", "postgres://postgres:tutor@127.0.0.1:55432/tutor_go")
 Three facts that surprise people:
 
 1. **`sql.Open` doesn't connect.** It only checks the arguments and builds the pool. The first query opens the first connection. To fail fast at start-up, call `db.PingContext` with a timeout.
-2. **`*sql.DB` is the pool, not a connection.** Make one per database, at start-up, and share it. It is safe for concurrent use. Opening one per request is the "new taxi every time" mistake, and it also leaks pools.
+2. **`*sql.DB` is the pool, not a connection.** Make one per database, at start-up, and share it. It is safe for concurrent use. Opening one per request means a new connection for every request, and it also leaks pools.
 3. **Each query borrows a connection and returns it.** Two `db.Exec` calls in a row may run on two different connections. That's why `SET statement_timeout ...` followed by a query, as two calls on `db`, may not do what you want: use a transaction or `db.Conn(ctx)` when statements must share a session.
 
 ### Pool settings
@@ -214,7 +214,7 @@ $ docker logs tutor-pg 2>&1 | grep -B1 'STATEMENT:  SELECT pg_sleep(5)'
 - The server **really stopped**: the log says `canceling statement due to user request`, and no `pg_sleep(5)` is left in `pg_stat_activity`. pgx sent a PostgreSQL cancel request on a separate connection. So ticket 3 is fixed by passing `r.Context()` down: when the client goes away, the query goes away too.
 - `db.Exec` without `Context` uses `context.Background()`: no deadline, ever. A linter rule against the non-context methods is worth having.
 
-Context deadlines protect one call. Also set a server-side `statement_timeout` for the app's role (see [MVCC and locks](mvcc-and-locks.md#timeouts-your-safety-net)), as a safety net for code paths that forget.
+Context deadlines protect one call. Also set a server-side `statement_timeout` for the app's role (see [MVCC and locks](mvcc-and-locks.md#timeouts)), as a safety net for code paths that forget.
 
 ## Rows: always `Close`, always check `Err`
 
@@ -422,7 +422,7 @@ atomic  quantity=800 (want 800), failed=0, retries=0
 ```
 
 - **`once`**: 172 of 200 attempts failed with `40001`. The data is still correct (972 = 1000 − 28 successes): `SERIALIZABLE` refused every lost update instead of letting it through. But the users saw errors.
-- **`retry`**: 129 retries, and 5 operations still failed after 10 attempts each. A retry loop is **required** with these isolation levels, but it doesn't make a hot row cheap. Eight workers fighting over one row keep colliding.
+- **`retry`**: 129 retries, and 5 operations still failed after 10 attempts each. A retry loop is **required** with these isolation levels, but it doesn't make a hot row cheap. Eight workers that compete for one row keep colliding.
 - **`atomic`**: no failures, no retries. One `UPDATE ... SET quantity = quantity - 1` reads and writes under the row lock, so concurrent updates queue up instead of conflicting. When you can push the logic into one statement (or use `SELECT ... FOR UPDATE`, see [MVCC and locks](mvcc-and-locks.md)), do it. Keep `SERIALIZABLE` plus retries for logic that can't be expressed that way.
 
 Rules for the retry loop:
@@ -454,9 +454,9 @@ err = pool.QueryRow(ctx, "SELECT count(*) FROM orders WHERE status = $1", "paid"
 
 The pool settings are in the connection string or `pgxpool.Config`. From `go doc github.com/jackc/pgx/v5/pgxpool.ParseConfig`: `pool_max_conns` defaults to "the greater of 4 or `runtime.NumCPU()`", `pool_max_conn_lifetime` to 1 hour, `pool_max_conn_idle_time` to 30 minutes. Unlike `database/sql`, it's limited by default. `pool.Stat()` gives the same kind of numbers as `db.Stats()`: `AcquireCount`, `EmptyAcquireCount` (had to wait), `AcquireDuration`. Pick one style per service; both are fine.
 
-## sqlc: generate the boring code
+## sqlc: generate the query code
 
-The Scan code in the store below is boring and easy to get wrong: a column added in the wrong place, a type that doesn't match. **sqlc** (v1.31.1 when this was written) reads your schema and your SQL queries, checks them, and **generates** typed Go functions. You write SQL; it writes the Go:
+The Scan code in the store below is repetitive and easy to get wrong: a column added in the wrong place, a type that doesn't match. **sqlc** (v1.31.1 when this was written) reads your schema and your SQL queries, checks them, and **generates** typed Go functions. You write SQL; it writes the Go:
 
 ```sql
 -- queries/orders.sql

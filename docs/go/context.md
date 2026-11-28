@@ -2,21 +2,21 @@
 
 ## Why care?
 
-A customer opens the "my orders" page. Your service starts a big database query. After 2 seconds the customer's browser gives up and closes the connection. Your service doesn't notice. The query runs for 30 seconds more, holding a database connection, and then your code carefully renders a response that nobody will ever read.
+A customer opens the "my orders" page. Your service starts a big database query. After 2 seconds the customer's browser gives up and closes the connection. Your service doesn't notice. The query runs for 30 seconds more, holding a database connection, and then your code renders a response that nobody will read.
 
-Now imagine a slow day at the database: every request becomes slow, users press refresh, and each refresh starts **another** query. Work for people who already left piles up until the database falls over. This is a **cascading failure**, and it is one of the most common ways real services go down.
+When the database is slow, every request becomes slow, users press refresh, and each refresh starts **another** query. Work for people who already left piles up until the database fails. This is a **cascading failure**, and it is one of the most common ways real services go down.
 
 The fix is a way to say "**stop, nobody needs this anymore**" that reaches every goroutine, query and HTTP call doing work for that request. In Go, that is `context.Context`.
 
-## The idea: a job ticket
+## The idea: request-scoped cancellation
 
-Think of a context as the **ticket** attached to a job in a busy workshop. The ticket says:
+A context is a value that you pass to every function that does work for one request or operation. It carries:
 
-- **When the job must be finished** (a deadline).
-- **Whether the job is cancelled** (someone tore up the order).
-- **A few labels** that belong to this job only (the request ID, who asked for it).
+- **A deadline**: when the work must be finished.
+- **A cancellation signal**: whether the work should stop now.
+- **A few values** that belong to this request only (the request ID, the user who made the request).
 
-Every worker who touches the job gets the ticket. When a worker hands part of the job to a helper, the helper gets a **copy** of the ticket, maybe with a shorter deadline. If the main ticket is torn up, every copy is torn up too.
+Every function that does part of the work gets the context. When a function hands part of the work to another function or goroutine, it **derives** a child context, maybe with a shorter deadline. When a context is cancelled, every context derived from it is cancelled too.
 
 That gives you a **tree**:
 
@@ -59,7 +59,7 @@ You never implement it yourself. You start from a root and **derive** children:
 | `AfterFunc(ctx, f)`                             | Runs `f` in its own goroutine when `ctx` is cancelled                            |
 | `signal.NotifyContext(parent, os.Interrupt, …)` | A child that is cancelled when the process gets a signal (the root of a service) |
 
-A child's deadline can only be **the same or earlier** than its parent's. If the parent has 100 ms left, `WithTimeout(parent, time.Hour)` still ends in 100 ms. A helper can't give itself more time than the job has.
+A child's deadline can only be **the same or earlier** than its parent's. If the parent has 100 ms left, `WithTimeout(parent, time.Hour)` still ends in 100 ms. A child operation can't get more time than its parent has.
 
 ## Try it in Go: a cancellation tree
 
@@ -115,7 +115,7 @@ stock    done
 save     stopped: err=context canceled cause=server shutting down
 ```
 
-Three lessons in three lines:
+What the three lines show:
 
 1. The child `step` timed out, but its parent `req` was **not** affected: `stock` still ran.
 2. Cancelling the root reached `req`, two levels down. `save` stopped at once instead of waiting a second.
@@ -142,7 +142,7 @@ When you derive a child, it **registers itself** in its parent's `children` set.
 3. Cancel every child (and they cancel theirs).
 4. Remove itself from its parent's `children`.
 
-Step 2 is the clever part. Remember from [Concurrency](concurrency.md) that a receive on a **closed** channel returns immediately, for **every** receiver, forever. So closing one channel is a **broadcast**: any number of goroutines doing `<-ctx.Done()` in a `select` all wake up at once. That's why `Done()` is a channel and not a method like `IsCancelled()`: a channel works inside `select`, next to the channel you are actually waiting on.
+Step 2 is the key step. Remember from [Concurrency](concurrency.md) that a receive on a **closed** channel returns immediately, for **every** receiver, forever. So closing one channel is a **broadcast**: any number of goroutines doing `<-ctx.Done()` in a `select` all wake up at once. That's why `Done()` is a channel and not a method like `IsCancelled()`: a channel works inside `select`, next to the channel you are actually waiting on.
 
 A `WithTimeout` context is a `cancelCtx` plus a `time.AfterFunc` timer that calls `cancel` when the time is up. Step 4 explains why you must always call `cancel`: until you do, the child stays in the parent's `children` set and its timer stays alive. For a long-lived parent (like the server root), forgetting `cancel` on every request is a memory leak.
 
@@ -262,7 +262,7 @@ client: Get "http://127.0.0.1:45828": context deadline exceeded after 100ms
 level=WARN msg="report aborted" err="build report: context canceled"
 ```
 
-The client's **deadline** became a closed TCP connection, and on the server side that became a **cancelled** `r.Context()`. The 2-second "query" was stopped after 100 ms. Multiply by thousands of requests during an incident, and this is the difference between a slow day and an outage.
+The client's **deadline** became a closed TCP connection, and on the server side that became a **cancelled** `r.Context()`. The 2-second "query" was stopped after 100 ms. During an incident with thousands of requests, this decides whether the service is only slow or goes down.
 
 !!! warning "Deadlines don't travel over the network by themselves"
 
@@ -292,8 +292,8 @@ The client's **deadline** became a closed TCP connection, and on the server side
 
     **Why:** `ctx.Value` is invisible in the function signature and typed as `any`. If
     `CreateOrder(ctx)` secretly pulls a DB handle out of `ctx`, the compiler can't tell you it's
-    missing, tests have to know a magic key, and readers can't see the dependency. Explicit
-    parameters make the code honest. Metadata like a request ID is different: every layer passes
+    missing, tests have to know a hidden key, and readers can't see the dependency. Explicit
+    parameters make every dependency visible. Metadata like a request ID is different: every layer passes
     it through, but almost none of them use it, so threading it through every signature would be
     noise.
 
@@ -376,7 +376,7 @@ What to take from it:
 
 ## The context conventions
 
-These are the rules you will see in every serious Go codebase. They are checked in code review, and several are checked by linters.
+These are the rules you will see in most production Go codebases. They are checked in code review, and several are checked by linters.
 
 !!! abstract "Convention: `ctx context.Context` is the first parameter"
 
@@ -436,7 +436,7 @@ In tests, use `t.Context()` (Go 1.24+). It is cancelled just before the test end
 - **Using `context.Background()` deep inside a handler** "because the request context got cancelled". You just made work that ignores shutdown and timeouts. Use `WithoutCancel` with a timeout, and only for work that really must finish.
 - **One timeout for everything.** A 30-second request timeout with a 30-second DB timeout inside it means the DB call can use the whole budget and leave nothing for the rest. Give inner steps smaller budgets.
 - **Putting the logger in the context and pulling it out in business code.** Pass the logger as a dependency. Use `slog`'s `...Context` methods (`InfoContext`) so a handler can _add_ request metadata from the context to log lines.
-- **Ignoring `ctx` in a goroutine you started.** The goroutine must select on `ctx.Done()`, or the context is just decoration.
+- **Ignoring `ctx` in a goroutine you started.** The goroutine must select on `ctx.Done()`, or the context has no effect.
 
 ## Check yourself
 

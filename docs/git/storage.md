@@ -8,11 +8,11 @@
 
 Git's object model ([Objects](objects.md)) sounds wasteful: full snapshots, one compressed file per object. In practice, Git repos are very small. This page shows the second layer that makes that true, and the tools for repos that are still too big.
 
-## The idea: from shoe boxes to a library
+## The idea: loose objects and packfiles
 
-Loose objects are like **shoe boxes**: one per thing, easy to add, but they take a lot of room and are slow to search.
+A new object is first stored as a **loose object**: one compressed file per object. Loose objects are easy to add, but they take a lot of room and are slow to search.
 
-From time to time, Git moves the shoe boxes into a **library**: one big, ordered file (a **packfile**) with a catalogue (the **index**, `.idx`) to find things fast. And in the library, Git is smart: when two versions of a file are almost the same, it stores one in full and the other as **"the same as that one, except these bytes"**. That is a **delta**.
+From time to time, Git moves loose objects into one big, ordered file (a **packfile**) with an index (the `.idx` file) to find objects fast. Inside a pack, when two versions of a file are almost the same, Git stores one in full and the other as **"the same as that one, except these bytes"**. That is a **delta**.
 
 ```mermaid
 flowchart LR
@@ -112,7 +112,7 @@ Now read the pack again:
 - `95fcae4` is **v5, the newest version**. It is stored **whole**: 48,929 bytes, 11,628 compressed.
 - The four **older** versions are deltas of **9 bytes** each, all based on `95fcae4`.
 
-That is backwards from what most people expect ("v1 plus changes"). It is on purpose. You read the newest version most often (checkout, diff, blame on today's code), so it should be the fastest to get: no delta to apply. Old versions are rare, so they pay the cost.
+That is backwards from what most people expect ("v1 plus changes"). This is deliberate. You read the newest version most often (checkout, diff, blame on today's code), so it should be the fastest to get: no delta to apply. Old versions are rare, so they pay the cost.
 
 Some more facts about deltas:
 
@@ -128,13 +128,13 @@ Some more facts about deltas:
 
 ### Packs on the wire
 
-When you push or fetch, Git does not send loose objects. It builds a pack with just the objects the other side does not have, sends it, and the receiver keeps it as a pack, or unpacks it into loose objects if it has fewer than 100 objects (`transfer.unpackLimit`). Deltas in that pack can refer to objects the receiver already has (a **thin pack**), and the receiver fixes them on arrival. More on that in [Remotes](remotes.md).
+When you push or fetch, Git does not send loose objects. It builds a pack with only the objects the other side does not have, sends it, and the receiver keeps it as a pack, or unpacks it into loose objects if it has fewer than 100 objects (`transfer.unpackLimit`). Deltas in that pack can refer to objects the receiver already has (a **thin pack**), and the receiver fixes them on arrival. More on that in [Remotes](remotes.md).
 
 ## Under the hood: gc, prune and the grace period
 
 `git gc` does several jobs: pack loose objects and refs, expire old reflog entries, write the commit-graph, and remove **unreachable** objects. "Unreachable" means: no ref, no reflog entry and no index entry leads to it.
 
-But Git does not delete unreachable objects at once. Watch:
+But Git does not delete unreachable objects at once:
 
 ```console
 $ echo "secret draft" | git hash-object -w --stdin
@@ -173,7 +173,7 @@ Why wait? Because another Git process may be working at the same time. A `git co
     `-a` packs only what is **referenced**, and `-d` removes the old packs. The unreachable blob is
     gone, no grace period. Use `gc` or `maintenance` in daily life.
 
-That command also shows two more files. Let's look at them, and at the other helper files Git keeps next to the packs.
+That command also shows two more files. The next section explains them, and the other helper files Git keeps next to the packs.
 
 ## Under the hood: the speed-up files
 
@@ -189,9 +189,9 @@ commit-graph
 packs
 ```
 
-The generation number is the clever part. Its rule: **if commit A has a smaller generation number than commit B, then A cannot reach B.** (Generation v1 is the "topological level": one more than the highest parent. Generation v2, the current one, is a "corrected commit date" that also follows the rule.) So when Git asks "is B an ancestor of A?", it can stop walking as soon as all commits on its walk have a generation number below B's. Without this, Git has to guess using commit dates, which can be wrong when clocks were off.
+The generation number is the key part. Its rule: **if commit A has a smaller generation number than commit B, then A cannot reach B.** (Generation v1 is the "topological level": one more than the highest parent. Generation v2, the current one, is a "corrected commit date" that also follows the rule.) So when Git asks "is B an ancestor of A?", it can stop walking as soon as all commits on its walk have a generation number below B's. Without this, Git has to guess using commit dates, which can be wrong when clocks were off.
 
-You feel this in `git log --graph`, `git merge-base`, `git branch --contains` and `git tag --contains` on big repos. `git commit-graph write --reachable --changed-paths` also adds **Bloom filters** per commit, which make `git log -- path` much faster.
+You notice this in `git log --graph`, `git merge-base`, `git branch --contains` and `git tag --contains` on big repos. `git commit-graph write --reachable --changed-paths` also adds **Bloom filters** per commit, which make `git log -- path` much faster.
 
 ### Reachability bitmaps
 
@@ -262,7 +262,7 @@ $ git rev-list --objects --all --missing=print | grep "^?"
 ?93bdf4051798f36947ccc8b1ed7f119de10435e6
 ```
 
-Git fetched the two blobs it needed, on demand. Everything works; some commands just need the network. Partial clone is the **best default for big repos**: full history for `log` and `blame`, without downloading every old binary. The server must allow it (`uploadpack.allowFilter`); the big forges do.
+Git fetched the two blobs it needed, on demand. Everything works; some commands only need the network. Partial clone is the **best default for big repos**: full history for `log` and `blame`, without downloading every old binary. The server must allow it (`uploadpack.allowFilter`); the big forges do.
 
 ### Shallow clone: cut the history
 

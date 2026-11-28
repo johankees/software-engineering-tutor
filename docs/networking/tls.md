@@ -12,15 +12,15 @@ Five messages from the same team chat:
 
 TLS errors are precise. Each one names exactly what failed. But they only make sense once you know what a certificate is, who checks what, and in which order. This page builds that up, then breaks it on purpose, one error at a time, with a private CA of our own.
 
-## The idea: a padlock, a signature and a password
+## The idea: encryption, key exchange and signatures
 
 Three tools, each with one job.
 
-- **Symmetric encryption** is a **shared password**. The same key locks and unlocks. It is fast (AES does gigabytes per second per core) but has one problem: how do two strangers on an open line agree on a password without anyone overhearing?
-- **Key exchange** solves that. Each side makes a key pair, sends the **public** half, and combines its own **private** half with the other's public half. Both get the **same secret**; a listener who saw only the public halves can't compute it. It's like mixing paint: easy to mix, impossible to un-mix.
+- **Symmetric encryption** uses one **shared key**. The same key encrypts and decrypts. It is fast (AES does gigabytes per second per core) but has one problem: how do two parties on an open network agree on a key without anyone else learning it?
+- **Key exchange** solves that. Each side makes a key pair, sends the **public** half, and combines its own **private** half with the other's public half. Both get the **same secret**; a listener who saw only the public halves can't compute it. The math is easy in one direction and not practical to reverse.
 - **Signatures** prove **who** you are talking to. A private key signs; anyone with the public key can check the signature, nobody else can make one. A key exchange with a stranger is worthless if the stranger is an attacker in the middle. So the server **signs** the handshake with its private key, and the client checks that signature with the public key in the server's **certificate**.
 
-And a **certificate** is a signed note from someone you trust: "this public key belongs to `go.dev`, until 26 December. Signed, Google Trust Services." Your machine trusts a short list of such signers. That list is the **trust store**.
+A **certificate** is a signed statement from an issuer you trust: "this public key belongs to `go.dev`, until 26 December. Signed, Google Trust Services." Your machine trusts a short list of such signers. That list is the **trust store**.
 
 Here are the first two tools in Go, including the post-quantum one that TLS uses today:
 
@@ -365,7 +365,7 @@ Protocol: TLSv1.3
 ALPN protocol: h2
 ```
 
-The `ChangeCipherSpec` messages are fakes: TLS 1.3 sends them only so that old middleboxes, which expect TLS 1.2, don't drop the connection. The `Certificate` is 3969 bytes: the three certificates from above, and the main reason a handshake is a few kilobytes.
+The `ChangeCipherSpec` messages are dummy messages: TLS 1.3 sends them only so that old middleboxes, which expect TLS 1.2, don't drop the connection. The `Certificate` is 3969 bytes: the three certificates from above, and the main reason a handshake is a few kilobytes.
 
 ### Inside the ClientHello Go sends
 
@@ -403,7 +403,7 @@ $ grep -m2 -oE 'key_exchange:  \(len=[0-9]+\): [0-9A-F]+' sserver.log | awk '{pr
 - **The ClientHello is 1526 bytes**, bigger than what fits in one 1500-byte Ethernet packet (see [Layers and packets](layers-and-packets.md)), so on a real network it is split into two TCP segments. Old firewalls that expect the whole ClientHello in one packet break here. Without ML-KEM it would be about 300 bytes.
 - `alpn=` is empty: `s_server -www` speaks only HTTP/1.0 and doesn't negotiate ALPN.
 
-## SNI and ALPN: two labels on the envelope
+## SNI and ALPN: plaintext fields in the ClientHello
 
 Both travel in the **unencrypted** ClientHello, before any certificate.
 
@@ -421,7 +421,7 @@ The third line is the request to `https://127.0.0.1:8443/`: **an IP address is n
 
 ## Try it: a private CA and mutual TLS
 
-Inside a company, services often use **mTLS**: the server shows a certificate, **and so does the client**. The server then knows which service is calling, without passwords or tokens. We need a CA, a server certificate for `ordersd`, a client certificate for `orderctl` and, to break things, an expired server certificate.
+Inside a company, services often use **mTLS**: the server shows a certificate, **and so does the client**. The server then knows which service is calling, without passwords or tokens. We need a CA, a server certificate for `ordersd`, a client certificate for `orderctl` and, to test failures, an expired server certificate.
 
 ```go
 // Command pki makes a tiny private PKI for experiments: one CA, a server
@@ -555,7 +555,7 @@ Certificate:
 
 Things to notice:
 
-- The private keys are written with mode `0600`. The CA key is the crown jewel: whoever has it can mint a certificate for any name your services trust. In production it lives in a vault or HSM, never next to the service.
+- The private keys are written with mode `0600`. The CA key is the most sensitive file: whoever has it can mint a certificate for any name your services trust. In production it lives in a vault or HSM, never next to the service.
 - The SAN has the short name, the cluster name **and** the IP. The certificate is valid for exactly those, nothing else.
 - `NotBefore` is "now". Real CAs usually set it a little in the past, so that clients with a slow clock don't reject a fresh certificate (we will see that error below).
 
@@ -614,7 +614,7 @@ func check(err error) {
 }
 ```
 
-The client trusts our CA, sends its certificate, and prints what was negotiated. Flags let us break each part:
+The client trusts our CA, sends its certificate, and prints what was negotiated. Flags let us make each part fail on purpose:
 
 ```go
 // Command client calls the mTLS server and reports what TLS negotiated.
@@ -733,7 +733,7 @@ Two things to know:
 
 **0-RTT** ("early data", sending the request inside the first flight) exists in TLS 1.3, but it can be replayed by an attacker. Go's `crypto/tls` supports it only for QUIC, not for TLS over TCP.
 
-## Breaking it: the real errors
+## Failures and their real errors
 
 Same server, same CA, one thing wrong at a time:
 
@@ -791,7 +791,7 @@ Lessons from the table:
 - **A client certificate from the wrong CA is often not even sent.** Go's client picks from its `Certificates` only one whose issuer is in the server's "acceptable CA names" list, and otherwise sends **none**. The client code "sets a certificate", and the server still says `didn't provide a certificate`. That is the fifth ticket.
 - **`InsecureSkipVerify: true` is never the fix.** It turns off the chain **and** the name check, so any attacker in the middle is accepted. If you need a private CA, put it in `RootCAs`, as `client` does. If you need custom checks, add them in `VerifyConnection`, which runs **after** normal verification.
 
-### A nasty one: two CAs with the same name
+### Two CAs with the same name
 
 Run `pki` again in another directory. It makes a **new** CA, with a new key but the same name, "Orders Dev CA", as happens when someone regenerates a dev CA. Copy its client certificate here as `other-client.pem` and try it:
 
@@ -914,4 +914,4 @@ The rule of thumb: **leave the defaults alone.** Every knob you set (`CipherSuit
 - Each failure has its own message: unknown authority, wrong name, expired / not yet valid (check clocks), certificate required. The **client** knows why.
 - `KeyLogWriter` lets Wireshark decrypt your own traffic. Never in production.
 
-Next: the encrypted pipe is ready. Now the protocol inside it. [HTTP/1.1, HTTP/2 and HTTP/3](http.md).
+Next: the encrypted connection is ready. Now the protocol inside it. [HTTP/1.1, HTTP/2 and HTTP/3](http.md).

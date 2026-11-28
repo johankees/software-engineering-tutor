@@ -2,7 +2,7 @@
 
 ## Why care?
 
-Three messages from a real on-call week:
+Three messages from a typical on-call week:
 
 - "Error rate is 4%. Which customers? The dashboard can't say."
 - "The logs show the request took 9 seconds, but every service says _it_ was fast."
@@ -12,17 +12,17 @@ Each of these has the same root cause. The team collected data, but the **wrong 
 
 On this page you learn what each signal is good at, what it costs, and how OpenTelemetry connects them. At the end you send one request to `ordersd` and find it again in all three: a log line, a span and a metric, joined by one trace ID.
 
-## The idea: a hospital ward
+## The idea: five signals, one shared ID
 
-Think of a patient in a hospital.
+Each signal answers a different question:
 
-- The **heart monitor** beeps every second: pulse, blood pressure, oxygen. It is cheap, always on, and it shows trends. It cannot tell you _why_ the pulse went up. That is a **metric**.
-- The **nurse's notes** say "14:02, patient complained of chest pain, gave aspirin". Rich detail about one moment. Nobody reads all of them, you search them when something happened. Those are **logs**.
-- The **patient's route** through the hospital: emergency room 12 minutes, waiting 2 hours, X-ray 5 minutes, ward. It shows _where the time went_ across departments. That is a **trace**.
-- The **MRI scan** looks inside, at which organ does the work. Expensive, so you do it when you need it, or a quick low-dose version all the time. That is a **profile**.
-- The **ward diary** says "15:00 new medicine started". It explains why the chart changes after 15:00. Those are **events**.
+- A **metric** is a number measured all the time: request rate, error rate, latency. It is cheap, always on, and shows trends. It cannot tell you _why_ a number went up.
+- A **log** is a record of one event: "14:02, order 42 failed, payment timeout". It has rich detail about one moment. Nobody reads all logs; you search them when something happened.
+- A **trace** follows one request through the system: gateway 12 ms, `orders` 40 ms, `payments` 8.7 s. It shows _where the time went_ across services.
+- A **profile** shows which code uses the CPU or memory. Detailed profiles are expensive, so you take them when you need them, or run a low-rate version all the time.
+- An **event** records a change: "15:00, v1.4.2 deployed". It explains why a graph changes after 15:00.
 
-A good doctor uses all of them, and the patient ID on every sheet connects them. In software that patient ID is the **trace ID**.
+You need all of them, and a shared ID connects them. That ID is the **trace ID**.
 
 ```mermaid
 flowchart LR
@@ -31,7 +31,7 @@ flowchart LR
     REQ --> M["Metric data point<br/>how many, how slow"]
     M -.->|exemplar: trace_id| S
     L -.->|trace_id| S
-    P["Profile<br/>which code burned CPU"] -.->|service, time| M
+    P["Profile<br/>which code used CPU"] -.->|service, time| M
     E["Event<br/>deploy v1.4.2"] -.->|time| M
 ```
 
@@ -378,7 +378,7 @@ Three things in `main` turn it on:
 
 ## Try it: one request, three signals
 
-**Step 1: a Collector that prints everything.** The `debug` exporter writes what it receives to the Collector's own log. Perfect for learning, useless for production.
+**Step 1: a Collector that prints everything.** The `debug` exporter writes what it receives to the Collector's own log. Good for learning, not for production.
 
 ```yaml
 # collector.yaml
@@ -431,7 +431,7 @@ $ tail -1 one.log
 
 Our stdout log line has a `trace_id`. Remember `6ac40a1b...`.
 
-**Step 3: find it three times in the Collector.** Wait about 10 seconds (the metric interval), then read `docker logs tutor-obs-a-collector`. Trimmed to the interesting parts, the first block is the **log record**, sent by the `otelslog` bridge:
+**Step 3: find it three times in the Collector.** Wait about 10 seconds (the metric interval), then read `docker logs tutor-obs-a-collector`. Trimmed to the relevant parts, the first block is the **log record**, sent by the `otelslog` bridge:
 
 ```text
 LogRecord #0
@@ -512,7 +512,7 @@ Exemplar #0
 
 Read it carefully:
 
-- The metric has **no** `url.path` attribute, while the span does. `otelhttp` knows that a path is high cardinality and keeps it out of metrics. Good.
+- The metric has **no** `url.path` attribute, while the span does. `otelhttp` knows that a path is high cardinality and keeps it out of metrics. That is correct.
 - The metric also has no route. `otelhttp` wraps the whole mux, so it runs _before_ the mux has matched a pattern, and the span name is just `GET`. Our own log line has `route` because `logRequests` reads `r.Pattern` after the mux ran. [Distributed tracing](distributed-tracing.md) fixes this.
 - The histogram point carries an **exemplar**: one sample value with the trace ID of a request that produced it. On a latency graph, that is the dot you click to jump from "p99 is high" to "here is one of those slow requests".
 - All three blocks carry the same resource: `service.name: Str(ordersd)`, `host.name`, `process.pid`.
@@ -545,7 +545,7 @@ otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
 }))
 ```
 
-Our first version used the normal `logger`, which also feeds the `otelslog` bridge. With the Collector down, every failed log export logged a warning, which went into the next log export, which failed and logged a warning... one new line per second, forever:
+Our first version used the normal `logger`, which also feeds the `otelslog` bridge. With the Collector down, every failed log export logged a warning, which went into the next log export, which failed and logged another warning. The result was one new line per second, without end:
 
 ```text
 {"time":"2026-11-27T07:44:06.046137346+01:00","level":"WARN","msg":"telemetry export failed","service":"ordersd","error":"Post \"http://127.0.0.1:18318/v1/logs\": dial tcp 127.0.0.1:18318: connect: connection refused"}
@@ -574,7 +574,7 @@ docker rm -f tutor-obs-a-collector
 - **Using logs as metrics.** "Count the lines with `status=500`" works until traffic grows tenfold and the query times out during the incident. Count in a metric; keep the details in the log.
 - **Unbounded labels.** `user_id`, `order_id`, raw `path`, error text. One label made 1.5 million series and 900 MB of heap in our test. Put them on spans and logs.
 - **Averages.** Average latency hides the slow 1%. Use histograms and percentiles ([Metrics](metrics.md)).
-- **No shared ID.** Logs without a trace ID and metrics without exemplars are islands. You see the problem in one signal and cannot follow it to the next.
+- **No shared ID.** Logs without a trace ID and metrics without exemplars are isolated from each other. You see the problem in one signal and cannot follow it to the next.
 - **The hard-coded resource.** A `service.name` set in code that ignores `OTEL_SERVICE_NAME`. Let the environment win.
 - **Telemetry about telemetry through the same pipe.** Export errors logged through the OTel bridge create a feedback loop. Log them locally.
 - **Forgetting shutdown.** Without `TracerProvider.Shutdown` (and friends) the last 5 seconds of spans and the last metric interval are lost on every deploy, exactly when you want them.

@@ -7,7 +7,7 @@ A ticket lands: "`orderctl` can't connect to the orders API." That one sentence 
 - The name does not resolve, or resolves to the wrong address.
 - The address resolves, but there is no route to it.
 - The route exists, but nothing listens on the port.
-- Something listens, but a firewall eats the packets, so you wait 30 seconds for nothing.
+- Something listens, but a firewall drops the packets, so you wait 30 seconds and get no answer.
 - TCP connects, but the TLS handshake fails on the certificate.
 - TLS works, but the server hangs up before it answers.
 
@@ -162,7 +162,7 @@ From <isp-router> icmp_seq=2 Packet filtered
 
 (The ISP router's public address is hidden.) `192.0.2.0/24` is TEST-NET-1, reserved for documentation, so nobody should route it. Here the ISP's router answers with an ICMP "administratively prohibited" message, which `ping` prints as `Packet filtered`.
 
-Two honest limits of `ping`:
+Two limits of `ping`:
 
 - **It needs a raw socket.** That works here only because the binary has a file capability: `getcap /usr/bin/ping` prints `/usr/bin/ping cap_net_raw=ep`. The other way, unprivileged ICMP sockets, is off on this machine (`net.ipv4.ping_group_range = 1 0` is an empty range). In a slim container image, `ping` is often missing or fails with `Operation not permitted`.
 - **ICMP is not TCP.** Many firewalls drop ICMP and allow TCP 443, or the other way round. "Ping fails" does not mean "the service is down". The real test is the next step.
@@ -301,7 +301,7 @@ DONE
 
 ### Step 6: HTTP
 
-`curl -v` shows every layer at once: resolution, each connect attempt, the TLS handshake, and the request and response headers. `>` is what curl sent, `<` what it received, `*` is curl's own commentary. Against `ordersd`:
+`curl -v` shows every layer at once: resolution, each connect attempt, the TLS handshake, and the request and response headers. `>` is what curl sent, `<` what it received, `*` is curl's own information. Against `ordersd`:
 
 ```console
 $ curl -sSv http://127.0.0.1:9180/healthz
@@ -326,7 +326,7 @@ $ curl -sSv http://127.0.0.1:9180/healthz
 {"status":"ok"}
 ```
 
-Against a public HTTPS site, it is much richer. Here with a few lines cut (marked):
+Against a public HTTPS site, the output is longer. Here with a few lines cut (marked):
 
 ```console
 $ curl -sSv -o /dev/null https://example.com/
@@ -434,9 +434,9 @@ For plain HTTP, `time_appconnect` is 0, so for `ordersd` use `ttfb − tcp`. The
 
 ## Under the hood: reading the error precisely
 
-Each layer fails with its own words. Learn the words, and you know the layer before you run a single tool. To see every one for real, this lab makes each failure on purpose.
+Each layer fails with its own error messages. If you know the messages, you know the layer before you run any tool. To see every one for real, this lab makes each failure on purpose.
 
-A tiny misbehaving server: port 9183 answers every request with a **RST**, port 9184 closes politely (FIN) without answering.
+A small server that misbehaves on purpose: port 9183 answers every request with a **RST**, port 9184 closes politely (FIN) without answering.
 
 ```go title="badserver/main.go"
 // Command badserver misbehaves on purpose: one port resets, one hangs up.
@@ -477,7 +477,7 @@ func serve(addr string, hangUp func(*net.TCPConn)) {
 }
 ```
 
-`SetLinger(0)` is the trick: closing a socket with a zero linger time throws away the send buffer and sends RST instead of FIN. Proxies do the same when they kill an idle connection (see [Load balancers](load-balancers.md)).
+`SetLinger(0)` causes the reset: closing a socket with a zero linger time throws away the send buffer and sends RST instead of FIN. Proxies do the same when they kill an idle connection (see [Load balancers](load-balancers.md)).
 
 A client that does one `GET` per URL and prints the error exactly as Go returns it. The dial timeout is 2 seconds, the whole request 5 seconds:
 
@@ -543,7 +543,7 @@ $ ./errlab http://127.0.0.1:9185/
 5.007s Get "http://127.0.0.1:9185/": context deadline exceeded (Client.Timeout exceeded while awaiting headers)
 ```
 
-Go errors read like a path: **operation, network, address, syscall, cause**. `dial tcp 127.0.0.1:9181: connect: connection refused` means "while dialling TCP to this address, the `connect` system call failed with `ECONNREFUSED`". The word before the last colon tells you the phase: `lookup`, `connect`, `read`, `tls`. Here is the whole cheat sheet, with curl's version of each:
+Go errors read like a path: **operation, network, address, syscall, cause**. `dial tcp 127.0.0.1:9181: connect: connection refused` means "while dialling TCP to this address, the `connect` system call failed with `ECONNREFUSED`". The word before the last colon tells you the phase: `lookup`, `connect`, `read`, `tls`. Here is the full reference table, with curl's version of each:
 
 | Go error                                            | curl                                   | Layer | What happened                                                                             | Where to look                                              |
 | --------------------------------------------------- | -------------------------------------- | ----- | ----------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
@@ -603,7 +603,7 @@ case errors.As(err, &certErr): // x509 problem; certErr.UnverifiedCertificates s
 }
 ```
 
-## Under the hood: `httptrace`, a stopwatch inside Go
+## Under the hood: request timings with `httptrace`
 
 `curl -w` times curl. Your service uses Go's `http.Transport`, with its own resolver, connection pool and timeouts. `net/http/httptrace` gives you the same timings **from inside your program**, with no extra tools. You attach a `ClientTrace` of callbacks to the request's context:
 
@@ -702,7 +702,7 @@ In a real service, put these callbacks behind a debug flag or feed them into you
 
 ## Under the hood: packet capture
 
-Sometimes every tool above says "fine", and it still fails. Then you look at the packets themselves. A packet capture is the ground truth: it shows what really went over the wire, not what any program believes it sent.
+Sometimes every tool above says "fine", and it still fails. Then you look at the packets themselves. A packet capture is the most reliable evidence: it shows what really went over the wire, not what any program believes it sent.
 
 ### tcpdump and BPF filters
 
@@ -739,16 +739,16 @@ Wireshark is the graphical version: it opens a `.pcap`, decodes every protocol, 
 
 <!-- TODO(real-output): screenshot or tshark output of orders.pcap in Wireshark (Wireshark/tshark not installed on the test machine) -->
 
-Wireshark has **two** filter languages, and mixing them up is the classic beginner mistake:
+Wireshark has **two** filter languages, and mixing them up is a common mistake:
 
 - **Capture filters** use BPF, the same as tcpdump: `tcp port 9180`. They decide what gets recorded.
 - **Display filters** use Wireshark's own syntax and only hide packets on screen: `tcp.port == 9180`, `tcp.flags.reset == 1`, `http.response.code >= 500`, `tls.handshake.type == 1` (ClientHello), `dns.flags.rcode != 0`, `tcp.analysis.retransmission`.
 
-Two features that pay for themselves: **Follow → TCP Stream** shows one conversation as text, and **Statistics → Conversations** lists every connection with bytes and duration. For TLS traffic, Go's `tls.Config.KeyLogWriter` writes the session keys to a file that Wireshark can use to decrypt the capture (the [TLS](tls.md) page shows it).
+Two useful features: **Follow → TCP Stream** shows one conversation as text, and **Statistics → Conversations** lists every connection with bytes and duration. For TLS traffic, Go's `tls.Config.KeyLogWriter` writes the session keys to a file that Wireshark can use to decrypt the capture (the [TLS](tls.md) page shows it).
 
 ### Try it: capture real packets without root
 
-No `tcpdump`, no root. But capturing only needs `CAP_NET_RAW`, and the [namespaces](../linux/namespaces-and-cgroups.md) page showed that `unshare -Urn` makes you root of a fresh user **and** network namespace. In there you hold `CAP_NET_RAW` over a private `lo`. Run a client and a server inside it, and capture with a small Go program that does what tcpdump does at its core: open an `AF_PACKET` socket, read every frame, write it to a `.pcap` file.
+`tcpdump` is not installed here, and we have no root. But capturing only needs `CAP_NET_RAW`, and the [namespaces](../linux/namespaces-and-cgroups.md) page showed that `unshare -Urn` makes you root of a fresh user **and** network namespace. In there you hold `CAP_NET_RAW` over a private `lo`. Run a client and a server inside it, and capture with a small Go program that does what tcpdump does at its core: open an `AF_PACKET` socket, read every frame, write it to a `.pcap` file.
 
 ```go title="capture/main.go"
 // Command capture is a tiny tcpdump: it reads every frame on one interface
@@ -888,7 +888,7 @@ The whole life of a connection in 10 lines, then a refusal in 2:
 2. **Line 4: the request**, 85 bytes of HTTP (`P.` = push and ack). Line 5: the kernel ACKs it.
 3. **Line 6: the response**, 209 bytes: the status line, headers and `{"status":"ok"}`. Line 7: ACKed.
 4. **Lines 8–10: the close.** Each side sends FIN and the other ACKs it. The client closed first, so the client's socket sits in `TIME_WAIT` now (see [TCP](tcp.md)).
-5. **Lines 11–12: `connection refused` on the wire.** A SYN to 9181, and the kernel answers at once with `R.` (RST + ACK). That RST is all "refused" ever is. A **timeout** would look like line 11 repeated with growing gaps, and no line 12.
+5. **Lines 11–12: `connection refused` on the wire.** A SYN to 9181, and the kernel answers at once with `R.` (RST + ACK). A "connection refused" error is exactly this RST. A **timeout** would look like line 11 repeated with growing gaps, and no line 12.
 
 (`win 512` after the handshake is not tiny: it is scaled by the window-scale factor both sides agreed on in the SYN options.)
 
@@ -930,7 +930,7 @@ Clean up: `kill` the `ordersd`, `badserver` and `openssl s_server` processes you
 
 ## WSL2: what is different here
 
-The test machine is WSL2, which puts a Linux VM behind Windows networking. If you debug on WSL2 too, these will surprise you:
+The test machine is WSL2, which puts a Linux VM behind Windows networking. If you debug on WSL2 too, note these differences:
 
 - **Two networking modes.** The default is **NAT**: Linux gets a private `172.x` address on `eth0` behind a virtual switch, and Windows forwards `localhost` ports. This machine uses **mirrored** mode (`networkingMode=mirrored` in `%UserProfile%\.wslconfig`): Linux sees the Windows interfaces and the same LAN address (`eth1 192.168.4.119/24` above), and Windows and Linux share `localhost`.
 - **Odd routing for `127.0.0.1`.** Mirrored mode adds policy rules, so loopback TCP and UDP go through table 127 and a `loopback0` device instead of plain `lo`:
@@ -960,7 +960,7 @@ The test machine is WSL2, which puts a Linux VM behind Windows networking. If yo
 
   Do not copy WSL2 routing tables into a production runbook.
 
-- **The resolver is `10.255.255.254`.** WSL writes `/etc/resolv.conf` (it is a symlink to `/mnt/wsl/resolv.conf`) with `nameserver 10.255.255.254`. That address sits on `lo`, and a DNS proxy run by WSL listens there and forwards queries to Windows ("DNS tunneling"). That is why Go's error said `lookup ... on 10.255.255.254:53`. `ss -ulnp` shows the listener on `10.255.255.254:53` but no process name: it belongs to a WSL process you are not allowed to inspect. `systemd-resolved` runs too, but in "foreign" mode: it does not own `/etc/resolv.conf` and just forwards to the same address. When DNS breaks on WSL2, the problem is often on the Windows side (VPN clients are the usual suspect).
+- **The resolver is `10.255.255.254`.** WSL writes `/etc/resolv.conf` (it is a symlink to `/mnt/wsl/resolv.conf`) with `nameserver 10.255.255.254`. That address sits on `lo`, and a DNS proxy run by WSL listens there and forwards queries to Windows ("DNS tunneling"). That is why Go's error said `lookup ... on 10.255.255.254:53`. `ss -ulnp` shows the listener on `10.255.255.254:53` but no process name: it belongs to a WSL process you are not allowed to inspect. `systemd-resolved` runs too, but in "foreign" mode: it does not own `/etc/resolv.conf` and just forwards to the same address. When DNS breaks on WSL2, the problem is often on the Windows side (VPN clients are a common cause).
 - **Capture where the packet is.** A Linux `tcpdump` does not see traffic that Windows handles for you, and a Windows Wireshark does not see traffic between two Linux processes on `lo`. Capture on the side that owns the socket.
 
 ## Traps
@@ -1035,11 +1035,11 @@ The test machine is WSL2, which puts a Linux VM behind Windows networking. If yo
 - **TLS**: `openssl s_client -servername ... -verify_return_error` (`-brief` for a summary). `x509:` errors are about trust, names or dates.
 - **HTTP**: `curl -v` shows every layer; `curl -w` with `time_namelookup`, `time_connect`, `time_appconnect`, `time_starttransfer` splits the time. **`EOF`** = clean close without an answer.
 - In Go, `httptrace` gives the same timings from inside the program, including connection reuse. Match errors with `errors.Is`/`errors.As`, never strings.
-- Packet capture is ground truth: `tcpdump` with BPF filters, Wireshark with display filters. Without root, `unshare -Urn` plus an `AF_PACKET` socket captures real packets into a real `.pcap`.
+- Packet capture is the most reliable evidence: `tcpdump` with BPF filters, Wireshark with display filters. Without root, `unshare -Urn` plus an `AF_PACKET` socket captures real packets into a real `.pcap`.
 - On WSL2, know your mode (NAT or mirrored) and the `10.255.255.254` DNS proxy.
 
 ## You finished Networking
 
-You can now follow a request from `client.Do(req)` down to the bytes on the wire: the name lookup and its caches, the route, the TCP handshake and its timers, the TLS handshake and its certificate chain, HTTP framing and connection pools, and every proxy in between. And when it breaks, you can name the layer from the error message and prove it with a command.
+You can now follow a request from `client.Do(req)` down to the bytes on the wire: the name lookup and its caches, the route, the TCP handshake and its timers, the TLS handshake and its certificate chain, HTTP framing and connection pools, and every proxy in between. When something breaks, you can name the layer from the error message and prove it with a command.
 
 Next: [Containers](../containers/index.md). A container is the namespaces and cgroups from the Linux chapter, packaged into an image, and its network is a private network namespace with a virtual cable to the host. Everything on this page works inside it, once you know which namespace you are in.

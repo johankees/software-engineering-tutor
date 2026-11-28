@@ -12,15 +12,15 @@ The first two are the **dual-write problem**: one request changes **two** system
 
 This page shows both bugs with real runs, then fixes them with three patterns that every event-driven system ends up using: the **transactional outbox**, the **inbox**, and the **saga**. It builds on [Messaging](messaging.md) (at-least-once delivery) and on [Transactions and isolation](../databases/transactions.md) (what `COMMIT` promises).
 
-## The idea: write the note on the receipt
+## The idea: make the event part of the database transaction
 
-A shop clerk sells a sofa. Two things must happen: the sale goes into the **cash book**, and the **warehouse** must be told to deliver.
+Placing an order must do two things: save the order in the **database**, and tell other services through the **broker**.
 
-- **Dual write**: the clerk writes the sale in the book, then walks to the phone to call the warehouse. If the clerk faints on the way, the sale is booked and nobody delivers. If the clerk calls first and the card is then declined, the warehouse delivers a sofa nobody paid for.
-- **Outbox**: the cash book has a column "notes for the warehouse". The clerk writes the sale **and** the note on the same line, in one go. A **runner** comes by every few seconds, takes every note that is not ticked yet, phones the warehouse, and ticks the note. If the runner faints, the next runner finds the unticked note and phones again.
-- **Inbox**: the warehouse keeps a list of note numbers it has already handled. When the runner phones twice about note 17, the warehouse says "17? done already" and does nothing.
+- **Dual write**: the service commits the order, then publishes the event. If the process dies between the two, the order is saved and nobody is told. If it publishes first and the commit then fails, other services act on an order that does not exist.
+- **Outbox**: the database has an `outbox` table. The service writes the order **and** the event row in the same transaction. A separate **relay** process reads the event rows that are not yet published, publishes them, and marks them as published. If the relay crashes, the next run finds the unmarked rows and publishes them again.
+- **Inbox**: the consumer keeps a table of event IDs it has already handled. When the relay publishes event 17 twice, the consumer sees that 17 is already in the table and does nothing.
 
-The trick: the only thing that must be atomic is a write to **one** database, which databases are very good at. Everything after that is at-least-once with retries, and duplicates are made harmless.
+The key point: the only thing that must be atomic is a write to **one** database, which databases are very good at. Everything after that is at-least-once with retries, and duplicates are made harmless.
 
 ```mermaid
 flowchart LR
@@ -48,7 +48,7 @@ Two writes, two systems, two orders to do them in. Both are broken:
 | Publish, then commit                            | Constraint, deadlock, serialization error, crash | Event out, **order does not exist** |
 | Publish inside the transaction, before `COMMIT` | `COMMIT` fails                                   | Same as publish first               |
 
-Retrying does not save you. If the process died, there is nobody left to retry. If the publish timed out, you don't know whether it happened (the run below shows a timeout where the message **was** stored).
+Retrying does not solve it. If the process died, there is nobody left to retry. If the publish timed out, you don't know whether it happened (the run below shows a timeout where the message **was** stored).
 
 What about a distributed transaction (two-phase commit, XA) over the database and the broker? Kafka and NATS don't take part in XA, it holds locks while the slowest participant answers, and a coordinator crash leaves participants stuck "in doubt". Almost nobody does it for this. The outbox gets the same result with one local transaction.
 
@@ -98,7 +98,7 @@ A refund is not a rollback. The customer's statement shows a charge **and** a re
 Two ways to coordinate a saga:
 
 - **Orchestration**: one component (the orchestrator, often the `orders` service) tells each service what to do, waits for the answer, and runs compensations on failure. The flow is in one place, easy to read and to monitor. The orchestrator must persist its state (which step, which compensations are due), or a crash in the middle loses track.
-- **Choreography**: no central brain. Each service reacts to events (`order.placed` → payments charges → `payment.charged` → shipping books → ...), and on failure publishes an event that earlier services react to with their compensation. Loose coupling, but the flow is spread over many services, and cycles and "who undoes what" get hard to follow beyond three or four steps.
+- **Choreography**: no central coordinator. Each service reacts to events (`order.placed` → payments charges → `payment.charged` → shipping books → ...), and on failure publishes an event that earlier services react to with their compensation. Loose coupling, but the flow is spread over many services, and cycles and "who undoes what" get hard to follow beyond three or four steps.
 
 ```mermaid
 sequenceDiagram
@@ -312,7 +312,7 @@ $ docker exec tutor-pg psql -U postgres -c "SELECT * FROM orders"
 (2 rows)
 ```
 
-All three are wrong, and one is a surprise:
+All three are wrong, and one is unexpected:
 
 - **Order 1** has no event. Payments will never charge it. Nothing logged an error: the process that could have logged it was dead.
 - **Order 2** has an event, even though the program printed `publish failed`. The publish was sitting in the paused server's socket buffer. When the server was unpaused, it stored the message, but the client had already given up. A timeout means **"I don't know"**, not "it failed". If the code had retried, there would be two events; if it had "undone" the order, the event would point to nothing.
@@ -398,7 +398,7 @@ $ docker exec tutor-pg psql -U postgres -c "SELECT id, event_id, payload, publis
 (6 rows)
 ```
 
-The `event_id` values are UUIDv7: see how they start with the same time prefix and count up. Nothing is published yet, and that's fine. The events are **safe**: they are committed, and they can't exist without their order.
+The `event_id` values are UUIDv7: see how they start with the same time prefix and count up. Nothing is published yet, and that is fine. The events are **safe**: they are committed, and they can't exist without their order.
 
 ### The relay, twice, with `SKIP LOCKED`
 
@@ -690,7 +690,7 @@ func main() {
 }
 ```
 
-The happy path, then a failure at each step:
+The success path, then a failure at each step:
 
 ```console
 $ go build -o bin/ ./saga

@@ -2,7 +2,7 @@
 
 ## Why care?
 
-The most common serious API bug has a boring name: **broken object level authorization** (BOLA), also called **IDOR** (insecure direct object reference). It is number one on the OWASP API Security Top 10. It looks like this:
+The most common serious API bug has a plain name: **broken object level authorization** (BOLA), also called **IDOR** (insecure direct object reference). It is number one on the OWASP API Security Top 10. It looks like this:
 
 - "I changed the order ID in the URL and saw another customer's address."
 - "Support staff of tenant A can open tickets of tenant B, if they know the ticket number."
@@ -13,14 +13,14 @@ Every one of these services **had** authentication. The caller was logged in. No
 
 On this page you add login to a scratch copy of `ordersd`, then read Bob's order as Alice with one `curl`. You fix it in the right layer, prove the fix with a table test, and then look at the models (RBAC, ABAC, ReBAC), policy engines (OPA, Cedar) and PostgreSQL row-level security as a second wall for multi-tenant data.
 
-## The idea: the key card opens your room, not the building
+## The idea: check the object, not only the login
 
-Back at the hotel from [Authentication](authentication.md). Your key card proves who you are. Now look at the doors:
+[Authentication](authentication.md) tells you who the caller is. Authorization decides what that caller may do. It works at several levels:
 
-- The **front door** of the building opens for every guest card. That is the **middleware** check: "is this a valid guest?" It knows nothing about rooms.
-- **Room 412** must open only for the guest of room 412. That decision needs two facts: who you are (the card) **and** whose room this is (the room). Only the door of room 412 has both. That is the **object-level check**.
-- The **cleaner's** card opens every room on floor 4, but only during the day. That is a role (cleaner) plus attributes (floor, time).
-- A **sister hotel** shares the card system. Your card must never open a room there, whatever your role. That is the **tenant boundary**.
+- The **middleware** check runs for every request: "is this a valid, logged-in caller?" It knows nothing about individual orders.
+- The **object-level check** decides whether this caller may use **this** order. It needs two facts: who the caller is (from the token) **and** who owns the order (from the loaded order). Only code that has loaded the order knows both.
+- A **role plus attributes** rule gives more rights to some callers under conditions. For example, support staff may read every order in their tenant, and a customer may cancel an order only while it is pending.
+- The **tenant boundary** separates customer companies that share one system. A caller must never reach data of another tenant, whatever their role.
 
 ```mermaid
 flowchart LR
@@ -247,7 +247,7 @@ func (s *Service) List(ctx context.Context, f Filter) ([]Order, error) {
 
 In the PostgreSQL store from [Go and SQL](../databases/go-and-sql.md#a-postgresql-store-for-ordersd) the filter becomes `WHERE tenant_id = $1 AND ($2 = '' OR customer_id = $2)`, with placeholders.
 
-One more hole: **create**. The request body has `customer_id`. If the server trusts it, Bob creates orders "for Alice" (this is called **mass assignment**: the client sets a field it should not control). The owner and tenant come from the **token**:
+There is one more gap: **create**. The request body has `customer_id`. If the server trusts it, Bob creates orders "for Alice" (this is called **mass assignment**: the client sets a field it should not control). The owner and tenant come from the **token**:
 
 ```go
 	// Owner and tenant come from the token, never from the body.
@@ -416,7 +416,7 @@ flowchart LR
     team -- viewer --> acct
 ```
 
-ReBAC shines for sharing ("share this folder with that team"), deep hierarchies, and questions in both directions ("what can Sam read?"). The cost: a separate, critical service, and keeping its tuples in sync with your database.
+ReBAC works well for sharing ("share this folder with that team"), deep hierarchies, and questions in both directions ("what can Sam read?"). The cost: a separate, critical service, and keeping its tuples in sync with your database.
 
 | Model | Decides with                       | Good at                                | Weak at                                     |
 | ----- | ---------------------------------- | -------------------------------------- | ------------------------------------------- |

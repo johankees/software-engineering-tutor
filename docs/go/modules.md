@@ -2,9 +2,9 @@
 
 ## Why care?
 
-On Monday the build is green. On Tuesday, with no change in your code, it is red. A dependency of a dependency published a new version overnight, and your build picked it up. Or worse: the build is still green, but someone took over that package and added code that sends your environment variables to a server.
+On Monday the build passes. On Tuesday, with no change in your code, it fails. A dependency of a dependency published a new version overnight, and your build picked it up. A worse case: the build still passes, but someone took over that package and added code that sends your environment variables to a server.
 
-Dependency management is not boring plumbing. It decides whether your builds are **reproducible** and whether your supply chain is **safe**. Go's module system makes some unusual choices here. Once you understand _why_, you will see that they are some of the best ideas in the language.
+Dependency management decides whether your builds are **reproducible** and whether your supply chain is **safe**. Go's module system makes some unusual choices here. This page explains the reasons for each choice. They are some of the strongest design decisions in the language.
 
 ## The idea: two small files
 
@@ -15,7 +15,7 @@ A **module** is a tree of Go packages that is versioned and released together. I
 | `go.mod` | The module's name, the Go version, and the **minimum** versions of its dependencies | You, through `go` commands |
 | `go.sum` | Cryptographic **fingerprints** of every dependency version used                     | Only the `go` command      |
 
-There is no separate lock file, no `node_modules` folder, and no central registry like npm or PyPI. Let's see how that can work.
+There is no separate lock file, no `node_modules` folder, and no central registry like npm or PyPI. The sections below show how this works.
 
 ## Starting a module
 
@@ -104,7 +104,7 @@ go mod tidy -diff   # prints a diff and fails if go.mod/go.sum are not tidy
 
 Dependencies that you do not import directly, but that are needed by your dependencies, appear with an `// indirect` comment. They are listed so that `go.mod` alone fully describes the build.
 
-## `go.sum`: trust on first use, checked by the world
+## `go.sum`: trust on first use, checked against a public log
 
 Imagine an attacker changes the code of `golang.org/x/sync v0.25.0` on the server, or intercepts your download. To show what happens, here is a `go.sum` with the hash changed by hand:
 
@@ -155,7 +155,7 @@ A version is a **Git tag** on the repository, like `v1.5.0`. That is all "publis
 
 ## Minimal version selection: why Go picks the _oldest_ version
 
-This is the most surprising idea in Go modules, so let's run a real experiment. Three modules:
+This is the most surprising idea in Go modules. A real experiment shows how it works. There are three modules:
 
 - `example.com/log` has versions **v1.1.0, v1.2.0 and v1.3.0**.
 - `example.com/payments v1.0.0` requires `log v1.2.0`.
@@ -203,16 +203,16 @@ This algorithm is called **minimal version selection (MVS)**:
 
 > Every `require` line means "**at least** this version". Go picks, for each module, the **highest of the minimums** in the whole graph. Never anything newer.
 
-`payments` needs at least v1.2.0, `shipping` at least v1.1.0. The smallest version that satisfies both is v1.2.0. Done.
+`payments` needs at least v1.2.0, `shipping` at least v1.1.0. The smallest version that satisfies both is v1.2.0.
 
-### Why is this a brilliant idea?
+### Why pick the minimum version?
 
 Compare with npm, pip or Maven ranges, which pick the **newest** version that matches (`^1.1.0` means "newest 1.x"):
 
 1. **Reproducible without a lock file.** With "newest", the result changes every time someone publishes. That is why other ecosystems _need_ lock files. With MVS, the answer depends only on the `go.mod` files, which never change for a published version. The build is the same today and in five years.
-2. **No surprise upgrades.** A new release of `log` cannot enter your build until _someone_ (you, or a dependency's author) decides to require it. That closes the Monday/Tuesday problem and slows down supply-chain attacks: a malicious new version is not pulled in automatically.
+2. **No surprise upgrades.** A new release of `log` cannot enter your build until _someone_ (you, or a dependency's author) decides to require it. That prevents the Monday/Tuesday problem from the start of this page and slows down supply-chain attacks: a malicious new version is not pulled in automatically.
 3. **High-fidelity builds.** You build with the versions your dependencies' authors actually tested with, not with newer versions nobody tested together.
-4. **Simple and fast.** Version selection with ranges is an NP-complete problem (a SAT solver). MVS is a simple graph walk that a human can follow, like we just did.
+4. **Simple and fast.** Version selection with ranges is an NP-complete problem (a SAT solver). MVS is a simple graph walk that a human can follow, as in the example above.
 
 ### Upgrading and downgrading
 
@@ -250,7 +250,7 @@ go: downgraded example.com/log v1.3.0 => v1.1.0
 go: removed example.com/payments v1.0.0
 ```
 
-Go **removed `payments`**, because no version of `payments` works with `log v1.1.0`. It never builds a graph that breaks a minimum. (Your code still imports `payments`, so the build now fails, loudly, instead of silently using a version that `payments` was never tested with.)
+Go **removed `payments`**, because no version of `payments` works with `log v1.1.0`. It never builds a graph that breaks a minimum. (Your code still imports `payments`, so the build now fails with a clear error, instead of silently using a version that `payments` was never tested with.)
 
 | Command                 | Effect                                                     |
 | ----------------------- | ---------------------------------------------------------- |
@@ -265,7 +265,7 @@ Go **removed `payments`**, because no version of `payments` works with `log v1.1
 !!! abstract "Convention: upgrade deliberately and often"
 
     **Rule:** let a bot (Dependabot or Renovate) open small upgrade PRs every week, and let CI
-    test them. Do not run `go get -u ./...` on a Friday afternoon across 80 dependencies.
+    test them. Do not upgrade 80 dependencies at once with `go get -u ./...`.
 
     **Why:** MVS never upgrades for you, so if nobody upgrades, you slowly collect old versions
     with known vulnerabilities. Small, frequent upgrades are easy to review and easy to roll back.
@@ -289,7 +289,7 @@ import (
 )
 ```
 
-Why so strict? Think of the **diamond problem**: `payments` uses `log` v1 and `shipping` was upgraded to `log` v2. In most languages you are stuck: you can only have one version of `log`, and one of them breaks. In Go, `example.com/log` and `example.com/log/v2` are simply **two different modules**. Both are in the binary, and both dependencies work. A big migration can happen package by package, over months, instead of in one huge "upgrade day".
+The reason for this strict rule is the **diamond problem**: `payments` uses `log` v1 and `shipping` was upgraded to `log` v2. In most languages you can only have one version of `log`, so one of the two dependencies breaks. In Go, `example.com/log` and `example.com/log/v2` are simply **two different modules**. Both are in the binary, and both dependencies work. A big migration can happen package by package, over months, instead of all at once.
 
 !!! warning "Breaking changes in v0 and v1"
 
@@ -424,7 +424,7 @@ The version is pinned in `go.mod`, verified by `go.sum`, and compiled from sourc
 
 ## `govulncheck`: vulnerability scanning that reads your code
 
-Most vulnerability scanners say "you depend on library X version Y, which has CVE-123". Often the CVE is in a function you never call, so teams drown in false alarms and start ignoring the scanner.
+Most vulnerability scanners say "you depend on library X version Y, which has CVE-123". Often the CVE is in a function you never call. Teams get many false alarms and start to ignore the scanner.
 
 `govulncheck` uses the Go vulnerability database and **analyzes your call graph**. It reports a vulnerability as affecting you only if your code can actually **reach** the vulnerable function. It can also scan a compiled binary (`govulncheck -mode=binary ./ordersd`), using the build info from [`go version -m`](toolchain.md#know-what-is-running-version-stamping).
 
@@ -485,7 +485,7 @@ Before adding a module, check:
 - **Tagging `v2.0.0` without changing the module path to `/v2`.** Users cannot `go get` it: the `go` command rejects the version with `invalid version: should be v0 or v1, not v2`, because the module path does not end in `/v2`. (Very old repositories without any `go.mod` show up as `v2.0.0+incompatible`, a leftover from before modules.)
 - **Deleting a tag after publishing.** The proxy and checksum database remember it forever. Fix mistakes with a new version and a `retract`.
 - **Private modules leaking to the public proxy.** Without `GOPRIVATE`, the `go` command asks `proxy.golang.org` for `github.com/acme/secret-thing`, which tells the outside world the name exists.
-- **A forgotten `go.work`** makes your local build use local copies. "It works for me" and fails in CI. Check `go env GOWORK`.
+- **A forgotten `go.work`** makes your local build use local copies. The build passes on your machine and fails in CI. Check `go env GOWORK`.
 
 ## Check yourself
 

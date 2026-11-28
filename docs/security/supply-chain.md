@@ -4,7 +4,7 @@
 
 Your service is mostly code you didn't write. Some real attacks, none of them a bug in the victim's own code:
 
-- **event-stream (2018).** A popular npm package got a friendly new maintainer. He added a dependency that stole cryptocurrency wallets.
+- **event-stream (2018).** A popular npm package got a new maintainer who had offered to help. He added a dependency that stole cryptocurrency wallets.
 - **SolarWinds (2020).** Attackers changed the **build server**, not the source. Signed updates went to 18,000 customers.
 - **xz-utils (2024).** After two years of helpful work, a maintainer hid a backdoor for `sshd` in the release tarballs. One engineer noticed that SSH logins had become 0.5 seconds slower.
 - **tj-actions/changed-files (2025).** Attackers moved the version tags of a GitHub Action to a malicious commit. Thousands of workflows printed their CI secrets into public build logs.
@@ -12,15 +12,15 @@ Your service is mostly code you didn't write. Some real attacks, none of them a 
 
 The **supply chain** is everything that goes into the binary you run: dependencies, the toolchain, the build system, CI actions, the base image. On this page you check what Go already protects (more than most ecosystems), find a vulnerability that your code really reaches, write an SBOM, verify a real signature on a public image, and pin CI actions to commits.
 
-## The idea: food safety from farm to plate
+## The idea: check everything that goes into the build
 
-A restaurant doesn't only check its own kitchen. It asks:
+Your own code is only one input to the binary. Supply chain security asks five questions about all the other inputs:
 
-1. **What is in the dish?** An ingredient list (the **SBOM**).
-2. **Is any ingredient recalled?** Compare the list with recall notices (**vulnerability scanning**).
-3. **Is this the box the farm sent, unopened?** A tamper seal (**checksums**, `go.sum`).
-4. **Who packed it, and where?** A signed delivery note (**signatures** and **provenance**).
-5. **Do we only buy from approved suppliers?** (**proxies, pinning, policy**).
+1. **What is in the binary?** A list of every component and version (the **SBOM**, software bill of materials).
+2. **Does any component have a known vulnerability?** Compare the list with vulnerability databases (**vulnerability scanning**).
+3. **Is each component exactly what its author published?** Compare hashes (**checksums**, `go.sum`).
+4. **Who built the artifact, and how?** Signed statements about the build (**signatures** and **provenance**).
+5. **Do components come only from approved sources?** (**proxies, pinning, policy**).
 
 Each check stops a different attack. None of them stops all.
 
@@ -62,7 +62,7 @@ Two things make Go safer than npm or PyPI here, and you should know why:
 
 ### `go.sum` and the checksum database
 
-You met `go.sum` in [Modules](../go/modules.md#gosum-trust-on-first-use-checked-by-the-world), with a tampered hash that stops the build. The other half is the **checksum database** at `sum.golang.org`. It is a public, append-only log (a Merkle tree, the same idea as Certificate Transparency for TLS certificates). You can ask it directly; it's a plain GET:
+You met `go.sum` in [Modules](../go/modules.md#gosum-trust-on-first-use-checked-against-a-public-log), with a tampered hash that stops the build. The other half is the **checksum database** at `sum.golang.org`. It is a public, append-only log (a Merkle tree, the same idea as Certificate Transparency for TLS certificates). You can ask it directly; it's a plain GET:
 
 ```console
 $ curl -s https://sum.golang.org/lookup/golang.org/x/text@v0.3.7
@@ -318,7 +318,7 @@ these vulnerabilities.
 exit=0
 ```
 
-Same module, same version, three vulnerabilities in it, and **zero** reachable. Exit code 0. A version-only scanner would report three findings here; `govulncheck` reports them as information. Should you upgrade anyway? Yes, soon: the next code change might call `ParseAcceptLanguage`. But it is not a 2 a.m. page.
+Same module, same version, three vulnerabilities in it, and **zero** reachable. Exit code 0. A version-only scanner would report three findings here; `govulncheck` reports them as information. Should you upgrade anyway? Yes, soon: the next code change might call `ParseAcceptLanguage`. But it is not a reason to wake up the on-call engineer.
 
 It also works on a **binary**, using the build info inside it (no source needed, good for "what is running in production?"):
 
@@ -358,7 +358,7 @@ Run it in CI on every pull request **and** on a schedule against the default bra
 
 ## Under the hood: SBOMs
 
-A **software bill of materials** is the ingredient list: every component, its version, and a **purl** (package URL) that every tool understands. [Container security](../containers/security.md#sbom-the-list-of-ingredients) ran `syft` on the `tutor-ordersd:dev` image and wrote SPDX and CycloneDX files. Here, the **binary** alone:
+A **software bill of materials** is a complete list of components: every component, its version, and a **purl** (package URL) that every tool understands. [Container security](../containers/security.md#sbom-a-list-of-every-component) ran `syft` on the `tutor-ordersd:dev` image and wrote SPDX and CycloneDX files. Here, the **binary** alone:
 
 ```console
 $ CGO_ENABLED=0 go build -trimpath -o ~/tutor/ordersd ./cmd/ordersd
@@ -396,7 +396,7 @@ Why keep SBOMs at all, if the binary already knows? Because the question in an i
 
 ### Verify a real signature
 
-Container security showed how to [sign with cosign](../containers/security.md#signing-who-built-this) using a local key. The distroless base image that `ordersd` uses is signed **keyless**: Google's build signs with a short-lived certificate for a service account identity, recorded in the public Rekor log. Verify the exact digest we build on (this only reads from the registry and Sigstore):
+Container security showed how to [sign with cosign](../containers/security.md#signing-proving-who-built-an-image) using a local key. The distroless base image that `ordersd` uses is signed **keyless**: Google's build signs with a short-lived certificate for a service account identity, recorded in the public Rekor log. Verify the exact digest we build on (this only reads from the registry and Sigstore):
 
 ```console
 $ crane digest gcr.io/distroless/static-debian12:nonroot
@@ -506,7 +506,7 @@ Ask for both `refs/tags/v3` and `refs/tags/v3^{}`: for an **annotated** tag, the
 - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3.6.3
 ```
 
-A SHA pin is immutable, but an action can still download other code at run time (a `docker://` image by tag, a script by URL, or another action by tag inside a composite action). Pinning stops the easy attack; reviewing what an action does stops the rest. And give the job the least it needs: `permissions: contents: read` by default, and OIDC to the cloud instead of stored keys (see [Workload identity](secrets-management.md#who-are-you-workload-identity)), so that there is little to steal.
+A SHA pin is immutable, but an action can still download other code at run time (a `docker://` image by tag, a script by URL, or another action by tag inside a composite action). Pinning stops the easy attack; reviewing what an action does stops the rest. And give the job the least it needs: `permissions: contents: read` by default, and OIDC to the cloud instead of stored keys (see [Workload identity](secrets-management.md#workload-identity)), so that there is little to steal.
 
 Commits themselves should be signed, so "who wrote this" is checkable too: see [signing commits](../git/config-hooks-signing.md#under-the-hood-signing-commits).
 
@@ -525,7 +525,7 @@ Commits themselves should be signed, so "who wrote this" is checkable too: see [
 - **`GONOSUMDB` or `GOSUMDB=off` "to make the build work".** Fix the private-module setup with `GOPRIVATE` for your own paths only.
 - **Scanner fatigue.** Hundreds of unreachable findings train people to ignore the scanner. Gate CI on `govulncheck` symbol results; track the rest.
 - **Scanning once.** New advisories appear for old code. Scan on a schedule, and scan what is deployed, not only `main`.
-- **Signatures nobody checks.** Signing without verification at deploy time is decoration. Verify by **digest** and by **identity** (issuer + subject), not just "has a signature".
+- **Signatures nobody checks.** Signing without verification at deploy time protects nothing. Verify by **digest** and by **identity** (issuer + subject), not just "has a signature".
 - **Actions by tag.** Tags move. Pin by SHA, keep a version comment, let Dependabot or Renovate update both.
 - **`go run pkg@latest` in CI or a README.** It downloads and runs whatever "latest" is today. Pin tools in `go.mod` with the `tool` directive.
 
@@ -576,8 +576,8 @@ Commits themselves should be signed, so "who wrote this" is checkable too: see [
 
 - The supply chain is everything that goes into the binary: dependencies, toolchain, build, CI actions, base image. Attacks hit every link.
 - Go helps: **no install scripts**, `go.sum` plus the public **checksum database**, read-only builds (`-mod=readonly`), and **MVS**, which never upgrades by itself.
-- `go mod verify` checks the module cache; `go build` doesn't. `GOPRIVATE` keeps private names private; a company `GOPROXY` ending in `off` gives one controlled door.
-- The fewest dependencies win: `ordersd` imports no third-party package.
+- `go mod verify` checks the module cache; `go build` doesn't. `GOPRIVATE` keeps private names private; a company `GOPROXY` ending in `off` gives one controlled source.
+- Fewer dependencies are safer: `ordersd` imports no third-party package.
 - `govulncheck` reports **symbol**, **package** and **module** results. Gate CI on symbol results; it also scans binaries. Run it on a schedule too.
 - An **SBOM** answers "where do we use X?" across many services; Go binaries already carry their module list.
 - **Signatures** say who, **provenance** says how; both only help if the deploy **verifies** them, by digest and by identity. **SLSA** levels describe how much a build can be trusted.

@@ -12,17 +12,17 @@ Five tickets, all from services that "just use HTTP":
 
 Each one is TCP doing exactly what it was designed to do. TCP turns an unreliable network that loses, duplicates and reorders packets into a reliable, ordered **byte stream**. To do that it keeps state on both ends, waits on timers, and holds back data on purpose. This page shows that state and those timers, with real packets from the capturer of [Layers and packets](layers-and-packets.md#try-it-capture-a-real-packet), so you can recognise each ticket when you see it.
 
-## The idea: sending a book by post, one numbered page at a time
+## The idea: numbered bytes, acknowledgements and windows
 
-You must send a 300-page manuscript to a publisher, by post, and the post office sometimes loses letters or delivers them out of order.
+IP delivers packets one by one. Packets can be lost, duplicated or arrive out of order. TCP builds a reliable, ordered byte stream on top of that with a few mechanisms:
 
-- You **number every page**. That's the **sequence number**. The publisher can put pages in order and spot gaps.
-- The publisher sends back postcards: "I have everything up to page 41." That's the **acknowledgement (ACK)**. If you get no postcard for page 42 in time, you send it again (**retransmission**).
-- The publisher's desk holds only so many pages. Each postcard also says "room for 20 more." That's the **receive window**: you never send more than fits.
-- You don't know how busy the post office is. So you start with a few letters at a time and send more each time they all arrive, and fewer when letters get lost. That's **congestion control**.
-- Before you start, you phone to agree on numbering ("I'll start at page 1170981950, you?"). That's the **handshake**. And at the end, both sides say "that's all from me" separately (**FIN**), because the publisher may still be sending its comments back.
+- **Sequence numbers.** TCP numbers every byte it sends. The receiver uses the numbers to put data in order and to find gaps.
+- **Acknowledgements (ACKs).** The receiver reports back: "I have everything up to byte N." If the sender gets no ACK for some data in time, it sends that data again. This is **retransmission**.
+- **The receive window.** Each ACK also says how much more data the receiver can buffer right now. The sender never sends more than that.
+- **Congestion control.** The sender does not know how busy the network is. It starts by sending a little, sends more each time everything arrives, and sends less when packets are lost.
+- **The handshake and the close.** Before any data, the two sides exchange their starting sequence numbers. This is the **handshake**. At the end, each side says separately that it has nothing more to send (**FIN**), because the other side may still be sending.
 
-That's TCP. The rest is details, and the details are where the tickets come from.
+The rest of this page covers the details. The tickets above come from those details.
 
 ## Under the hood: a connection from start to end
 
@@ -62,7 +62,7 @@ sequenceDiagram
     S->>C: ACK ack=8
 ```
 
-Read it line by line, and the rules fall out:
+Line by line, the capture shows these rules:
 
 1. **The SYN carries the client's random starting number** (the ISN, initial sequence number). It is random so that an attacker can't guess it and inject packets, and so that packets from an old connection with the same 4-tuple don't fit into a new one.
 2. **The SYN-ACK does two jobs:** it acknowledges the client's SYN (`ack = ISN + 1`) and carries the server's own SYN. **A SYN counts as one byte** of sequence space, even though it carries no data. So does a FIN.
@@ -90,7 +90,7 @@ Options from the SYNs are agreed for the whole connection: **MSS** (largest segm
 
 Every segment sent stays in the sender's buffer until it is acknowledged. If no ACK comes within the **retransmission timeout** (RTO), the segment goes again, and the RTO doubles (**exponential backoff**). Linux keeps the RTO at least 200 ms (`ss` shows `rto:210` on a loopback connection). A faster path to recovery: when the receiver gets segments after a gap, it repeats its last ACK, and after **three duplicate ACKs** the sender retransmits at once (**fast retransmit**), without waiting for the timer. SACK then says exactly what is missing.
 
-The same doubling applies to the SYN. If nobody answers a SYN, Linux resends it after 1 s, then 2 s, 4 s, and so on, `net.ipv4.tcp_syn_retries = 6` times. That's the "connections time out after exactly 1 and 3 seconds" ticket: a dropped SYN, retried at 1 s and at 1 + 2 = 3 s. We'll make one drop below.
+The same doubling applies to the SYN. If nobody answers a SYN, Linux resends it after 1 s, then 2 s, 4 s, and so on, `net.ipv4.tcp_syn_retries = 6` times. That's the "connections time out after exactly 1 and 3 seconds" ticket: a dropped SYN, retried at 1 s and at 1 + 2 = 3 s. The listen backlog section below drops one on purpose.
 
 ### Connection states
 
@@ -239,7 +239,7 @@ The capture shows the window closing:
 (Produced with `sed 's/ opts=.*//' window-cap.txt` to drop the options.)
 
 - The server's window goes **512 → 380 → 124 → 0** (× 128 for the scale: 64 KiB → 47.5 → 15.5 → 0). Each number is what's left in its buffer.
-- The 54-byte segment is sent twice, 11 ms apart: the receiver's buffer was momentarily full and it **dropped** it (`d4` in its `skmem`: 4 drops). TCP recovered without anyone noticing.
+- The 54-byte segment is sent twice, 11 ms apart: the receiver's buffer was momentarily full and it **dropped** it (`d4` in its `skmem`: 4 drops). TCP recovered on its own, and the application saw no error.
 - After `win=0`, the client sends **zero-window probes** at 0.49 s, 0.92 s, 1.79 s: an ACK with `seq` one below what the server expects (…228 instead of …229), which forces an answer. The gap doubles each time (the `backoff:3` in `ss`). The probe at 0.92 s got no reply in the capture, most likely because Linux limits answers to such out-of-window segments to one per 500 ms (`net.ipv4.tcp_invalid_ratelimit`).
 - The connection is **healthy**, just stuck. It waits forever, unless something above it has a timeout. That's why every Go server needs `WriteTimeout` and every client a deadline: a slow reader on the other side otherwise holds your goroutine, buffer and fd indefinitely.
 
@@ -285,7 +285,7 @@ curl: 70680823 bytes in 1.240133s
     buffer size for that socket and disables autotuning for it. A "tuned" 256 KiB buffer is slower than the default on
     any fast, long path. Don't set them unless you have measured.
 
-## Congestion control: how fast may I send?
+## Congestion control: limiting data in flight
 
 The receive window protects the **receiver**. Nothing so far protects the **network** in between: a router with a full queue just drops packets. So the sender keeps a second limit, the **congestion window (`cwnd`)**, counted in segments. It may have at most `min(cwnd, receive window)` in flight.
 
@@ -297,7 +297,7 @@ flowchart LR
     A -->|"RTO timeout: lost a lot"| S
 ```
 
-- **Slow start** isn't slow: cwnd starts at 10 segments (about 14 KB) and doubles each round trip. That is why a new connection, or one that sat idle (`net.ipv4.tcp_slow_start_after_idle = 1`), can't use the full bandwidth for its first few round trips, and another reason to reuse connections.
+- **Slow start** grows quickly, despite its name: cwnd starts at 10 segments (about 14 KB) and doubles each round trip. That is why a new connection, or one that sat idle (`net.ipv4.tcp_slow_start_after_idle = 1`), can't use the full bandwidth for its first few round trips, and another reason to reuse connections.
 - **`ssthresh`** (slow start threshold) is where slow start stopped. Above it, growth is careful.
 - **The algorithm is pluggable.** This kernel has two:
 
@@ -377,7 +377,7 @@ TcpRetransSegs                  0                  0.0
 
 ## Nagle's algorithm, delayed ACKs, and Go's `TCP_NODELAY`
 
-Two old optimisations that are each sensible, and together a disaster:
+Two old optimisations. Each makes sense alone. Together they cause long delays:
 
 - **Nagle's algorithm** (sender): "If I have unacknowledged data in flight, don't send a new **small** segment; collect small writes until the ACK arrives or a full segment is ready." It was made for terminals sending one keystroke per packet.
 - **Delayed ACK** (receiver): "Don't ACK every segment at once; wait a bit (Linux: at least 40 ms), maybe I can piggyback the ACK on a reply."
@@ -552,7 +552,7 @@ TCP_NODELAY=false 20 requests in 964.46ms (48.223ms each)
 
 At 0.000974 the client sends the header `HD` (2 bytes). Nagle now holds the body `BD`: there is unacknowledged data. The server has half a request, so it has nothing to reply with, and **delays its ACK**. Both wait. 56 ms later the server's delayed-ACK timer fires, the ACK arrives, Nagle releases `BD` (0.057050), and the reply follows in microseconds. (The first two requests on the connection were fast: Linux ACKs at once at the start of a connection, "quick ACK" mode, and then switches to delaying.)
 
-Go's default protects you. You meet this when:
+Go's default avoids this. You still meet it when:
 
 - **Some other stack** has Nagle on: a client in another language, a proxy, a database driver.
 - **You turned it off** with `SetNoDelay(false)` to "save packets".
@@ -679,7 +679,7 @@ The capture, from the third connection on (`sed 's/ opts=.*//' backlog-cap.txt`;
 - **Three** connections got in with a backlog of **2**: Linux only calls the queue full when it holds **more** than the backlog. `LISTEN 3 2`: 3 waiting, limit 2.
 - **`net.Dial` succeeded for all three**, though nobody ever called `Accept`. "Connected" means "the kernel did the handshake", not "the server program is alive". This is how a frozen server keeps accepting connections that then time out (incident 4 in [Debugging a Linux box](../linux/debugging.md)).
 - Dial 4's SYN got **no answer at all**: no SYN-ACK, no RST. The client resent it after 1 s, would have again at 3 s, and the 3-second timeout won. A full accept queue looks exactly like packet loss. `nstat` counts each dropped SYN as a `ListenOverflow`. If those counters grow in production, your server doesn't `Accept` fast enough: it's overloaded or stuck, not the network.
-- At exit, the **listener closed with three connections never accepted**, and the kernel answered their FINs with **RST**. One more way to get a reset.
+- At exit, the **listener closed with three connections never accepted**, and the kernel answered their FINs with **RST**. This is another source of resets.
 
 ## `TIME_WAIT`: the side that closes first waits
 
@@ -803,7 +803,7 @@ What to do about it:
 - **Don't use `SO_LINGER 0` to "fix" it.** It skips `TIME_WAIT` by ending every connection with a reset (next section). The peer sees errors, and data still in flight is lost.
 - `tcp_tw_recycle` was removed from Linux in 4.12, because it broke clients behind NAT. Old blog posts still recommend it.
 
-## Keep-alive: is anyone still there?
+## Keep-alive: detecting a dead peer
 
 An idle TCP connection sends **nothing**. If the other side loses power, or a firewall or NAT box in the middle forgets the connection (they usually drop idle entries after a few minutes), your side doesn't notice. A `Read` waits forever. The "15 minutes after failover" ticket is the related case where you **do** have unacknowledged data: Linux retransmits `net.ipv4.tcp_retries2 = 15` times with backoff, about 15 minutes, before giving up.
 
@@ -921,7 +921,7 @@ read after 9s: read tcp 10.0.0.1:52782->10.0.0.2:9000: read: connection timed ou
 
 - **Go's defaults: 15 s idle, 15 s between probes, 9 probes.** A dead peer is detected after 15 + 9 × 15 = 150 s. On the server side, `net.ListenConfig` and `http.Server` use the same defaults for accepted connections.
 - **A probe is an ACK with `seq` one below the real one** (…990 instead of …991), carrying no data. The peer must answer it with an ACK. At 2 s and 4 s it did.
-- **After the server vanished**, probes at 6.2, 7.2 and 8.2 s got no answer. After the third, the kernel gave up, sent a RST (into the void), and `Read` returned **`connection timed out`** (`ETIMEDOUT`), 9 s after it started waiting.
+- **After the server vanished**, probes at 6.2, 7.2 and 8.2 s got no answer. After the third, the kernel gave up, sent a RST (which nobody received), and `Read` returned **`connection timed out`** (`ETIMEDOUT`), 9 s after it started waiting.
 - `ss -o` shows the keep-alive timer: `timer:(keepalive,1sec,0)` is "next probe in 1 s".
 
 Choose `Idle` shorter than the idle timeout of any NAT, firewall or load balancer in the path (AWS NLB: 350 s; many corporate firewalls: less), so the probes keep the entry alive. Keep-alive does **not** help while you have unacknowledged data in flight; for that case, `TCP_USER_TIMEOUT` (set through `SyscallConn`) bounds how long data may stay unacknowledged.
@@ -1068,7 +1068,7 @@ And what went over the wire (`sed 's/ opts=.*//' reset-cap.txt`):
 Two more details from the output:
 
 - The error is reported **once**. After the RST, the socket is dead: the next `Read` returns `EOF`, the next `Write` returns `EPIPE` (`broken pipe`). Don't match on one exact error; use `errors.Is(err, syscall.ECONNRESET)` and treat `EOF` and `EPIPE` as "the connection is gone" too.
-- Other RST sources you have met on this page: a listener closed with connections still in its accept queue, and keep-alive giving up.
+- Other RST sources covered earlier on this page: a listener closed with connections still in its accept queue, and keep-alive giving up.
 
 ## Traps
 

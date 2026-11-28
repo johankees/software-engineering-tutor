@@ -10,20 +10,20 @@ Three tickets from the same on-call week:
 
 All three are about **file descriptors**: the small numbers that almost every system call (see [System calls up close](system-calls.md)) takes as its first argument. [Fundamentals](../fundamentals/processes-and-threads.md#file-descriptors-and-too-many-open-files) said that a descriptor "points to" an open file. This page shows what it points **through**, because that middle layer explains all three tickets.
 
-## The idea: the cloakroom
+## The idea: three layers between a number and a file
 
-Think of a theatre cloakroom.
+A file descriptor does not point straight at a file. There are three layers:
 
-- You hand in your coat and get a **ticket with a number**. The number means nothing outside this cloakroom. That is the **file descriptor**.
-- Behind the counter, your ticket points to a **hanger**. The hanger has a little note: "this guest may only take, not add" and "the scarf is in the left sleeve". That is the **open file description**: access mode, flags, and the current **offset** (where the next read starts).
-- On the hanger is the **coat** itself. That is the **inode**: the real file, with its size and its data.
+- The **file descriptor** is a small number, such as 3. It only has meaning inside one process.
+- The number points to an **open file description**. This is a kernel object that holds the access mode, the flags, and the current **offset** (where the next read or write starts).
+- The open file description points to the **inode**: the real file, with its size and its data.
 
-Now the interesting cases:
+The middle layer decides who shares what:
 
-- You ask for a **second ticket for the same hanger** (`dup`). Both tickets share one note. Move the scarf with one ticket, and the other ticket sees it moved.
-- Your **child** gets a copy of all your tickets (`fork`). Same hangers, same notes.
-- Someone else hands in the **same coat again** (`open` the same file twice). New hanger, new note. Same coat.
-- The coat is **removed from the catalogue** (`rm`), but a hanger still holds it. The coat stays in the cloakroom until the last hanger lets go.
+- **`dup`** gives you a second number for the **same** open file description. Both numbers share one offset. A read through one moves the offset for the other.
+- **`fork`** gives the child a copy of all your numbers. They point to the same open file descriptions, so parent and child share offsets too.
+- A second **`open`** of the same file creates a **new** open file description with its own offset. It points to the same inode.
+- **`rm`** removes the file's name, but an open file description can still point to the inode. The data stays on disk until the last open file description is closed.
 
 ## Under the hood: three tables
 
@@ -60,12 +60,12 @@ flowchart LR
 
 Two rules complete the picture:
 
-1. **`open` always returns the lowest free number.** Close fd 0, open a file, and it becomes your stdin. Shells use this trick for redirection.
+1. **`open` always returns the lowest free number.** Close fd 0, open a file, and it becomes your stdin. Shells use this rule for redirection.
 2. **The kernel frees an open file description when its last fd is closed**, and frees an inode when it has no names (links) **and** no open file descriptions. Remember this one for the deleted-file ticket.
 
 ## Try it: look inside ordersd
 
-Start [`ordersd`](../go/services.md) with its logs going into a pipe, and open one TCP connection to it from the shell (bash's `/dev/tcp` trick):
+Start [`ordersd`](../go/services.md) with its logs going into a pipe, and open one TCP connection to it from the shell (with bash's `/dev/tcp` feature):
 
 ```console
 $ ./ordersd -addr 127.0.0.1:18080 </dev/null 2>&1 | cat >/dev/null &
@@ -83,7 +83,7 @@ lrwx------ 1 you   you   64 Nov 26 16:43 7 -> anon_inode:[eventpoll]
 lrwx------ 1 you   you   64 Nov 26 16:43 8 -> anon_inode:[eventfd]
 ```
 
-Nine descriptors, and every line teaches something:
+Nine descriptors. Each one has a reason:
 
 - **0, 1, 2**: stdin from `/dev/null`; stdout and stderr both point to **the same pipe** (`2>&1` is a `dup`).
 - **3, 4**: the Go runtime itself. Since Go 1.25 it reads the cgroup CPU limit to set `GOMAXPROCS`, and keeps these two files open to notice when the limit changes.
@@ -189,7 +189,7 @@ after child read: fd 5 at 9
 2. **`dup` shares the offset.** We read 3 bytes through fd 9, and fd 5 moved too: both are at 7.
 3. **A child shares it too.** `ExtraFiles` gives the child our open file description as its fd 3. `head` reads 2 bytes in **another process**, and our offset is now 9.
 
-This is not a curiosity. It is why `O_APPEND` exists. Two processes that write to one log file **without** `O_APPEND` each have their own offset and overwrite each other's lines. With `O_APPEND`, the kernel moves to the end of the file and writes in one step, on every write. Go's `os.OpenFile(name, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)` is the right way to open a log.
+This matters in practice. It is why `O_APPEND` exists. Two processes that write to one log file **without** `O_APPEND` each have their own offset and overwrite each other's lines. With `O_APPEND`, the kernel moves to the end of the file and writes in one step, on every write. Go's `os.OpenFile(name, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)` is the right way to open a log.
 
 ## Pipes: a buffer with two ends
 
@@ -402,7 +402,7 @@ after 3 opens: open /etc/hostname: too many open files
 errno: 24
 ```
 
-Three surprises:
+Three results need an explanation:
 
 1. **The soft limit is the hard limit minus one**, not the hard limit. From `syscall/rlimit.go`: Go sets `Cur = Max - 1` on purpose, so that if a tool later uses `prlimit` to set `Cur == Max`, Go can tell that someone else changed it.
 2. **The child got 1024 back.** Go remembers the original soft limit and restores it in child processes, so old programs you start still get what they expect. (Once you call `syscall.Setrlimit` yourself, Go stops doing this.)
@@ -418,9 +418,9 @@ $ grep "open files" /proc/213193/limits
 Max open files            1048575              1048576              files
 ```
 
-That is `ordersd` started from a shell with soft limit 1024. So, back to the first ticket: **for a Go service, the soft limit is almost never the problem.** If you hit `too many open files` with a limit of a million, or a limit of 65,536 that you "fixed" last week, you have a **leak**. Count the fds over time (`ls /proc/<pid>/fd | wc -l`). The usual suspects: `resp.Body` not closed, `os.Open` without `defer f.Close()`, a new `http.Client` or `http.Transport` per request.
+That is `ordersd` started from a shell with soft limit 1024. So, back to the first ticket: **for a Go service, the soft limit is almost never the problem.** If you hit `too many open files` with a limit of a million, or a limit of 65,536 that you "fixed" last week, you have a **leak**. Count the fds over time (`ls /proc/<pid>/fd | wc -l`). The common causes: `resp.Body` not closed, `os.Open` without `defer f.Close()`, a new `http.Client` or `http.Transport` per request.
 
-## `O_CLOEXEC`: don't hand your keys to strangers
+## `O_CLOEXEC`: keep fds out of child processes
 
 `fork` copies the whole fd table into the child. `exec` replaces the child's program but **keeps the fd table**, except for fds marked close-on-exec. So without that flag, every program you start inherits every socket, file and pipe you have open.
 
@@ -486,7 +486,7 @@ child fd 3 -> /proc/211164/fd
 child fd 8 -> /etc/passwd
 ```
 
-The parent's fd 5 has `02000000` set and stays home. fd 8 doesn't, and shows up in the child (`ls`, started by `sh`) **with the same number**. (The child's fd 1 is its pipe into `awk`, and fd 3 is the directory `ls` is reading.) The 3 and 4 that the Go runtime holds are not there either: they have `O_CLOEXEC` too.
+The parent's fd 5 has `02000000` set, so the child does not get it. fd 8 doesn't, and shows up in the child (`ls`, started by `sh`) **with the same number**. (The child's fd 1 is its pipe into `awk`, and fd 3 is the directory `ls` is reading.) The 3 and 4 that the Go runtime holds are not there either: they have `O_CLOEXEC` too.
 
 !!! tip "When you do want a child to inherit an fd"
 
@@ -513,7 +513,7 @@ Mounted on  Used Avail
 /dev/shm    200M  7.6G
 ```
 
-`sleep` stands in for a service that holds the log open as fd 3. The file is gone from the directory, but `df` hasn't changed. Find the culprit:
+`sleep` stands in for a service that holds the log open as fd 3. The file is gone from the directory, but `df` hasn't changed. Find the process that holds it:
 
 ```console
 $ ls -l /proc/212375/fd/3
@@ -525,7 +525,7 @@ $ stat -L -c '%s bytes, %h links, inode %i' /proc/212375/fd/3
 209715200 bytes, 0 links, inode 7
 ```
 
-`lsof +L1` means "open files with fewer than 1 link": exactly the deleted-but-open ones. On a real server, run `sudo lsof +L1` with no other filters. `NLINK 0`, 200 MB still in use.
+`lsof +L1` means "open files with fewer than 1 link": exactly the deleted-but-open ones. On a real server, run `sudo lsof +L1` with no other filters. `NLINK 0` means the file has no names left, but its 200 MB are still in use.
 
 `/proc/<pid>/fd/3` is not a normal symlink. Opening it opens **the inode itself**, even without a name. So you can rescue the data, or free the space without restarting the service:
 
@@ -538,7 +538,7 @@ Mounted on  Used Avail
 /dev/shm       0  7.8G
 ```
 
-`: > file` truncates the file to 0 bytes. Space is back, the service keeps running. (This works safely because the log is opened with `O_APPEND`: the next write goes to the new end, offset 0. Without `O_APPEND`, the writer keeps its old offset and the file becomes "sparse", with a hole at the start.)
+`: > file` truncates the file to 0 bytes. The space is free again, and the service keeps running. (This works safely because the log is opened with `O_APPEND`: the next write goes to the new end, offset 0. Without `O_APPEND`, the writer keeps its old offset and the file becomes "sparse", with a hole at the start.)
 
 The real fix is in how logs are rotated:
 

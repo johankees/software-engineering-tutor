@@ -10,18 +10,18 @@ Three things engineers say about a Go service:
 
 All three are about the line between your program and the kernel. [Processes, threads and system calls](../fundamentals/processes-and-threads.md) showed that a program asks the kernel for help with a system call. This page opens that call up: which CPU registers carry it, how errors come back, which calls skip the kernel completely, what a call costs in nanoseconds, and what the Go runtime does around every one.
 
-## The idea: the counter window at the bank
+## The idea: one controlled entry point into the kernel
 
-Think of the kernel as a bank behind thick glass.
+User code cannot read or change kernel memory directly. To ask the kernel for something, a program uses one special CPU instruction.
 
-- You can't walk into the vault. You go to the **counter window** and fill in a **form**.
-- The form has a **number** for the kind of request ("withdraw" is form 0, "deposit" is form 1) and up to **six boxes** for details.
-- The clerk checks the form, does the work in the back, and hands back **one number**: the result, or an error code.
-- The clock on the wall is **outside** the glass. You read it yourself. Nobody fills in a form to learn the time.
+- The program puts a **number** in a register. The number says which request it is (`read` is 0, `write` is 1).
+- It puts up to **six arguments** in other registers.
+- It runs the `SYSCALL` instruction. The CPU switches to kernel mode and jumps to a fixed kernel address.
+- The kernel checks the request, does the work, and returns **one number**: the result, or an error code (`errno`).
 
-That is the whole model. The window is the `SYSCALL` instruction. The form is a set of CPU registers. The error code is `errno`. The clock on the wall is the **vDSO**. And waiting in the queue costs time, even for a tiny request.
+Some requests skip this path. The current time is one example: the kernel publishes it in memory that every process can read, through the **vDSO**. Every real trip into the kernel has a fixed cost, even for a tiny request.
 
-## Under the hood: one trip through the window
+## Under the hood: what happens during a system call
 
 On x86-64 Linux, a system call is a contract about **registers** (see [CPU and registers](../fundamentals/cpu-and-registers.md)):
 
@@ -61,7 +61,7 @@ Three details matter later:
 
 1. **The CPU, not your code, picks the kernel address.** The kernel wrote its entry point into a special CPU register at boot. You can't jump to any other place in the kernel. That is the safety model.
 2. **The kernel saves and restores every register.** That work, plus the mode switch, plus security mitigations against Spectre-style attacks, is the fixed cost of a system call.
-3. **The number in `RAX` is the whole API.** There is no name, no version, no library. Form 1 is `write` on every x86-64 Linux there has ever been.
+3. **The number in `RAX` is the whole API.** There is no name, no version, no library. Number 1 is `write` on every x86-64 Linux there has ever been.
 
 ### The numbers
 
@@ -189,7 +189,7 @@ is fs.ErrNotExist: true
 
 The lesson for real code: **the errno is still inside your Go error.** `errors.Is(err, fs.ErrNotExist)` is the portable check. `errors.Is(err, syscall.ECONNREFUSED)` or `syscall.EMFILE` is how you react to one specific kernel answer. Never compare error strings.
 
-!!! info "`EINTR`: the call that gave up"
+!!! info "`EINTR`: an interrupted call"
 
     A slow system call can be **interrupted** by a signal and return `EINTR` ("try again"). Go sends
     its own threads signals for preemption (see [Fundamentals](../fundamentals/processes-and-threads.md)),
@@ -197,9 +197,9 @@ The lesson for real code: **the errno is still inside your Go error.** `errors.I
     `internal/poll` packages wrap their calls in a retry loop called `ignoringEINTR`. If you call
     `syscall.*` or `golang.org/x/sys/unix` directly, **you** must retry on `EINTR`.
 
-## Under the hood: the vDSO, the clock on the wall
+## Under the hood: the vDSO, system calls without entering the kernel
 
-Some calls are asked so often, and change so little, that a full trip into the kernel is a waste. "What time is it?" is the classic one. So the kernel puts a tiny shared library **into every process**, plus a read-only page of data that it keeps up to date. The library is the **vDSO** (virtual dynamic shared object). Your code calls it like a normal function. No `SYSCALL`, no mode switch.
+Some calls are asked so often, and change so little, that a full trip into the kernel is a waste. "What time is it?" is the most common one. So the kernel puts a tiny shared library **into every process**, plus a read-only page of data that it keeps up to date. The library is the **vDSO** (virtual dynamic shared object). Your code calls it like a normal function. No `SYSCALL`, no mode switch.
 
 You can see it in any process's memory map:
 
@@ -284,11 +284,11 @@ The Go runtime finds `__vdso_clock_gettime` at start-up and uses it for `time.No
     The vDSO reads the CPU's time stamp counter (TSC) directly. If the kernel's clock source can't be
     read from user mode, every `clock_gettime` silently becomes a real system call. This happened on
     older cloud VMs with the `xen` clock source. Check yours:
-    `cat /sys/devices/system/clocksource/clocksource0/current_clocksource`. This machine says `tsc`. Good.
+    `cat /sys/devices/system/clocksource/clocksource0/current_clocksource`. This machine says `tsc`, which the vDSO can use.
 
 ## How much does a system call cost?
 
-Talk is cheap. Measure. This benchmark compares a normal function call, the cheapest real system call (`getpid`), the clock through the vDSO, the **same** clock through a real `SYSCALL`, and one-byte writes with and without a buffer:
+This benchmark compares a normal function call, the cheapest real system call (`getpid`), the clock through the vDSO, the **same** clock through a real `SYSCALL`, and one-byte writes with and without a buffer:
 
 ```go
 package bench
@@ -379,7 +379,7 @@ PASS
 ok  	bench	7.169s
 ```
 
-What the numbers say (on this WSL2 laptop; yours will differ, the ratios are the lesson):
+What the numbers say (on this WSL2 laptop; yours will differ, but the ratios will be similar):
 
 | Operation                        | Cost   | Compared to a function call |
 | -------------------------------- | ------ | --------------------------- |
@@ -390,9 +390,9 @@ What the numbers say (on this WSL2 laptop; yours will differ, the ratios are the
 | `clock_gettime` as a real call   | 325 ns | 141×                        |
 | `write` of 1 byte to `/dev/null` | 409 ns | 177×                        |
 
-- **The window itself costs about 200 ns here**, even when the kernel does nothing. That is `getpid`.
-- **The vDSO is 7× faster than the same clock as a system call**, and `time.Now()` even reads _two_ clocks (wall clock and monotonic clock; the runtime's `time_linux_amd64.s` calls the vDSO with `CLOCK_REALTIME` and then `CLOCK_MONOTONIC`). Caching `time.Now()` is almost never worth the bugs.
-- **Buffering is an 80× win** for small writes. `bufio.Writer` turns 4096 one-byte writes into one `write` system call. This answers the logger question: a logger that calls `write` per line, with a mutex around it, pays the window price on every request. Buffer it, or make sure the log library does.
+- **Entering and leaving the kernel costs about 200 ns here**, even when the kernel does nothing. That is `getpid`.
+- **The vDSO is 7× faster than the same clock as a system call**, and `time.Now()` even reads _two_ clocks (wall clock and monotonic clock; the runtime's `time_linux_amd64.s` calls the vDSO with `CLOCK_REALTIME` and then `CLOCK_MONOTONIC`). Caching `time.Now()` is almost never worth the bugs it causes.
+- **Buffering is an 80× win** for small writes. `bufio.Writer` turns 4096 one-byte writes into one `write` system call. This answers the logger question: a logger that calls `write` per line, with a mutex around it, pays the full system call cost on every request. Buffer it, or make sure the log library does.
 
 !!! tip "Count calls, not bytes"
 
@@ -423,7 +423,7 @@ func Getpid() (pid int) {
 }
 ```
 
-The dance, step by step:
+Step by step:
 
 ```mermaid
 sequenceDiagram
@@ -448,7 +448,7 @@ That is the answer to "200 threads with `GOMAXPROCS=4`". Each goroutine blocked 
 
 ## Under the hood: the netpoller, or how Go avoids blocking
 
-Blocking 10,000 threads on 10,000 sockets would be a disaster. So for network sockets and pipes Go never makes a **blocking** read. It does this instead (from `internal/poll/fd_unix.go`, shortened):
+Blocking 10,000 threads on 10,000 sockets does not scale. So for network sockets and pipes Go never makes a **blocking** read. It does this instead (from `internal/poll/fd_unix.go`, shortened):
 
 ```go
 for {
@@ -584,7 +584,7 @@ syscall  goroutines waiting: 200  OS threads: 204
 
 ## Try it: see which call a process is stuck in
 
-`strace` is the classic tool, and you should learn it. But you can get far without installing anything: the kernel tells you what each thread is doing in `/proc`.
+`strace` is the standard tool, and you should learn it. But you can get far without installing anything: the kernel tells you what each thread is doing in `/proc`.
 
 `/proc/<pid>/syscall` shows the number of the system call a thread is blocked in, then its six arguments, then the stack pointer and the instruction pointer:
 
@@ -618,7 +618,7 @@ $ grep -c ^tfd /proc/215552/fdinfo/7
 402
 ```
 
-Read it like a detective:
+What this shows:
 
 - Seven threads are in `futex` (202): idle runtime threads, sleeping until the scheduler needs them.
 - **One** thread is in `epoll_pwait` (281). That is the netpoller, waiting for all 400 sockets at once.
@@ -662,7 +662,7 @@ strace -T -e trace=write -p <pid>
 
 ## Which calls are slow?
 
-The window costs about 200 ns. What happens behind the window can cost a million times more:
+Entering the kernel costs about 200 ns. The work the kernel does after that can cost a million times more:
 
 | Call                             | Why it can be slow                                                                   |
 | -------------------------------- | ------------------------------------------------------------------------------------ |
@@ -674,7 +674,7 @@ The window costs about 200 ns. What happens behind the window can cost a million
 | `mmap`, `munmap`, `madvise`      | Change page tables; `munmap` may need to stop other CPUs' TLB caches                 |
 | `clone`, `execve`                | Create a thread or replace a whole program                                           |
 
-And one Go special: DNS lookups through the C library (when cgo is on and Go picks the `cgo` resolver) run in a C call, which **always** holds a thread. A slow DNS server then shows up as many threads. The pure Go resolver uses the netpoller instead.
+One case is specific to Go: DNS lookups through the C library (when cgo is on and Go picks the `cgo` resolver) run in a C call, which **always** holds a thread. A slow DNS server then shows up as many threads. The pure Go resolver uses the netpoller instead.
 
 ## Traps
 
@@ -723,7 +723,7 @@ And one Go special: DNS lookups through the C library (when cgo is on and Go pic
 
 - A system call is the `SYSCALL` instruction: number in `RAX`, up to six arguments in `RDI, RSI, RDX, R10, R8, R9`, the result back in `RAX`.
 - Errors come back as `-1` to `-4095`. Go turns them into `syscall.Errno`, wrapped in errors like `*fs.PathError`. Use `errors.Is`.
-- The **vDSO** gives you `clock_gettime` and friends without entering the kernel. `time.Now()` is about 44 ns here; a real call is 200–400 ns.
+- The **vDSO** gives you `clock_gettime` and a few other functions without entering the kernel. `time.Now()` is about 44 ns here; a real call is 200–400 ns.
 - Cost is per **call**, not per byte. Buffer small I/O.
 - Go wraps blocking calls in `entersyscall`/`exitsyscall`. `sysmon` takes the P away after about 20 µs, so blocked calls cost threads, not progress.
 - Sockets and pipes go through the **netpoller**: non-blocking calls, `EAGAIN`, park, `epoll_pwait`. Disk files don't.

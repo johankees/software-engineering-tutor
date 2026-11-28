@@ -2,7 +2,7 @@
 
 ## Why care?
 
-Four messages from a team that ships often:
+A team that ships often meets problems like these four:
 
 - "The new totals code is merged, but marketing wants it live on Monday at 09:00. Do we deploy on Monday morning?"
 - "The new code is slow for one big customer. Rollback means a revert, a CI run and a deploy: 25 minutes."
@@ -11,14 +11,14 @@ Four messages from a team that ships often:
 
 The first three have the same answer: put the new behaviour behind a **feature flag**, and turn it on and off without a deploy. The fourth is what happens when you forget that every flag is a small piece of debt.
 
-This page explains the one idea behind flags (deploy is not release), the four kinds of flags, how the open standard **OpenFeature** works in Go, and how to clean up flags before they bite. You build a small flag setup for the `orders` service with the OpenFeature Go SDK and its in-memory provider.
+This page explains the one idea behind flags (deploy is not release), the four kinds of flags, how the open standard **OpenFeature** works in Go, and how to clean up flags before they cause problems. You build a small flag setup for the `orders` service with the OpenFeature Go SDK and its in-memory provider.
 
-## The idea: the light switch is not the wiring
+## The idea: deploy is not release
 
-An electrician puts new wiring in your house on Tuesday. The new lamp is in the ceiling, connected, tested. But the switch is off. On Saturday you have guests, and you flip the switch. If the lamp flickers, you flip it back. You don't call the electrician to take the wires out again.
+A feature flag is a runtime setting that the code checks before it runs the new behaviour. The new code is in production, but it only runs when the flag is on. This separates two events:
 
-- **Deploy** is the wiring: the new binary runs in production. It is a technical event, done by CI/CD.
-- **Release** is the switch: users get the new behaviour. It is a business event, done by whoever owns the feature.
+- **Deploy**: the new binary runs in production. It is a technical event, done by CI/CD.
+- **Release**: users get the new behaviour. It is a business event, done by whoever owns the feature. With a flag, release is a configuration change, and undoing it is another configuration change.
 
 Without flags, the two are the same moment. Every deploy is a release, and every rollback is a redeploy. With flags, you deploy many times a day (small, boring, safe) and release when you choose, to whom you choose, and undo it in seconds.
 
@@ -38,7 +38,7 @@ This also explains how [trunk-based development](trunk-based-development.md) wor
 
 ## Under the hood: four kinds of flags
 
-Not all flags are the same. They differ in **how long they live** and **who changes them**. Mixing them up is how flag systems turn into a mess. The usual four categories:
+Not all flags are the same. They differ in **how long they live** and **who changes them**. When teams mix them up, the flag system becomes hard to manage. The usual four categories are:
 
 | Kind                         | Example in `orders`                                | Lives for       | Changed by     | Decision depends on            |
 | ---------------------------- | -------------------------------------------------- | --------------- | -------------- | ------------------------------ |
@@ -52,7 +52,7 @@ Two lessons from the table:
 1. **Release flags must die.** They exist to get one change out safely. When the change is at 100% and stable, the flag and the old code path are deleted. A release flag that lives for a year is a bug.
 2. **Permission flags are not really flags.** "Enterprise customers can export" is a product rule. It may start in the flag system, but long term it belongs in your authorization code (see the [Security](../security/index.md) chapter), with tests and audit logs. A flag system is the wrong place for "who paid for what".
 
-An **ops flag** is the odd one out: it is meant to live. It is a circuit breaker you flip by hand. When the email provider is down, on-call turns off `orders.confirmation-email`, orders go through without email, and a background job sends the emails later.
+An **ops flag** is different: it is meant to live. It is a circuit breaker you flip by hand. When the email provider is down, on-call turns off `orders.confirmation-email`, orders go through without email, and a background job sends the emails later.
 
 ### Where does the decision happen?
 
@@ -130,7 +130,7 @@ func (flag *InMemoryFlag) Resolve(defaultValue any, flatCtx openfeature.Flattene
 
 ### Step 1: the flags and their rules
 
-`flags.go` defines the flag keys as constants (one place to find them, one place to delete them) and the rules. The most interesting part is the **percentage rollout**. It must be **sticky**: a customer who got the new totals at 10% must still have them on the next request, and still at 25%. So we don't roll a die; we **hash** the customer ID together with the flag key, and get a bucket from 0 to 99:
+`flags.go` defines the flag keys as constants (one place to find them, one place to delete them) and the rules. The most important part is the **percentage rollout**. It must be **sticky**: a customer who got the new totals at 10% must still have them on the next request, and still at 25%. So the code does not pick a random number. It **hashes** the customer ID together with the flag key, and gets a bucket from 0 to 99:
 
 ```go
 package main
@@ -187,7 +187,7 @@ func percentRollout(percent int) memprovider.ContextEvaluator {
 }
 ```
 
-Why put the flag key in the hash? Without it, customer `c-17` is in bucket 3 for **every** flag. The same 10% of customers would be the guinea pigs for every rollout, and an experiment would be mixed up with the release that happens to target the same people.
+Why put the flag key in the hash? Without it, customer `c-17` is in bucket 3 for **every** flag. The same 10% of customers would get every new rollout first, and an experiment would be mixed up with the release that happens to target the same people.
 
 The other two rules are shorter. `split50` gives half the customers the `buy-now` variant (the same hash, so it is sticky too). `planIs("enterprise")` returns `on` when the `plan` attribute matches. Then `Flags` puts it all together:
 
@@ -282,9 +282,9 @@ c-4 di@shop.example   new-totals=false (SPLIT)  cta="Buy now"   (buy-now)  bulk-
 
 Read it line by line:
 
-- `c-3` is staff (`@acme.example`), so the new totals are on, with reason `TARGETING_MATCH`. Staff always go first: "dogfooding".
-- The other three are in the 25% rollout lottery (`SPLIT`), and none of them won. With four customers that's not surprising.
-- The CTA experiment split them 1 to 3. Again: tiny numbers. Experiments need thousands of subjects.
+- `c-3` is staff (`@acme.example`), so the new totals are on, with reason `TARGETING_MATCH`. Staff always get new code first. This is called "dogfooding": a company uses its own product before customers do.
+- The other three go through the 25% split (`SPLIT`), and none of them is in the 25%. With four customers, that is not surprising.
+- The CTA experiment split them 1 to 3. Again, the numbers are very small. Experiments need thousands of subjects.
 - Only `c-2`, on the enterprise plan, may bulk-export.
 
 The **reason** is worth logging. "Why did customer X see the new totals?" is a real support question, and `TARGETING_MATCH` versus `SPLIT` answers it.
@@ -366,7 +366,7 @@ hashed: 0 of 10000 customers saw a different answer on their next request
 random: 3735 of 10000 customers saw a different answer on their next request
 ```
 
-37% of customers would see the new totals on one page and the old totals on the next. (The math: 2 × 0.25 × 0.75 = 0.375.) That's not a rollout; that's a bug report generator.
+37% of customers would see the new totals on one page and the old totals on the next. (The math: 2 × 0.25 × 0.75 = 0.375.) That is not a controlled rollout. It produces bug reports.
 
 ### Step 4: the kill switch
 
@@ -445,7 +445,7 @@ No error at all. That's why `SetProviderAndWait` exists, and why you should not 
 
 ### Step 6: see every evaluation with a hook
 
-The fix for silent errors is to make them loud. The SDK ships a `LoggingHook` that logs every stage with `log/slog`:
+To find silent errors, log them. The SDK ships a `LoggingHook` that logs every stage with `log/slog`:
 
 ```go
 	case "hook":
@@ -582,7 +582,7 @@ A release flag is finished when it is at 100% for all customers and stable for a
 
 3. **Deploy that**, and only then **delete the flag in the flag system**. In the other order, the running code asks for a flag that no longer exists and gets the default: `false`, the old path. You just rolled back your own feature.
 
-Ways to make cleanup happen instead of hoping:
+Ways to make sure cleanup happens:
 
 - Give each release flag an **owner** and an **expiry date** when you create it. Most flag services can store this as metadata; some warn about stale flags.
 - Create the "remove flag" ticket **at the same time** as the flag.
@@ -619,7 +619,7 @@ Ways to make cleanup happen instead of hoping:
 
 ??? question "2. Your rollout uses `bucket := rand.IntN(100)` on every request. What do customers see at 25%?"
 
-    Each request is a new lottery. About 37.5% of customers (2 × 0.25 × 0.75) see a different
+    Each request picks a new random bucket. About 37.5% of customers (2 × 0.25 × 0.75) see a different
     answer on their next request: new totals on one page, old totals on the next. Hash a
     stable targeting key together with the flag key instead, so a customer's bucket never
     changes and raising the percentage only adds customers.

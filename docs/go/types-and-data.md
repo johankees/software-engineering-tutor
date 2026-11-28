@@ -4,7 +4,7 @@
 
 A bug report: _"Sometimes, when two customers order at the same time, one order shows the other customer's items."_
 
-The team searches for a week. In the end, it is four lines:
+The team searches for a week. The cause is in these lines:
 
 ```go
 base := defaultItems[:n]
@@ -12,11 +12,11 @@ orderA.Items = append(base, itemA)
 orderB.Items = append(base, itemB)
 ```
 
-`orderA` and `orderB` ended up **sharing the same memory**. Writing `itemB` overwrote `itemA`. No data race, no pointer in sight, nothing that looks dangerous. Just a slice.
+`orderA` and `orderB` ended up **sharing the same memory**. Writing `itemB` overwrote `itemA`. There is no data race and no visible pointer. The code only uses a slice.
 
 You can only avoid this kind of bug if you know what a slice _is_ in memory. This page opens up Go's built-in data types (arrays, slices, maps, strings, structs and pointers) so you can see exactly what is copied, what is shared, and what it costs.
 
-## The big idea: everything is copied, but some things contain pointers
+## The main idea: everything is copied, but some things contain pointers
 
 Go has one simple rule:
 
@@ -39,7 +39,7 @@ flowchart LR
     end
 ```
 
-Let's measure the size of these headers:
+This program measures the size of these headers:
 
 ```go
 package main
@@ -133,7 +133,7 @@ mid             ───────┘      len 2, cap 4  (from index 1 to the
 
 That is why you must always write `s = append(s, x)`: the result may point to a different array.
 
-Let's watch the growth:
+This program prints the capacity each time it grows:
 
 ```go
 package main
@@ -310,7 +310,7 @@ Since Go 1.24, maps use a design called **Swiss tables** (from Google's C++ libr
 
 - The table is split into **groups of 8 slots**. Each group also has 8 **control bytes**, one per slot.
 - A key's hash is split in two: the high bits pick the group, the low 7 bits are stored in the control byte.
-- To find a key, Go loads the 8 control bytes of a group **at once** and compares all 8 with the 7-bit hash in one go (a SIMD-style trick, see [CPU and registers](../fundamentals/cpu-and-registers.md)). Only slots that match are checked for the full key.
+- To find a key, Go loads the 8 control bytes of a group **at once** and compares all 8 with the 7-bit hash in one operation (a SIMD-style technique, see [CPU and registers](../fundamentals/cpu-and-registers.md)). Only slots that match are checked for the full key.
 - Big maps are split into several tables, so growing a map only rebuilds one table at a time instead of the whole map. That keeps latency smooth.
 
 You don't need to remember the details. Remember the consequences:
@@ -434,7 +434,7 @@ recovered: assignment to entry in nil map
 
 ## Strings: read-only bytes
 
-A string is a **read-only** slice of bytes: pointer + length. It is usually (but not required to be) UTF-8. The full story of bytes, runes and UTF-8 is in [Encodings](../fundamentals/encodings.md). Here are the parts that matter for everyday Go:
+A string is a **read-only** slice of bytes: pointer + length. It is usually (but not required to be) UTF-8. The details of bytes, runes and UTF-8 are in [Encodings](../fundamentals/encodings.md). Here are the parts that matter for everyday Go:
 
 ```go
 package main
@@ -505,13 +505,13 @@ o := Order{CustomerID: "c-42", Status: StatusPending} // other fields: zero
 
     **Why:** Positional literals break silently when someone adds or reorders a field. Worse, if two
     fields have the same type (`Quantity int`, `MaxQuantity int`), swapping them still compiles.
-    Named fields survive change and document the values for the reader.
+    Named fields keep working when fields are added or reordered, and they document the values for the reader.
 
 Structs are compared with `==` field by field, if all fields are comparable. A struct with a slice field can't be compared with `==` (use a method, or `slices.Equal` on the field).
 
 ### Field order and padding
 
-The CPU likes values aligned to their size (an `int64` at an address divisible by 8). So the compiler inserts **padding** between fields:
+The CPU works best with values aligned to their size (an `int64` at an address divisible by 8). So the compiler inserts **padding** between fields:
 
 ```go
 type Bad struct {
@@ -538,11 +538,11 @@ Bad:  32
 Good: 16
 ```
 
-Same fields, half the size. For one struct, who cares. For 10 million of them in a cache, that is 160 MB. Order fields from big to small when memory matters; otherwise, order them so they **read well** (group related fields). The `fieldalignment` analyzer can report this. See [Memory](../fundamentals/memory.md) for why alignment exists.
+Same fields, half the size. For one struct, the difference does not matter. For 10 million of them in a cache, that is 160 MB. Order fields from big to small when memory matters; otherwise, order them so they **read well** (group related fields). The `fieldalignment` analyzer can report this. See [Memory](../fundamentals/memory.md) for why alignment exists.
 
 ### Anonymous structs
 
-Handy in tests and for one-off JSON shapes:
+Anonymous structs (structs without a type name) are useful in tests and for one-off JSON shapes:
 
 ```go
 var req struct {

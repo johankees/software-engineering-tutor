@@ -12,16 +12,16 @@ Your Go service is done. Now it has to run on a Linux box: start at boot, restar
 
 On almost every Linux server, the answer to all five is **systemd**: the first process the kernel starts, and the one that runs everything else. This page runs `ordersd` under systemd for real, as a user service, and shows what each setting does to the process.
 
-## The idea: the facilities manager
+## The idea: one process that starts and supervises all the others
 
-In the building from [Processes and threads](../fundamentals/processes-and-threads.md), the kernel is the building manager. systemd is the **facilities manager** the building manager hires first, on day one.
+The kernel starts one process at boot, and on most Linux servers that process is systemd. Its job is to run every other service on the machine (see [Processes and threads](../fundamentals/processes-and-threads.md) for how the kernel runs processes):
 
-- It has a **list of jobs** (units): "the heating must run", "the mail room opens after the front door".
-- It **starts things in the right order**, as many at once as the order allows.
-- It **watches** them. If the heating breaks, it calls someone to restart it.
-- It keeps the **logbook** (the journal).
-- It gives each job its own **room with a meter** (a cgroup), so it always knows who belongs to which job.
-- At closing time it asks everyone to leave, waits a little, then **removes** whoever is left.
+- It reads a **list of units**: descriptions of what to run, and what each one depends on.
+- It **starts units in the right order**, and starts as many in parallel as the order allows.
+- It **supervises** them. When a service exits, it can restart it.
+- It **collects the logs** of every service in the journal.
+- It puts each service in its own **cgroup**, so it always knows which processes belong to which service.
+- On stop, it sends each service a signal, waits a short time, then **kills** any process that is still running.
 
 ## Under the hood: PID 1's job
 
@@ -76,7 +76,7 @@ systemd looks in a list of directories. The **first match wins**, and the order 
 
 ### Dependencies: two separate questions
 
-This is the part almost everybody gets wrong once. systemd keeps two **independent** kinds of relation:
+This part is easy to get wrong. systemd keeps two **independent** kinds of relation:
 
 - **Requirement**: "if A starts, B must start too". `Wants=` (B may fail, A starts anyway) and `Requires=` (if B fails to start, A fails too). `BindsTo=` is `Requires=` plus "if B stops, stop A".
 - **Ordering**: "if both start, A waits for B". `After=` and `Before=`.
@@ -231,7 +231,7 @@ Line by line:
 - `%h` is a **specifier** for the home directory. `ExecStart=` needs an absolute path (or a binary in systemd's own fixed `PATH`), not your shell's `PATH`.
 - `Environment=` sets `ORDERS_*` variables, which `ordersd` reads (see `internal/config`). For secrets, use `EnvironmentFile=` with a file only root can read, or better `LoadCredential=`.
 - `Restart=on-failure` restarts after a non-zero exit, a crash signal or a timeout, but not after a clean `systemctl stop`. `RestartSec=2s` waits between tries.
-- `StartLimitBurst=5` in `StartLimitIntervalSec=60`: more than 5 starts in 60 seconds, and systemd gives up (state `failed`, reason `start-limit-hit`). This stops a crash loop from burning CPU forever.
+- `StartLimitBurst=5` in `StartLimitIntervalSec=60`: more than 5 starts in 60 seconds, and systemd gives up (state `failed`, reason `start-limit-hit`). This stops a crash loop from using CPU forever.
 - `TimeoutStopSec=15s`: how long a stop may take before `SIGKILL`. It must be **longer** than `ORDERS_SHUTDOWN_TIMEOUT` (10 s), or systemd kills the service in the middle of its graceful shutdown.
 - `[Install]` is only read by `systemctl enable`: "make `default.target` want this unit".
 
@@ -243,7 +243,7 @@ $ echo $?
 0
 ```
 
-Here is what it says about a sloppy version (path shortened):
+Here is what it says about a version with mistakes (path shortened):
 
 ```ini
 [Unit]
@@ -300,11 +300,11 @@ $ systemctl --user disable ordersd
 Removed "/home/you/.config/systemd/user/default.target.wants/ordersd.service".
 ```
 
-That's all "enabled" is: a symlink in a `.wants/` directory. (User units start at login, and stop at logout, unless you `loginctl enable-linger` the user.)
+"Enabled" means only this: a symlink in a `.wants/` directory. (User units start at login, and stop at logout, unless you `loginctl enable-linger` the user.)
 
-### `Restart=`: crash it
+### `Restart=`: restart after a crash
 
-Kill the service the hard way, like the kernel's OOM killer would:
+Kill the service with `SIGKILL`, as the kernel's OOM killer would:
 
 ```console
 $ systemctl --user kill -s KILL ordersd
@@ -453,7 +453,7 @@ $ journalctl --user -u stubborn -o short-precise --no-pager | sed 's/laptop //' 
 16:47:59.797628 systemd[595]: Stopped stubborn.service - ignores SIGTERM.
 ```
 
-`SIGTERM` at :56.6, `SIGKILL` 3.2 seconds later. With the default `TimeoutStopSec=90s`, this is the famous "stop hangs for 90 seconds". The same logic, with other numbers, is Kubernetes' `terminationGracePeriodSeconds` and Docker's `stop -t`.
+`SIGTERM` at :56.6, `SIGKILL` 3.2 seconds later. With the default `TimeoutStopSec=90s`, this is the "stop hangs for 90 seconds" problem from the start of the page. The same logic, with other numbers, is Kubernetes' `terminationGracePeriodSeconds` and Docker's `stop -t`.
 
 ### `KillMode=`: who gets the signal?
 
@@ -464,7 +464,7 @@ $ journalctl --user -u stubborn -o short-precise --no-pager | sed 's/laptop //' 
 | `process`       | Only the main process                     | Only the main process          |
 | `none`          | Nobody (only `ExecStop=` runs). Don't use | Nobody                         |
 
-`mixed` is right for a parent that shuts down its own children in order (a supervisor, `nginx`). `process` leaks. Watch:
+`mixed` is right for a parent that shuts down its own children in order (a supervisor, `nginx`). `process` can leave child processes running:
 
 ```console
 $ systemd-run --user --quiet --unit=killmode-demo -p KillMode=process sh -c 'sleep 600 & wait'
@@ -486,7 +486,7 @@ The unit is "stopped", but its child is still running. The cgroup is what makes 
 
 ## Socket activation: systemd holds the socket
 
-With **socket activation**, systemd creates the listening socket itself, and starts the service on the first connection (or at boot). The service gets the already-open socket as **file descriptor 3** (see [File descriptors](file-descriptors.md)). Why bother?
+With **socket activation**, systemd creates the listening socket itself, and starts the service on the first connection (or at boot). The service gets the already-open socket as **file descriptor 3** (see [File descriptors](file-descriptors.md)). The benefits:
 
 - **No lost connections on restart.** The socket stays open while the service restarts. New connections wait in the kernel's accept queue instead of getting `connection refused`.
 - **Privileged ports without privileges.** systemd (root) binds port 443, the service runs as a normal user.
@@ -637,7 +637,7 @@ $ curl -s 127.0.0.1:18082/
 hello from pid 218120
 ```
 
-A new PID, and the client never saw a refused connection. Run without systemd and the program says so; `systemd-socket-activate` fakes the protocol for local testing:
+A new PID, and the client never saw a refused connection. Run without systemd and the program says so; `systemd-socket-activate` emulates the protocol for local testing:
 
 ```console
 $ ~/.local/bin/hellosock
@@ -707,7 +707,7 @@ Thu 2026-11-26 16:46:54.150924 CET [s=6cde87478a8045648f0d7ff11e3712f1;i=2395a;b
 
 Fields starting with `_` are added by journald itself, from the kernel. The process can't fake them. That's how `-u` works: it matches `_SYSTEMD_UNIT` (or `_SYSTEMD_USER_UNIT`). `_SYSTEMD_INVOCATION_ID` changes on every start, so you can pick out exactly one run. Any field works as a filter: `journalctl _PID=215658`, `journalctl _COMM=ordersd`.
 
-`ordersd` logs JSON, so `MESSAGE` is a JSON string, and `jq` can dig into it:
+`ordersd` logs JSON, so `MESSAGE` is a JSON string, and `jq` can read its fields:
 
 ```console
 $ journalctl --user -u ordersd -o cat --no-pager | grep '^{' | jq -c 'select(.msg=="listening") | {time,addr}'
@@ -736,7 +736,7 @@ The journal has size limits (`SystemMaxUse=` in `journald.conf`, 10% of the file
 
 ## Hardening: a sandbox in a drop-in
 
-By default a service can do everything its user can: read every home directory, write to `/tmp`, open any socket, call any system call. systemd can put a service in a sandbox, built from the same [namespaces](namespaces-and-cgroups.md), plus seccomp and capabilities, with one line per wall. `systemd-analyze security` scores how exposed a unit is, from 0 (locked down) to 10:
+By default a service can do everything its user can: read every home directory, write to `/tmp`, open any socket, call any system call. systemd can put a service in a sandbox, built from the same [namespaces](namespaces-and-cgroups.md), plus seccomp and capabilities, with one line per restriction. `systemd-analyze security` scores how exposed a unit is, from 0 (locked down) to 10:
 
 ```console
 $ systemd-analyze --user security ordersd.service --no-pager | tail -1
@@ -827,9 +827,9 @@ $ systemd-analyze --user security ordersd.service --no-pager | grep -E '^✗'
 ✗ IPAddressDeny=                                              Service does not define an IP address allow list                                    0.2
 ```
 
-Read the report, don't obey it. An HTTP service needs internet sockets and the network. And "runs as root user" is wrong here: the tool does not understand user managers, the service runs as UID 1000. For a **system** service it is right, and the fix is `DynamicUser=yes` (systemd invents a fresh UID for each run) or `User=orders`. `IPAddressDeny=` needs eBPF on a cgroup v2 tree, which this hybrid machine doesn't give to the user manager.
+Read the report critically: not every item applies to every service. An HTTP service needs internet sockets and the network. And "runs as root user" is wrong here: the tool does not understand user managers, the service runs as UID 1000. For a **system** service it is right, and the fix is `DynamicUser=yes` (systemd invents a fresh UID for each run) or `User=orders`. `IPAddressDeny=` needs eBPF on a cgroup v2 tree, which this hybrid machine doesn't give to the user manager.
 
-Check that the walls are real. The kernel's view of the running service:
+Check that the restrictions are active. The kernel's view of the running service:
 
 ```console
 $ grep -E 'NoNewPrivs|Seccomp:|CapBnd' /proc/$(systemctl --user show -p MainPID --value ordersd)/status
@@ -841,7 +841,7 @@ user: user:[4026532271] vs shell user:[4026531837]
 mnt: mnt:[4026532272] vs shell mnt:[4026532255]
 ```
 
-No capabilities, `no_new_privs` set, a seccomp filter active (mode 2), and its own user and mount namespaces (`P` holds the service's PID). And a quick test of the filesystem walls with a throw-away unit:
+No capabilities, `no_new_privs` set, a seccomp filter active (mode 2), and its own user and mount namespaces (`P` holds the service's PID). And a quick test of the filesystem restrictions with a temporary unit:
 
 ```console
 $ systemd-run --user --quiet --pipe --wait -p PrivateUsers=yes -p ProtectSystem=strict -p ProtectHome=read-only -p PrivateTmp=yes sh -c 'id; touch ~/pwned; touch /tmp/scratch && ls -A /tmp'
@@ -921,7 +921,7 @@ Same user, but home is read-only, and `/tmp` is a private, empty directory with 
 - Unit files live in `/etc/systemd/system` (yours), `/run` (runtime) and `/usr/lib` (packages). Change package units with **drop-ins**, then `daemon-reload`.
 - `Wants=`/`Requires=` say **what** starts; `After=`/`Before=` say **in which order**. You usually need both.
 - `Type=exec` for most Go services; `Type=notify` plus `READY=1` when warm-up matters.
-- `Restart=on-failure`, `RestartSec=`, `StartLimitBurst=`: restarts with a brake.
+- `Restart=on-failure`, `RestartSec=`, `StartLimitBurst=`: restarts with a limit.
 - `KillMode=control-group` and `TimeoutStopSec=` decide who gets `SIGTERM` and how long until `SIGKILL`.
 - **Socket activation** passes a listening socket as fd 3 (`LISTEN_FDS`, `LISTEN_PID`) and keeps it open across restarts.
 - **journald** stores structured fields; `journalctl -u`, `-o verbose`, `-o json`, and filters on any field.

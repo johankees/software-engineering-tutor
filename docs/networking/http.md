@@ -9,19 +9,19 @@ Four tickets, all from services that "just make HTTP calls":
 - "The call hangs for exactly 30 seconds, then `i/o timeout`. Nobody in the team ever typed 30."
 - "Memory and open files grow all day. A restart fixes it until tomorrow."
 
-None of these is about your handler code. They are about **how HTTP uses connections**: how a message is framed on the wire, when a connection is reused, how many are kept, and how long each step may take. This page shows each of those with real bytes and real Go programs, so you can recognise the tickets above in a minute instead of a week.
+None of these is about your handler code. They are about **how HTTP uses connections**: how a message is framed on the wire, when a connection is reused, how many are kept, and how long each step may take. This page shows each of those with real bytes and real Go programs, so you can recognise the tickets above quickly.
 
 The [TCP page](tcp.md) explained the connection and [TLS](tls.md) the encryption. Here we put HTTP on top.
 
-## The idea: one phone line, three ways to use it
+## The idea: three ways to use connections
 
-Think of a phone line between a shop (the client) and a warehouse (the server).
+The three HTTP versions differ mainly in how they use connections.
 
-- **HTTP/1.1** is a polite phone call. You ask one question, wait for the full answer, then ask the next. You can keep the line open between questions (**keep-alive**), which saves dialling again. But while the warehouse is looking for a slow answer, you can't ask anything else on that line. Want two questions at once? Make a second call.
-- **HTTP/2** is one line with **numbered conversations**. Every sentence starts with "about order 3: ..." or "about order 5: ...". Many questions are in flight at once, answers come back in any order, and you never need a second line. But it is still one line: if it crackles (a lost packet), **every** conversation waits.
-- **HTTP/3** gives every conversation **its own lane** (QUIC streams over UDP). A crackle on lane 3 doesn't stop lane 5. It also dials faster.
+- **HTTP/1.1** sends one request at a time on a connection. The client sends a request and waits for the full response before it sends the next one. The connection can stay open between requests (**keep-alive**), so the client does not need a new handshake each time. But while a slow response is in progress, that connection can do nothing else. To send two requests at once, the client opens a second connection.
+- **HTTP/2** sends many requests at once on **one** connection. Each request and its response form a **stream** with its own number, and every piece of data is labelled with its stream number. Responses can come back in any order. But all streams still share one TCP connection, so when one packet is lost, **every** stream waits until it is resent.
+- **HTTP/3** runs each stream independently over **QUIC**, a transport on top of UDP. A lost packet stalls only the stream it belongs to. Setting up a connection also takes fewer round trips.
 
-The rest of the page is these three ideas, in bytes.
+The rest of the page shows these three ideas in bytes.
 
 ## Under the hood: HTTP/1.1 is text on a byte pipe
 
@@ -248,11 +248,11 @@ Content-Length: 19
 
 Two responses on one TCP connection. That only works **because** of the framing: the client knows the first body is 16 bytes, so byte 17 is the start of the next response. No framing, no reuse.
 
-Sending the second request before the first answer arrives, as here, is called **pipelining**. It is legal, but the answers must come back **in order**. Hold that thought until [head-of-line blocking](#head-of-line-blocking-three-kinds).
+Sending the second request before the first answer arrives, as here, is called **pipelining**. It is legal, but the answers must come back **in order**. This matters for [head-of-line blocking](#head-of-line-blocking-three-kinds), covered below.
 
 ## Connection reuse in Go
 
-Why care about reuse? A new connection costs a TCP handshake (1 round trip), a TLS handshake (1 more round trip with TLS 1.3, see [TLS](tls.md)), a file descriptor, and on the client side a local port that stays in `TIME_WAIT` for 60 seconds after closing. Reuse costs nothing.
+Reuse matters because a new connection costs a TCP handshake (1 round trip), a TLS handshake (1 more round trip with TLS 1.3, see [TLS](tls.md)), a file descriptor, and on the client side a local port that stays in `TIME_WAIT` for 60 seconds after closing. Reuse costs nothing.
 
 `http.Transport` keeps a **pool** of idle connections per host. Every request asks the pool first:
 
@@ -380,11 +380,11 @@ $ for r in 1 2 3; do for n in 4000 100000 300000; do echo "$n: $(./reuse http://
 300000: close-only     local=127.0.0.1:44859 reused=false wasIdle=false
 ```
 
-The drain runs **in the background** after `Close` returns (`go doc net/http.Response` says "read to completion asynchronously, up to a conservative limit"). If the next request comes before the drain is done, the connection is not back in the pool yet, and the request dials a new one. `wasIdle=false` with `reused=true` is the same race won by a hair: the request was already waiting when the connection came back.
+The drain runs **in the background** after `Close` returns (`go doc net/http.Response` says "read to completion asynchronously, up to a conservative limit"). If the next request comes before the drain is done, the connection is not back in the pool yet, and the request dials a new one. `wasIdle=false` with `reused=true` is the same race, won just in time: the request was already waiting when the connection came back.
 
 Up to 256 KiB, `Close` is usually enough. Above it, or if the rest takes longer than 50 ms to arrive, Go closes the connection instead. The rules that always work:
 
-1. **Always `defer resp.Body.Close()`**, on every path, including error statuses. This is the non-negotiable one.
+1. **Always `defer resp.Body.Close()`**, on every path, including error statuses. This rule has no exceptions.
 2. If the body may be big and you stop early, **drain with a limit**, as `internal/client` does: `io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBytes))`. Draining 10 MiB to save one handshake is a bad trade; the limit decides when to give up.
 
 ### The pool settings, and the `TIME_WAIT` storm
@@ -406,7 +406,7 @@ var DefaultTransport RoundTripper = &Transport{
 }
 ```
 
-There's the third ticket's 30 seconds: the **dial timeout** of the default transport. And here are the pool knobs:
+This is the 30 seconds from the third ticket: the **dial timeout** of the default transport. And here are the pool knobs:
 
 | Field                 | Default           | Meaning                                                                |
 | --------------------- | ----------------- | ---------------------------------------------------------------------- |
@@ -416,7 +416,7 @@ There's the third ticket's 30 seconds: the **dial timeout** of the default trans
 | `IdleConnTimeout`     | 90s (0 in a `{}`) | Close a connection that sat idle this long                             |
 | `DisableKeepAlives`   | false             | One connection per request. Almost never what you want                 |
 
-`MaxIdleConnsPerHost = 2` is the trap. Picture 50 goroutines calling one backend. 50 connections are busy. When they finish, the pool keeps **2** and closes 48. The next round dials 48 new ones. Each closed connection leaves its client port in `TIME_WAIT` for 60 seconds (see [TCP](tcp.md)). This program measures it:
+`MaxIdleConnsPerHost = 2` is the trap. Take 50 goroutines calling one backend. 50 connections are busy. When they finish, the pool keeps **2** and closes 48. The next round dials 48 new ones. Each closed connection leaves its client port in `TIME_WAIT` for 60 seconds (see [TCP](tcp.md)). This program measures it:
 
 ```go
 // Command storm sends many concurrent requests through one http.Client
@@ -478,7 +478,7 @@ func main() {
 }
 ```
 
-The dial counter wraps `DialContext`. (`GotConn` alone undercounts: when an idle connection frees up while a dial is in progress, the request takes the idle one and the fresh connection goes to the pool, or straight to the bin.)
+The dial counter wraps `DialContext`. (`GotConn` alone undercounts: when an idle connection frees up while a dial is in progress, the request takes the idle one and the fresh connection goes to the pool, or is closed.)
 
 ```console
 $ cat /proc/sys/net/ipv4/ip_local_port_range
@@ -492,7 +492,7 @@ MaxIdleConnsPerHost=50: 43153 ok, 0 errors, 66 dials
 66
 ```
 
-There's the first ticket, reproduced:
+This reproduces the first ticket:
 
 - With the default, **9981 dials in 2 seconds** and 4096 sockets in `TIME_WAIT`. This WSL machine has only 4097 local ports (44619 to 48715), so the client **ran out of ports**: `cannot assign requested address` is `EADDRNOTAVAIL` from `connect()`. Most Linux machines have about 28,000 ports (32768 to 60999); that buys you a few more seconds, not a fix.
 - With `MaxIdleConnsPerHost: 50`, **66 dials** (a few extra from the dial race above), zero errors, and **twice the throughput**, because no request waits for a handshake. The 66 `TIME_WAIT` entries appear when the program exits and closes its pool.
@@ -543,7 +543,7 @@ The main frame types:
 | `GOAWAY`        | 0x7  | "No new streams on this connection, please"          |
 | `WINDOW_UPDATE` | 0x8  | Flow control: "you may send N more bytes"            |
 
-A **stream** is one request and its response. Each has a number: clients use odd numbers (1, 3, 5...). Frames of different streams **interleave** on the connection, and the stream ID says where each frame belongs. That is the "about order 3: ..." from the phone analogy.
+A **stream** is one request and its response. Each has a number: clients use odd numbers (1, 3, 5...). Frames of different streams **interleave** on the connection, and the stream ID says where each frame belongs. That is how many requests share one connection.
 
 ### Raw bytes: the connection preface
 
@@ -572,7 +572,7 @@ Decode it by hand. It is three frames:
 | `00 00 00` `04` `01` `00000000`            | second frame                       | `SETTINGS` with flag `ACK`: "got yours" |
 | `00 00 04` `08` `00` `00000000` `000f0001` | third frame                        | `WINDOW_UPDATE` on stream 0, +983041    |
 
-Go's server allows **250 streams at once** per connection and a 1 MiB receive window per stream. No text anywhere. You can't debug HTTP/2 with `nc`, which is why the next tool matters.
+Go's server allows **250 streams at once** per connection and a 1 MiB receive window per stream. No text anywhere. You can't debug HTTP/2 with `nc`, so the next section uses Go's own frame logging.
 
 ### Watching Go speak HTTP/2
 
@@ -873,7 +873,7 @@ On a clean data-centre network, this rarely matters. On a lossy mobile network, 
 - **Streams are part of the transport.** A lost packet only stalls the streams whose data it carried.
 - **TLS 1.3 is built in.** The QUIC handshake and the TLS handshake are one exchange: 1 round trip to a new server, 0 for a resumed one.
 - **Connection IDs** instead of the 4-tuple. A phone that moves from Wi-Fi to 4G gets a new IP address; a TCP connection dies, a QUIC connection can continue.
-- Everything except a few header bits is **encrypted**, so middleboxes can't meddle with it (and you can't easily inspect it either).
+- Everything except a few header bits is **encrypted**, so middleboxes can't change it (and you can't easily inspect it either).
 
 **HTTP/3** is HTTP over QUIC. Same frames idea as HTTP/2, but each request is a QUIC stream, and header compression is **QPACK**: HPACK changed so that header blocks don't have to be decoded in strict order.
 
@@ -936,7 +936,7 @@ vendor/golang.org/x/net/internal/quic/quicwire
 vendor/golang.org/x/net/quic
 ```
 
-So the Go team is building HTTP/3 in `golang.org/x/net` (`quic` and an `internal/http3` package) and wiring `net/http` to it, but you can't switch it on in Go 1.27 without linkname tricks. `crypto/tls` does export the building block, `tls.QUICConn`, since Go 1.21. If you need HTTP/3 in Go today, the common choice is the third-party `quic-go` module. Most services don't: HTTP/3 matters most between browsers or phones and the **edge** (a CDN or load balancer), and the hops behind it stay on HTTP/1.1 or HTTP/2.
+So the Go team is building HTTP/3 in `golang.org/x/net` (`quic` and an `internal/http3` package) and wiring `net/http` to it, but you can't switch it on in Go 1.27 without `go:linkname` hacks. `crypto/tls` does export the building block, `tls.QUICConn`, since Go 1.21. If you need HTTP/3 in Go today, the common choice is the third-party `quic-go` module. Most services don't: HTTP/3 matters most between browsers or phones and the **edge** (a CDN or load balancer), and the hops behind it stay on HTTP/1.1 or HTTP/2.
 
 ## `http.Client` timeouts
 
@@ -1060,7 +1060,7 @@ Each error message names its phase, so you can tell them apart in logs:
 | `Client.Timeout`                  | `(Client.Timeout ... while reading body)`     | Slow download, or any phase if the others are unset |
 | `ctx` deadline per request        | `context deadline exceeded`                   | Your own per-call budget                            |
 
-The `fullListener` trick deserves a note: when a listener's **accept queue is full**, Linux drops new SYNs silently, and the client retries the SYN until its timeout. From outside, an overloaded server looks exactly like a firewall. (See the backlog section of [TCP](tcp.md).)
+A note on `fullListener`: when a listener's **accept queue is full**, Linux drops new SYNs silently, and the client retries the SYN until its timeout. From outside, an overloaded server looks exactly like a firewall. (See the backlog section of [TCP](tcp.md).)
 
 How to set them:
 

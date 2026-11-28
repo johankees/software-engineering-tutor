@@ -4,26 +4,26 @@
 
 Your Go service handles 2,000 requests per second. The profiler says 30% of CPU time goes to the **garbage collector**. A senior engineer looks at the code for five minutes, changes three lines, and the GC time drops to 5%. No new algorithm. They only changed **where values live in memory**.
 
-This page teaches you to see what they saw.
+This page explains what they saw, so you can find the same problems.
 
-## The idea: one long street of numbered houses
+## The idea: a long row of numbered bytes
 
-To your program, memory looks like one very long street. Every house holds **one byte** and has a number: its **address**. A **pointer** is just a house number written on a piece of paper.
+To your program, memory looks like one very long row of bytes. Every byte has a number: its **address**. A **pointer** is a value that holds an address.
 
 ```text
 address:  0x1000 0x1001 0x1002 0x1003 0x1004 ...
 value:      48     65     6c     6c     6f   ...
 ```
 
-A value bigger than one byte, like an `int64`, uses 8 houses in a row. Its address is the first house.
+A value bigger than one byte, like an `int64`, uses 8 bytes in a row. Its address is the address of the first byte.
 
-Your program splits this street into areas with different rules. The two that matter most are the **stack** and the **heap**.
+Your program splits this address range into areas with different rules. The two that matter most are the **stack** and the **heap**.
 
-## The stack: a pile of plates
+## The stack: last in, first out
 
 Every time a function is called, it gets a **stack frame**: a block of memory for its local variables, its arguments (when they don't fit in registers) and the return address. When the function returns, the frame is thrown away.
 
-It works like a pile of plates. You only ever add or remove the plate **on top**.
+It works **last in, first out** (LIFO): the program only ever adds or removes the frame **on top**.
 
 ```mermaid
 flowchart TB
@@ -39,7 +39,7 @@ Why the stack is so fast:
 
 - **Allocation is one instruction.** Making a new frame = moving the stack pointer `SP` (see [CPU and registers](cpu-and-registers.md)) down by N bytes.
 - **Freeing is one instruction.** Move `SP` back up. Everything in the frame is gone at once.
-- **No garbage collector** involved. Ever.
+- **No garbage collector** is involved.
 - The top of the stack is almost always in the CPU cache (see below).
 
 The limit: a value on the stack **dies when its function returns**. So it can only live there if nobody needs it later.
@@ -52,16 +52,16 @@ In C, each thread gets one big stack (often 8 MB) fixed at start. Go does someth
 - At the start of most functions, Go checks "is there enough room?". You saw that check in the assembly: `CMPQ SP, 16(R14)`.
 - If not, the runtime allocates a **bigger stack** (2×), **copies** the old one into it, and fixes all the pointers into it.
 
-This is why you can run 100,000 goroutines and it is fine, while 100,000 OS threads would need many gigabytes.
+This is why you can run 100,000 goroutines without problems, while 100,000 OS threads would need many gigabytes.
 
-## The heap: a big shared warehouse
+## The heap: shared, long-lived memory
 
 The **heap** is memory for values that must **outlive** the function that created them, or whose size is only known at run time and is large. Any function can reach a value on the heap if it has a pointer to it.
 
 The cost:
 
 - Allocation is a real function call (`runtime.mallocgc`), not one instruction. It is fast, but it is work.
-- Someone has to **free** it. In C you do it by hand (and get bugs). In Go the **garbage collector (GC)** does it: it finds values that no pointer can reach anymore, and reuses their memory.
+- Someone has to **free** it. In C you do it by hand, which often causes bugs. In Go the **garbage collector (GC)** does it: it finds values that no pointer can reach anymore, and reuses their memory.
 - The GC runs **concurrently** with your program, but it uses CPU time (Go aims to give it about 25% of the CPU while it runs) and short "stop the world" pauses.
 
 **More heap allocations = more GC work = less CPU for your requests.**
@@ -123,7 +123,7 @@ Output:
 ./main.go:14:2: moved to heap: u
 ```
 
-The last line is the one we want: `u` in `onHeap` is **moved to heap**, because its address is returned. The `u` in `onStack` is not mentioned: it stays on the stack.
+The last line is the important one: `u` in `onHeap` is **moved to heap**, because its address is returned. The `u` in `onStack` is not mentioned: it stays on the stack.
 
 !!! note "Returning `&u` is safe in Go"
 
@@ -171,14 +171,14 @@ fmt.Println(unsafe.Sizeof(Bad{}), unsafe.Sizeof(Good{})) // 24 16
 
 Same fields, 33% less memory. For one struct it does not matter. For 10 million of them in a cache, it does. Sort fields from large to small when size matters. The `fieldalignment` analyzer (in `golang.org/x/tools`) can find these cases for you.
 
-## Virtual memory: every program has its own street
+## Virtual memory: a private address space per process
 
-If every program wrote to the same real memory, one bug could destroy another program. So the OS and CPU play a trick: **virtual memory**.
+If every program wrote to the same real memory, one bug could destroy another program. So the OS and CPU use **virtual memory**.
 
-- Each process gets its **own** street of addresses, from 0 to a huge number. Process A's address `0x4000` and process B's address `0x4000` are different real places.
+- Each process gets its **own** range of addresses, from 0 to a huge number. Process A's address `0x4000` and process B's address `0x4000` are different real places.
 - Memory is managed in blocks called **pages**, usually **4 KiB**.
 - A table (the **page table**) maps each virtual page to a real page in RAM. A part of the CPU called the **MMU** does this lookup for every memory access. A small cache, the **TLB**, makes it fast.
-- A page does not need real RAM until it is used. The first touch causes a **page fault**: the CPU stops, the OS finds a free real page, maps it, and continues. Your program never notices, except that it is a bit slower.
+- A page does not need real RAM until it is used. The first touch causes a **page fault**: the CPU stops, the OS finds a free real page, maps it, and continues. Your program does not see this, except that the access is a bit slower.
 
 ```mermaid
 flowchart LR
@@ -193,7 +193,7 @@ This explains two numbers you will see in monitoring:
 
 ## Caches: why the same work can be 2× slower
 
-RAM is far away from the CPU. To hide that, the CPU keeps copies of recently used memory in small, fast **caches**. Typical numbers on a modern server:
+RAM is slow to reach from the CPU. To hide that delay, the CPU keeps copies of recently used memory in small, fast **caches**. Typical numbers on a modern server:
 
 | Level    | Typical size        | Typical time to read | Like…                       |
 | -------- | ------------------- | -------------------- | --------------------------- |
@@ -203,11 +203,11 @@ RAM is far away from the CPU. To hide that, the CPU keeps copies of recently use
 | L3 cache | 16–100+ MiB, shared | ~10–20 ns            | the library down the street |
 | RAM      | GBs                 | ~80–100 ns           | a library in the next city  |
 
-The cache does not copy single bytes. It copies blocks of **64 bytes** called **cache lines** (128 bytes on Apple Silicon). When you read one `int64`, the 7 next to it come for free.
+The cache does not copy single bytes. It copies blocks of **64 bytes** called **cache lines** (128 bytes on Apple Silicon). When you read one `int64`, the 7 next to it are loaded at no extra cost.
 
 So the CPU rewards two habits:
 
-- **Spatial locality**: use memory that is close together. Walking a slice in order is perfect.
+- **Spatial locality**: use memory that is close together. Walking a slice in order is the best case.
 - **Temporal locality**: use the same memory again soon, while it is still in the cache.
 
 ### Try it in Go: same work, different order
@@ -269,14 +269,14 @@ This is also why a **slice of structs** (`[]User`) is usually faster to loop ove
 
     Two goroutines on two cores update two _different_ counters. But the counters sit in the
     **same cache line**. Every write forces the other core to reload that line. The code is correct,
-    but scales terribly. The fix is to put each hot counter on its own cache line (padding), or to
+    but scales very badly. The fix is to put each hot counter on its own cache line (padding), or to
     give each goroutine its own counter and add them up at the end.
 
 ## Check yourself
 
 ??? question "1. Why is allocating on the stack cheaper than on the heap?"
 
-    Stack allocation is just moving the stack pointer, and everything is freed at once when the
+    Stack allocation is only moving the stack pointer, and everything is freed at once when the
     function returns. Heap allocation needs the allocator, and later the GC must find and free it.
 
 ??? question "2. A function returns `*Config`. Where does the Config live?"

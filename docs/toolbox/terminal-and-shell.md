@@ -2,22 +2,22 @@
 
 ## Why care?
 
-Four small mysteries that every engineer meets:
+Four common problems that every engineer meets:
 
-- Colours look perfect on your laptop, but are ugly or broken after `ssh` into a server.
+- Colours look right on your laptop, but are wrong or broken after `ssh` into a server.
 - You yank text in Neovim on a remote machine, and it does **not** arrive in your local clipboard.
 - You install a new tool, type its name, and zsh says `command not found`. In a new tab it works.
 - Opening a new shell takes a third of a second, and you have no idea where the time goes.
 
-All four are about the layers between your keyboard and your program. Once you see the layers, each mystery has a simple answer.
+All four are about the layers between your keyboard and your program. Once you know the layers, each problem has a simple explanation.
 
-## The idea: a TV, a phone line and a waiter
+## The idea: terminal emulator, PTY and shell
 
-Three different things hide behind the word "terminal":
+The word "terminal" can mean three different things:
 
-- The **terminal emulator** (Ghostty, WezTerm, iTerm2) is a TV with a keyboard. It draws a grid of characters and turns key presses into bytes. It knows nothing about commands.
-- The **PTY** (pseudo terminal) is a phone line inside the kernel. One end belongs to the terminal emulator. The other end looks exactly like an old hardware terminal to the program on it. On the line sits an operator, the **line discipline**, that can edit what you type and turn `Ctrl+C` into a signal.
-- The **shell** (zsh) is a waiter at the other end of the line. It reads your order (a command line), asks the kitchen (the kernel) to start programs, and gives them the phone line.
+- The **terminal emulator** (Ghostty, WezTerm, iTerm2) is a GUI program. It draws a grid of characters and turns key presses into bytes. It knows nothing about commands.
+- The **PTY** (pseudo terminal) is a two-ended channel inside the kernel. One end (the master) belongs to the terminal emulator. The other end (the slave) looks exactly like an old hardware terminal to the program that uses it. Between the two ends sits the **line discipline**, a kernel component that can edit what you type and turn `Ctrl+C` into a signal.
+- The **shell** (zsh) is a program on the slave end. It reads a command line, asks the kernel to start programs, and connects them to the same PTY.
 
 ```mermaid
 flowchart LR
@@ -32,7 +32,7 @@ flowchart LR
     E -->|draws| D[Screen]
 ```
 
-The program never talks to the screen. It writes bytes to `/dev/pts/N`. The terminal emulator reads them from the master side and decides what to draw. Everything in this page is about _which bytes_ travel on that line, and _who_ interprets them.
+The program never talks to the screen. It writes bytes to `/dev/pts/N`. The terminal emulator reads them from the master side and decides what to draw. Everything in this page is about _which bytes_ travel through the PTY, and _who_ interprets them.
 
 ## Under the hood: the PTY and the line discipline
 
@@ -70,7 +70,7 @@ $ stty -a -F /dev/pts/10 | tr ' ' '\n' | grep -xE -- '-?(icanon|isig|echo|icrnl|
 -echo
 ```
 
-All minus signs. This is **raw mode**. Now `Ctrl+C` is just byte `0x03`, and Neovim decides what it means. That's also why a crashed full-screen program can leave your terminal "broken" (no echo, strange line breaks): nobody switched the flags back. The fix is `reset` or `stty sane`.
+All minus signs. This is **raw mode**. Now `Ctrl+C` is only byte `0x03`, and Neovim decides what it means. That's also why a crashed full-screen program can leave your terminal "broken" (no echo, strange line breaks): no program switched the flags back. The fix is `reset` or `stty sane`.
 
 ## Escape sequences: the terminal's command language
 
@@ -89,9 +89,9 @@ $ printf '\e[1;31mred\e[0m\n' | od -An -c
 | **OSC** | `ESC ]`     | "Operating system" commands: title, clipboard | `ESC ] 0;title BEL` = window title |
 | **DCS** | `ESC P`     | Device control, for example tmux passthrough  | `ESC P tmux; ... ESC \`            |
 
-### `TERM` and terminfo: who speaks which dialect?
+### `TERM` and terminfo: which sequences a terminal supports
 
-Terminals don't all speak the same dialect. Old ones supported 8 colours, new ones 16 million. A program must not send sequences the terminal doesn't understand. So the convention is:
+Terminals don't all support the same sequences. Old ones supported 8 colours, new ones 16 million. A program must not send sequences the terminal doesn't understand. So the convention is:
 
 1. The terminal emulator sets the environment variable **`TERM`** to its name.
 2. A database called **terminfo** maps each name to its capabilities and their exact byte sequences.
@@ -110,7 +110,7 @@ $ TERM=xterm-256color tput cup 5 10 | od -An -c
 
 Note the last one: `tput cup 5 10` (row 5, column 10, counted from 0) became `ESC [ 6;11 H`, because the terminal counts from 1. terminfo hides those details from programs.
 
-Ghostty sets `TERM=xterm-ghostty` and ships its own terminfo entry, because the standard `xterm-256color` entry doesn't announce all its features. Its entry has flags like `Tc` (true colour), `Ms` (set clipboard with OSC 52) and `Sync` (synchronised output). The problem: if the machine you SSH into has no `xterm-ghostty` entry, programs there don't know your terminal, and you get broken colours or `unknown terminal type` errors. That is mystery number one. The fixes are to copy the entry to the server (`infocmp -x xterm-ghostty | ssh server tic -x -`), or to set `TERM=xterm-256color` for SSH.
+Ghostty sets `TERM=xterm-ghostty` and ships its own terminfo entry, because the standard `xterm-256color` entry doesn't announce all its features. Its entry has flags like `Tc` (true colour), `Ms` (set clipboard with OSC 52) and `Sync` (synchronised output). The problem: if the machine you SSH into has no `xterm-ghostty` entry, programs there don't know your terminal, and you get broken colours or `unknown terminal type` errors. This explains the first problem. The fixes are to copy the entry to the server (`infocmp -x xterm-ghostty | ssh server tic -x -`), or to set `TERM=xterm-256color` for SSH.
 
 Inside tmux, `TERM` is different again. tmux is a terminal emulator itself (more on that in [tmux](tmux.md)), so programs in a pane see tmux's name:
 
@@ -138,9 +138,9 @@ xterm-256color WezTerm 20240203-110809-5046fc22 256,bpaste,ccolour,clipboard,hyp
 
 So on this WSL2 machine the outer terminal is WezTerm with `TERM=xterm-256color`, and tmux still detected `RGB` (true colour), `clipboard` (OSC 52) and `extkeys` (extended keys). Modern tmux asks the terminal for its name and version, and turns on features it knows that terminal has.
 
-### OSC 52: the clipboard over a wire
+### OSC 52: the clipboard through the terminal
 
-Now mystery number two. When you yank in Neovim on a remote server, the remote machine has no access to your laptop's clipboard. But it _does_ have the PTY line back to your terminal. **OSC 52** uses that line: the program sends the text, base64 encoded, inside an escape sequence, and the terminal emulator puts it in the local clipboard.
+Now the second problem. When you yank in Neovim on a remote server, the remote machine has no access to your laptop's clipboard. But it _does_ have the PTY connection back to your terminal. **OSC 52** uses that connection: the program sends the text, base64 encoded, inside an escape sequence, and the terminal emulator puts it in the local clipboard.
 
 ```text
 $ printf 'hello' | base64
@@ -163,7 +163,7 @@ $ printf '\e]52;c;%s\a' "$(printf hello | base64)" | od -An -c
 
 ### Nerd Fonts
 
-The status bar and window names in this setup show little icons: a Neovim logo, a git branch. These are not images. They are normal characters in a **Nerd Font** (here Iosevka NF): a programming font patched with thousands of icons in Unicode's _Private Use Area_, code points that Unicode leaves free. If your font has no glyph there, you see empty boxes. That's why the font must be installed on the machine that **draws** (your laptop), not on the server.
+The status bar and window names in this setup show small icons: a Neovim logo, a git branch. These are not images. They are normal characters in a **Nerd Font** (here Iosevka NF): a programming font patched with thousands of icons in Unicode's _Private Use Area_, code points that Unicode leaves free. If your font has no glyph there, you see empty boxes. That's why the font must be installed on the machine that **draws** (your laptop), not on the server.
 
 ## zsh: what runs at start-up, and when
 
@@ -195,7 +195,7 @@ The key rule: **`.zshenv` runs for every zsh, including scripts and `zsh -c`**. 
 
 ### `ZDOTDIR` and XDG: keeping `$HOME` clean
 
-zsh looks for these files in `$ZDOTDIR`, or in `$HOME` if `ZDOTDIR` is not set. This setup uses a small trick to move everything to `~/.config/zsh`. The only zsh file in `$HOME` is `~/.zshenv`, a symlink into the dotfiles repository, and that file has two lines:
+zsh looks for these files in `$ZDOTDIR`, or in `$HOME` if `ZDOTDIR` is not set. This setup uses one small setting to move everything to `~/.config/zsh`. The only zsh file in `$HOME` is `~/.zshenv`, a symlink into the dotfiles repository, and that file has two lines:
 
 ```sh
 export ZDOTDIR="${XDG_CONFIG_HOME:-${HOME}/.config}/zsh"
@@ -219,7 +219,7 @@ and moves Go's folders there too: `GOPATH=$XDG_DATA_HOME/go`, `GOCACHE=$XDG_CACH
 
 When you type `go`, zsh must find a file. Builtins, functions and aliases come first. Then zsh looks at each directory in `$PATH`, left to right, and runs the first executable named `go`. `command -v go` (POSIX) or `whence -a go` (zsh) show you the answer.
 
-But zsh doesn't walk the `PATH` every time. It remembers where it found each command in a **hash table**. Watch:
+But zsh doesn't walk the `PATH` every time. It remembers where it found each command in a **hash table**. This script shows it:
 
 ```text
 $ zsh -f demo.zsh
@@ -232,7 +232,7 @@ I am first/hello
 
 The script puts `first/` before `second/` in `path`, but only `second/hello` exists. It runs `hello` (found in `second/`). Then it creates `first/hello`, which should now win. It runs `hello` again: **still `second/`**, because the hash table remembered. `hash` shows the cached entry. After `rehash`, zsh forgets and finds `first/hello`.
 
-That is mystery number three. If a new tool appears in a directory that is _earlier_ in `PATH` than an old copy, run `rehash` (zsh) or `hash -r` (bash), or open a new shell.
+This explains the third problem. If a new tool appears in a directory that is _earlier_ in `PATH` than an old copy, run `rehash` (zsh) or `hash -r` (bash), or open a new shell.
 
 !!! tip "zsh's `path` array"
 
@@ -284,14 +284,14 @@ num  calls                time                       self            name
  ...
 ```
 
-It looks clear: **`compaudit`**, the security check, takes 111 ms. `compinit -C` skips the check and trusts the existing `.zcompdump`, so the obvious fix is "run the full check once a day, `-C` otherwise". We tried exactly that. Wall-clock time, 10 runs each:
+The top line points at **`compaudit`**, the security check: 111 ms. `compinit -C` skips the check and trusts the existing `.zcompdump`, so the obvious fix is "run the full check once a day, `-C` otherwise". Here is the result of that change. Wall-clock time, 10 runs each:
 
 ```text
 old 348ms avg
 new 342ms avg
 ```
 
-Almost nothing. `compinit` itself dropped from about 120 ms to 7 ms, but the shell was not faster. The cost **moved**. Two lessons hide here:
+Almost no change. `compinit` itself dropped from about 120 ms to 7 ms, but the shell was not faster. The cost **moved**. There are two lessons here:
 
 1. `zprof` only measures **zsh functions**. Time spent in a builtin, an expansion or a child process is charged to whichever function happens to be running.
 2. The real cost was something `compaudit` merely **touched first**.
@@ -311,14 +311,14 @@ The two biggest gaps (from a small script that sorts the trace):
   100.9ms ~/.config/zsh/.zshrc:107 command -v gcloud
 ```
 
-Line 18 of `compaudit` is `[[ -n $commands[getent] ]]`. `$commands` is zsh's hash table of every program in `PATH` (the same table `rehash` resets). The **first** time anything reads it, zsh fills it by listing every directory in `PATH`. And `command -v` for a program that is **not installed** must look in every directory too. So the question is: what is slow about this `PATH`? On WSL, Windows adds its own folders (`/mnt/c/...`). Here there are 28 of them, and every listing of them crosses from Linux to Windows. Proof, with the same kind of lookups in a clean zsh:
+Line 18 of `compaudit` is `[[ -n $commands[getent] ]]`. `$commands` is zsh's hash table of every program in `PATH` (the same table `rehash` resets). The **first** time anything reads it, zsh fills it by listing every directory in `PATH`. And `command -v` for a program that is **not installed** must look in every directory too. So the question is: what is slow about this `PATH`? On WSL, Windows adds its own folders (`/mnt/c/...`). Here there are 28 of them, and every listing of them crosses from Linux to Windows. This test shows it, with the same kind of lookups in a clean zsh:
 
 ```text
 54 dirs: first $commands lookup 109 ms, missing command 103 ms
 26 dirs: first $commands lookup   5 ms, missing command   0 ms
 ```
 
-Remove the `/mnt/` folders and both costs disappear. With `compinit -C`, the first `$commands` lookup simply happened later (inside zinit), which is why the total did not change. The root cause is the Windows `PATH`. On WSL you can turn it off in `/etc/wsl.conf`:
+Remove the `/mnt/` folders and both costs disappear. With `compinit -C`, the first `$commands` lookup only happened later (inside zinit), which is why the total did not change. The root cause is the Windows `PATH`. On WSL you can turn it off in `/etc/wsl.conf`:
 
 ```ini
 [interop]
@@ -331,7 +331,7 @@ Then Windows programs like `code` or `explorer.exe` are no longer found by name;
 
     People often blame "too many plugins" for a slow shell. Here, the plugins together cost about
     35 ms. But the profiler's top line was not the cause either. Confirm every "fix" with wall-clock
-    time, and when a fix doesn't help, look for work that just moved.
+    time, and when a fix doesn't help, look for work that only moved.
 
 ## Traps
 

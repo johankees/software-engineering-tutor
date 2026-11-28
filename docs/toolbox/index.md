@@ -4,7 +4,7 @@ The tools you touch every minute: terminal, shell, tmux, Neovim, mise and your d
 
 ## Why the toolbox matters
 
-A carpenter with a blunt saw can still build a table. It just takes three times longer, and the cuts are not straight. Software is the same. You can write good Go in any editor. But look at what a normal day really is:
+You can write good Go in any editor. But small delays in your tools add up. Look at what a normal day really is:
 
 - You jump between files, tests, logs and a terminal **hundreds of times**.
 - You run the same five commands again and again.
@@ -12,15 +12,15 @@ A carpenter with a blunt saw can still build a table. It just takes three times 
 - A new laptop arrives, and you lose two days before your setup "feels right" again.
 - A teammate says "works on my machine", and the reason is a different Go version.
 
-Each of these costs only a few seconds or a few minutes. Together they cost hours every week, and they break your **flow**: the state where the problem fits in your head. A good toolbox does three things:
+Each of these costs only a few seconds or a few minutes. Together they cost hours every week, and they break your **flow**: the state of full focus where you can keep the whole problem in mind. A good toolbox does three things:
 
 1. **Keeps your hands on the keyboard.** No reaching for the mouse, no hunting for windows.
 2. **Survives failures.** A dropped SSH session or a closed laptop lid doesn't lose your work.
 3. **Is reproducible.** The setup lives in a git repository. A new machine is one command away, and every project pins its own tool versions.
 
-This chapter is not a cheat sheet. You have used these tools before. Here we open them up: what a PTY is, why tmux is a client and a server, how Neovim talks to `gopls`, how mise changes your `PATH` before every prompt. When you know how a tool works, you stop memorising keys and start _predicting_ what it will do.
+This chapter is not a cheat sheet. You have used these tools before. Here we open them up: what a PTY is, why tmux is a client and a server, how Neovim talks to `gopls`, how mise changes your `PATH` before every prompt. When you know how a tool works, you no longer need to memorise keys: you can _predict_ what it will do.
 
-## The stack, from glass to code
+## The stack, from screen to code
 
 Every page uses one real setup: the author's dotfiles. They are the example, not the rule. The point is to understand _why_ each choice exists, so you can make your own.
 
@@ -42,7 +42,7 @@ flowchart TB
 Read it from top to bottom:
 
 1. **Ghostty** is the terminal emulator. It is a normal GUI program that draws a grid of characters and turns your key presses into bytes.
-2. Between the terminal and the shell sits a **PTY**, a pseudo terminal inside the kernel. It is the "wire" the bytes travel on.
+2. Between the terminal and the shell sits a **PTY**, a pseudo terminal inside the kernel. The bytes between the terminal and the shell travel through it.
 3. **zsh** reads what you type and starts programs.
 4. **tmux** is a server that keeps your sessions alive. Each pane inside it is one more PTY with one more program.
 5. Inside tmux you run **Neovim**, **lazygit**, coding agents and more shells.
@@ -76,4 +76,4 @@ The same shape as the [Fundamentals](../fundamentals/index.md):
     Every tool here has a way to run a throwaway copy: `tmux -L sandbox` starts a separate tmux
     server, `nvim --clean` starts Neovim without your config, `zsh -f` starts zsh without startup
     files, and `mise exec` runs one command with a tool version without changing your shell.
-    Use them. Break things on purpose. That is how the knowledge sticks.
+    Use them to test changes, including changes that may break things.

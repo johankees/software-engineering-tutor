@@ -1,6 +1,6 @@
 # Linux and the OS
 
-The kernel your services really run on: files, processes, signals, and the walls between them.
+The kernel your services really run on: files, processes, signals, and the isolation between them.
 
 ## Why go deeper?
 
@@ -12,7 +12,7 @@ Almost every server, container and Kubernetes node runs Linux. Most days you nev
 - A container is "out of memory" while the host has 50 GB free.
 - Something is slow, and `top` says the CPU is idle.
 
-[Processes, threads and system calls](../fundamentals/processes-and-threads.md) showed how a program asks the kernel for help. This chapter opens the kernel's side of that deal. After it, containers stop being magic: they are a normal Linux process with a few extra walls.
+[Processes, threads and system calls](../fundamentals/processes-and-threads.md) showed how a program asks the kernel for help. This chapter explains the kernel's side. After it, containers are easy to explain: a container is a normal Linux process with a few extra limits on what it can see and use.
 
 ## The big picture
 
@@ -51,4 +51,4 @@ Each page builds on the one before it.
 
 ## How each page works
 
-The same shape as the [Fundamentals](../fundamentals/index.md): **Why care?**, **The idea**, **Under the hood**, **Try it**, **Traps** and **Check yourself**. All output comes from real runs on WSL2 (Ubuntu 24.04, kernel 5.15, systemd 255, Go 1.27.4). WSL2 is a real Linux kernel, with one difference we point out where it matters: it mounts cgroups in "hybrid" mode. The examples use the `ordersd` service from the [Go chapter](../go/index.md) as the process we poke at.
+The same shape as the [Fundamentals](../fundamentals/index.md): **Why care?**, **The idea**, **Under the hood**, **Try it**, **Traps** and **Check yourself**. All output comes from real runs on WSL2 (Ubuntu 24.04, kernel 5.15, systemd 255, Go 1.27.4). WSL2 is a real Linux kernel, with one difference we point out where it matters: it mounts cgroups in "hybrid" mode. The examples use the `ordersd` service from the [Go chapter](../go/index.md) as the example process.

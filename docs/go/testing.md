@@ -2,15 +2,15 @@
 
 ## Why care?
 
-Friday afternoon. A teammate changes how order totals are rounded. All 600 tests pass. On Monday, finance reports that every invoice since Friday is wrong by a few cents.
+Here is a common failure. A developer changes how order totals are rounded. All 600 tests pass. A few days later, finance reports that every invoice since the change is wrong by a few cents.
 
 You look at the tests. The service tests use a mocking library: they check that `repo.Create` was "called once with any order". None of them checks the **total**. They test _which functions were called_, not _what the code does_. They passed because they could not fail.
 
-Good tests are your safety net for changing code without fear. Go has strong opinions about what "good" means, and a complete toolkit built into `go test`: unit tests, benchmarks, fuzzing, coverage, race detection, fake clocks and in-memory HTTP servers. No framework needed.
+Good tests let you change code safely. Go has strong opinions about what "good" means, and a complete toolkit built into `go test`: unit tests, benchmarks, fuzzing, coverage, race detection, fake clocks and in-memory HTTP servers. No framework needed.
 
 All output on this page comes from a small version of the `orders` project, run with Go 1.27.
 
-## The idea: tests are just Go code
+## The idea: tests are plain Go code
 
 A test in Go is:
 
@@ -239,7 +239,7 @@ Notice `now func() time.Time` in the service. Time is a dependency like the data
 
     - **Mocks test the implementation, fakes test the behaviour.** A mock test says "Place calls Create once". If
       you refactor Place to call `CreateBatch`, the behaviour is the same but every mock test breaks. A fake test
-      only cares that the order is stored. That is the 600-passing-tests story from the top of this page.
+      only cares that the order is stored. That is the problem in the example at the top of this page.
     - **Fakes are reusable.** One `fakeRepo` serves hundreds of tests. Mock setups are copied and tweaked in every test.
     - **Go makes fakes cheap.** Interfaces are implicit and small (see [Methods and interfaces](methods-and-interfaces.md)),
       so a fake is a plain struct with a few methods. No generator, no framework.
@@ -398,7 +398,7 @@ want:
 4148
 ```
 
-Documentation that can't lie. The name tells `go doc` where to attach it: `ExampleOrder_Total` belongs to method `Total` on type `Order`.
+So the documentation can't go out of date without a failing test. The name tells `go doc` where to attach it: `ExampleOrder_Total` belongs to method `Total` on type `Order`.
 
 ## Benchmarks
 
@@ -445,9 +445,9 @@ Why `b.Loop()` instead of the old `for i := 0; i < b.N; i++`?
 
 The `-16` is `GOMAXPROCS`. One benchmark run is noisy. To compare two versions, run each with `-count=10` and compare with `benchstat` (see [Performance](performance.md)).
 
-## Fuzzing: let the computer find your edge cases
+## Fuzzing: generated inputs find edge cases
 
-You write tests for the inputs you **thought of**. Bugs live in the inputs you didn't. A **fuzz test** generates millions of inputs, guided by code coverage, and checks a **property** that must always hold.
+You write tests for the inputs you **thought of**. Bugs are often in the inputs you didn't think of. A **fuzz test** generates millions of inputs, guided by code coverage, and checks a **property** that must always hold.
 
 Here is a parser for SKUs like `BOOK-0042`. It has a bug that many experienced developers would not see in review:
 
@@ -516,7 +516,7 @@ fuzz: elapsed: 0s, minimizing
     go test -run=FuzzParseSKU/44f75adfbfdceb25
 ```
 
-**0.2 seconds.** The fuzzer found the input `"\xe0-0"`: one byte `0xE0` that is **not valid UTF-8**. The loop looks at bytes, and `rune(0xE0)` is `à`, a letter, so the parser accepts it. Then `strings.ToUpper` replaces the broken byte with `�` (U+FFFD), which is not a letter, and the second parse fails. Accepting garbage, then producing something you can't read back: in production, that is an order with a SKU nobody can look up.
+The fuzzer needed **0.2 seconds** to find the input `"\xe0-0"`: one byte `0xE0` that is **not valid UTF-8**. The loop looks at bytes, and `rune(0xE0)` is `à`, a letter, so the parser accepts it. Then `strings.ToUpper` replaces the broken byte with `�` (U+FFFD), which is not a letter, and the second parse fails. Accepting garbage, then producing something you can't read back: in production, that is an order with a SKU nobody can look up.
 
 This is exactly the bytes-vs-characters problem from [Encodings](../fundamentals/encodings.md). The fix is to range over the **string**, which decodes UTF-8 into runes (and turns invalid bytes into `U+FFFD`, which is not a letter):
 
@@ -531,7 +531,7 @@ for _, r := range cat { // range over a string decodes UTF-8 runes
 Two details make fuzzing part of normal work, not a special project:
 
 1. The failing input was **saved** to `testdata/fuzz/FuzzParseSKU/`. Commit it. From now on, plain `go test` runs it as a regression test, with no fuzzing engine.
-2. The seeds from `f.Add` also run in every normal `go test`. A fuzz test is a table test for free.
+2. The seeds from `f.Add` also run in every normal `go test`. So a fuzz test also works as a table test.
 
 !!! tip "Good fuzz targets"
 
@@ -654,7 +654,7 @@ func TestExpireUnpaid(t *testing.T) {
 --- PASS: TestExpireUnpaid (0.00s)
 ```
 
-Fifteen minutes of logic, tested in **0.00 seconds**, deterministic, with the real `time` package. No fake clock interface to inject.
+The test covers fifteen minutes of logic in **0.00 seconds**. It is deterministic and uses the real `time` package. No fake clock interface to inject.
 
 `synctest.Sleep(d)` (Go 1.27) is `time.Sleep(d)` followed by `synctest.Wait()`: advance the clock, then wait until all other goroutines in the bubble are blocked again, so their work is done before you check. `t.Context()` inside the bubble belongs to the bubble too. Also note: `httptest.NewTestServer`'s in-memory network works inside a bubble, so you can test HTTP timeouts and retries the same way.
 

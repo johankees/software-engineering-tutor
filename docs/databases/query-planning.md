@@ -9,17 +9,17 @@ Four tickets, one root cause:
 - "We added an index. `EXPLAIN` shows it is not used."
 - "The query is fast in `psql`, and slow from our Go service."
 
-SQL says **what** you want, never **how** to get it. The **planner** picks the how: which index, which join algorithm, in which order. It picks with a cost model and statistics about your data. When the statistics are wrong, or the model doesn't fit your machine, or there is simply no good path, it picks badly. This page teaches you to read its decision with `EXPLAIN (ANALYZE)`, find the slow queries with `pg_stat_statements`, and fix a slow `orders` query step by step.
+SQL says **what** you want, never **how** to get it. The **planner** picks the how: which index, which join algorithm, in which order. It picks with a cost model and statistics about your data. When the statistics are wrong, or the model doesn't fit your machine, or there is no good way to run the query, it picks a slow plan. This page teaches you to read its decision with `EXPLAIN (ANALYZE)`, find the slow queries with `pg_stat_statements`, and fix a slow `orders` query step by step.
 
-## The idea: a route planner
+## The idea: estimate the cost, pick the cheapest plan
 
-You ask a navigation app for a route from home to the airport.
+A query can usually run in many ways: different indexes, different join algorithms, different join orders. The planner chooses one.
 
-- It doesn't drive every possible route to see which is fastest. It **estimates**: distance, speed limits, and traffic data it collected earlier.
-- With good data, it is usually right. With old traffic data (the road closed yesterday), it sends you into a traffic jam with confidence.
-- It can only choose roads that exist. If there is no highway, you get the side streets, however clever the app is.
+- It does not run every possible plan to see which is fastest. It **estimates** the cost of each plan from what it knows about the data.
+- With accurate information, the estimate is usually right. With outdated information (for example, before the latest bulk load), it picks a bad plan and has no way to notice.
+- It can only choose from access paths that exist. If there is no suitable index, it must read the table, however good the estimates are.
 
-PostgreSQL's planner is that app. The **statistics** (`pg_stats`) are its traffic data, collected by `ANALYZE`. The **cost model** turns "how many pages and rows" into a number. **Indexes** are the highways you can build. And `EXPLAIN ANALYZE` is driving the route with a stopwatch, then comparing it with the estimate.
+The **statistics** (`pg_stats`), collected by `ANALYZE`, describe the data. The **cost model** turns "how many pages and rows" into a number. **Indexes** add access paths. And `EXPLAIN ANALYZE` runs the chosen plan, measures it, and shows the measurements next to the estimates.
 
 ```mermaid
 flowchart LR
@@ -355,14 +355,14 @@ LIMIT 20;
 (35 rows)
 ```
 
-Long, but read it from the inside out and it is a short story:
+It is long. Read it from the inside out:
 
 1. **`Parallel Seq Scan on orders`**: three processes read all 9,324 pages of `orders` to find 90 rows (`rows=30.00 loops=3`). `Rows Removed by Filter: 333303` per process: almost all the work is thrown away.
 2. **`Parallel Hash`**: those 90 orders go into a hash table.
 3. **`Parallel Seq Scan on order_items`**: read **all two million items** (`rows=666666.67 loops=3`), and look each one up in the hash table. 180 match.
 4. Sort by `o.id`, `GroupAggregate` the items into 90 totals, sort by `created_at`, keep 20.
 
-The estimates are fine (100 vs 90 orders, 200 vs 180 items). The planner did the best it could. **There is no better road.** 26,000 buffers to return 20 rows means: we need indexes.
+The estimates are fine (100 vs 90 orders, 200 vs 180 items). The planner did the best it could. **There is no better plan with these indexes.** 26,000 buffers to return 20 rows means: we need indexes.
 
 ### Step 1: index the foreign key
 
@@ -439,7 +439,7 @@ CREATE INDEX
 
 33 ms → 3 ms, 545 buffers. But look: the index returns orders **already sorted** by `created_at DESC`, and the plan still reads all 90 orders, joins all 180 items, sorts by `o.id` for the `GROUP BY`, and sorts again by `created_at`. Why? Because of the shape of the query. `GROUP BY o.id` must see all of a customer's orders before the `LIMIT` can cut. The planner can't push the `LIMIT 20` below the join and the aggregate.
 
-### Step 3: say what you mean
+### Step 3: rewrite the query
 
 What we really want: "the 20 newest orders, and for each one, its total". Write exactly that with `LATERAL`, a subquery that runs once per order:
 
@@ -505,9 +505,9 @@ SQL script 1: /tmp/tutor-planning/fast.pgb
 (3 rows)
 ```
 
-From 30 to 1,094 order lists per second, and from 126 ms to 0.4 ms each. The whole benchmark went from 642 to 23,102 transactions per second, because the slow query was also eating the CPU that the cheap lookups needed. The order list now costs about as much as all the lookups together, which is a healthy picture.
+From 30 to 1,094 order lists per second, and from 126 ms to 0.4 ms each. The whole benchmark went from 642 to 23,102 transactions per second, because the slow query was also using the CPU that the cheap lookups needed. The order list now costs about as much as all the lookups together, which is a reasonable balance.
 
-The method, for every slow query: **find it** by total time, **read the plan** inside out, compare estimated and actual rows, look at where the **buffers** go, then give the planner a better road (an index) or a better question (a rewritten query).
+The method, for every slow query: **find it** by total time, **read the plan** inside out, compare estimated and actual rows, look at where the **buffers** go, then give the planner a better access path (an index) or a better query (a rewrite).
 
 ## Scan types
 
@@ -554,7 +554,7 @@ tutor_planning=# EXPLAIN SELECT * FROM orders WHERE id < '80000000-0000-0000-000
 
 Note the `21824.00`: the 19324 from before plus 0.0025 for each of the million `id < ...` checks.
 
-Now the surprise, which `correlation` explains:
+The next result may be unexpected. `correlation` explains it:
 
 ```console
 tutor_planning=# EXPLAIN SELECT * FROM orders WHERE created_at >= '2026-06-01 00:00+00';
@@ -569,7 +569,7 @@ Half the table, and still an index scan, while half the table by `id` was a seq 
 
 ## Join algorithms
 
-PostgreSQL has three ways to join two inputs. To see all three on the same query, turn off parallel query (to keep the plans small) and then forbid the planner's favourites one by one with the `enable_*` settings. These settings don't really forbid anything, they make a node type look extremely expensive. Use them to **learn and debug**, never in production code.
+PostgreSQL has three ways to join two inputs. To see all three on the same query, turn off parallel query (to keep the plans small) and then disable the planner's first choices one by one with the `enable_*` settings. These settings don't really forbid anything, they make a node type look extremely expensive. Use them to **learn and debug**, never in production code.
 
 ```console
 tutor_planning=# SET max_parallel_workers_per_gather = 0;
@@ -617,7 +617,7 @@ tutor_planning=# EXPLAIN (ANALYZE, BUFFERS OFF) ... same query ...
 (12 rows)
 ```
 
-**Merge join**: both inputs sorted on the join key, then walk them side by side like a zipper. Here both come sorted for free, from indexes. Without such indexes, it needs two `Sort` nodes first. Good for big inputs that are already sorted. Like the hash join, it needs an equality condition.
+**Merge join**: both inputs sorted on the join key, then walk them side by side like a zipper. Here both inputs are already sorted, because they come from indexes. Without such indexes, it needs two `Sort` nodes first. Good for big inputs that are already sorted. Like the hash join, it needs an equality condition.
 
 ```console
 tutor_planning=# RESET enable_nestloop;
@@ -641,9 +641,9 @@ tutor_planning=# EXPLAIN (ANALYZE, BUFFERS OFF) ... same query ...
 (11 rows)
 ```
 
-**Nested loop**: for each row of the outer input, look up matches in the inner input (`loops=10000`), ideally with an index. Unbeatable when the outer side is small (the 20 orders of step 3), terrible when the planner **thinks** it is small and it is not (next section). It is also the only algorithm for conditions like `<` or `LIKE` without an index. (With `enable_memoize` on, the planner can put a **`Memoize`** cache between the loop and the inner side, so repeated keys skip the lookup.)
+**Nested loop**: for each row of the outer input, look up matches in the inner input (`loops=10000`), ideally with an index. The fastest choice when the outer side is small (the 20 orders of step 3), and very slow when the planner **thinks** it is small and it is not (next section). It is also the only algorithm for conditions like `<` or `LIKE` without an index. (With `enable_memoize` on, the planner can put a **`Memoize`** cache between the loop and the inner side, so repeated keys skip the lookup.)
 
-Look at the numbers honestly: the planner chose the hash join (cost 27230), and on this machine the other two were **not slower** (344 and 323 ms against 364 ms). Everything was in memory, so the "random" index reads cost nothing like 4× a sequential read. The costs are estimates on a model of a generic machine. When the planner's choice is within a few percent, it doesn't matter. What you look for is the plan that is **10×** off. And that almost always comes from a wrong row count.
+Look at the actual numbers: the planner chose the hash join (cost 27230), and on this machine the other two were **not slower** (344 and 323 ms against 364 ms). Everything was in memory, so the "random" index reads cost nothing like 4× a sequential read. The costs are estimates on a model of a generic machine. When the planner's choice is within a few percent, it doesn't matter. What you look for is the plan that is **10×** off. And that almost always comes from a wrong row count.
 
 ## Row estimates gone wrong
 
@@ -722,7 +722,7 @@ tutor_planning=# EXPLAIN (ANALYZE) ... same query ...
  Execution Time: 182.463 ms
 ```
 
-Now it estimates 99,147 refunds (actual 100,000), and picks a parallel hash join: 19,000 buffers instead of 401,000, 300 ms → 182 ms. On this small, warm test the gap is "only" 1.6×. On a production table where the inner index lookups go to disk, the same rows=1 mistake turns seconds into hours. The fix in your import job: **run `ANALYZE` on the tables you changed, right after the import**. Autovacuum would have done it eventually: that's the "fast again at 03:00".
+Now it estimates 99,147 refunds (actual 100,000), and picks a parallel hash join: 19,000 buffers instead of 401,000, 300 ms → 182 ms. On this small, warm test the gap is 1.6×. On a production table where the inner index lookups go to disk, the same rows=1 mistake turns seconds into hours. The fix in your import job: **run `ANALYZE` on the tables you changed, right after the import**. Autovacuum would have done it eventually: that's the "fast again at 03:00".
 
 Undo the experiment before you continue:
 

@@ -9,18 +9,18 @@ Four tickets that are all "the network":
 - "The load test fails after about 4,000 requests with `connect: cannot assign requested address`."
 - "`curl localhost:8080` works. The same call from another container says `connection refused`."
 
-None of them is a bug in your Go code. Each one is a fact about **addresses, routes, ports or packet sizes**: an MTU too big for a tunnel, two subnets that overlap, a client that ran out of ports, a server bound to the wrong address. This page gives you those facts, and then we catch a real packet and read it byte by byte, so nothing about the network stays magic.
+None of them is a bug in your Go code. Each one is a fact about **addresses, routes, ports or packet sizes**: an MTU too big for a tunnel, two subnets that overlap, a client that ran out of ports, a server bound to the wrong address. This page gives you those facts, and then captures a real packet and reads it byte by byte.
 
-## The idea: envelopes inside envelopes
+## The idea: each layer wraps the one above
 
-You post a letter to a colleague in a big office building in another city.
+Data travels inside layers of headers, one inside the other. This is called **encapsulation**. It works like envelopes inside envelopes, each with its own address.
 
-- You write the **letter** (your data, for example an HTTP request).
-- You put it in an envelope with **a name and a room number** on it. That is the **port**: which program in the building gets it. This is **TCP**.
-- That envelope goes into a bigger one with the **street address of the building**. That is the **IP address**. It stays the same for the whole trip.
-- The post office does not drive it there in one go. A courier takes it to the **next sorting office**, where a new courier takes over. Each courier only knows the next stop. That is the **link layer** (Ethernet, Wi-Fi), and the address of the next stop is the **MAC address**. It changes at every hop.
+- Your program writes the **data**, for example an HTTP request.
+- **TCP** puts a header in front of the data. The header holds a **port**: the number that picks which program on the destination machine gets the data.
+- **IP** puts a header in front of that. It holds the **IP address** of the destination machine. The IP address stays the same for the whole trip.
+- The **link layer** (Ethernet, Wi-Fi) puts a header in front of that. It holds a **MAC address**: the hardware address of the next device on the path. A packet usually passes several routers, and each router only knows the next hop. So the MAC address changes at every hop.
 
-Every sorting office opens only the outer envelope, reads the street address, and picks the next courier. Only the building opens the inner envelopes. That is the whole trick of networking: **each layer reads only its own envelope.**
+Each router reads only the outer headers. It removes the link header, reads the IP address, picks the next hop, and adds a new link header. Only the destination machine reads the TCP header and the data. This is the core rule of networking: **each layer reads only its own header.**
 
 ## Under the hood: four layers, not seven
 
@@ -50,7 +50,7 @@ flowchart TB
 | Internet    | **packet** (IP)      | **IP address** (32/128 bit) | every router on path | `ip addr`, `ip route` |
 | Link        | **frame** (Ethernet) | **MAC address** (48 bits)   | the next hop only    | `ip link`, `ip neigh` |
 
-When people say "L4 load balancer" or "L7 proxy" (see [Load balancers and proxies](load-balancers.md)), they use OSI numbers: **L3 = IP, L4 = TCP/UDP, L7 = HTTP**. OSI layers 5 and 6 don't exist as separate things in practice; TLS sits somewhere between 4 and 7 and nobody agrees where.
+When people say "L4 load balancer" or "L7 proxy" (see [Load balancers and proxies](load-balancers.md)), they use OSI numbers: **L3 = IP, L4 = TCP/UDP, L7 = HTTP**. OSI layers 5 and 6 don't exist as separate things in practice; TLS sits somewhere between 4 and 7, and it does not fit cleanly into one of them.
 
 Two things to keep in mind:
 
@@ -104,12 +104,12 @@ You will meet these ranges in every config file, so learn them once:
 
 The `0.0.0.0` line is the "connection refused from another container" ticket. A server that listens on `127.0.0.1:8080` only accepts connections **to** `127.0.0.1`, which is only reachable from inside the same network namespace. Listen on `:8080` (Go's short form for "port 8080 on every address, IPv4 and IPv6") to accept on every interface.
 
-### IPv6 in two minutes
+### IPv6 basics
 
 - **Notation:** groups of 4 hex digits, leading zeros dropped, and **one** run of zero groups replaced with `::`. So `2001:0db8:0000:0000:0000:0000:0000:0001` is `2001:db8::1`.
 - **In URLs and `host:port`**, IPv6 needs brackets: `[::1]:8080`. Use `net.JoinHostPort`, never `host + ":" + port`; it adds the brackets for you.
 - **No ARP**, no broadcast, and routers never fragment. The minimum MTU is 1280 bytes.
-- **A /64 per network** is normal. One subnet has 2^64 addresses, so nobody scans it, and nobody runs out.
+- **A /64 per network** is normal. One subnet has 2^64 addresses: too many to scan, and no network runs out of addresses.
 
 Go's `net/netip` package has the modern address types: `netip.Addr` (an IP) and `netip.Prefix` (a CIDR). They are small values you can compare with `==` and use as map keys, unlike the older `net.IP`, which is a byte slice.
 
@@ -117,7 +117,7 @@ Go's `net/netip` package has the modern address types: `netip.Addr` (an IP) and 
 
 `192.168.4.119/24` means: **the first 24 bits are the network, the remaining 8 bits are the host.** All addresses with the same first 24 bits are on the same local network and can talk directly, without a router.
 
-Do one by hand, with a less round number. Is `10.20.32.0` in `10.20.30.40/20`? (If binary is rusty, see [Bits and bytes](../fundamentals/bits-and-bytes.md).)
+Do one by hand, with a less round number. Is `10.20.32.0` in `10.20.30.40/20`? (For a refresher on binary, see [Bits and bytes](../fundamentals/bits-and-bytes.md).)
 
 ```text
 10.20.30.40  =  00001010.00010100.0001|1110.00101000
@@ -204,7 +204,7 @@ contains 2001:db8:abcd:13::1 false
 
 `math/big` is there because a `/64` has 2^64 addresses, one more than a `uint64` can hold.
 
-## Routing: which way out?
+## Routing: picking the interface and next hop
 
 For every packet it sends, the kernel asks one question: **which interface, and which next hop?** The answer comes from the routing table:
 
@@ -237,7 +237,7 @@ $ ip route get 192.168.4.50
 
 The first goes **via** the router. The second has no `via`: it is on the link. And `src` is the source address the kernel will put on the packet. This is the command to run when "the service connects from the wrong IP" and the firewall on the other side rejects it.
 
-!!! note "An oddity of this machine: policy routing"
+!!! note "Policy routing on this machine"
 
     `ip route` shows only the `main` table. Linux has several tables, and **rules** (`ip rule`) pick which one to use.
     WSL's mirrored networking mode adds rules so that TCP and UDP to `127.0.0.1` go through its `loopback0`
@@ -269,13 +269,13 @@ $ ip neigh show dev eth1
 192.168.4.1 lladdr 00:00:5e:00:53:01 REACHABLE
 ```
 
-That is the router's MAC. (We replaced the real one with `00:00:5e:00:53:01`, a MAC address reserved for documentation.) Note what is **not** in the table: `1.1.1.1`. For a destination behind a router, the frame goes to the **router's** MAC, with `1.1.1.1` in the IP header. MAC addresses change at every hop; IP addresses don't (unless NAT rewrites them). That's the envelope picture again.
+That is the router's MAC. (We replaced the real one with `00:00:5e:00:53:01`, a MAC address reserved for documentation.) Note what is **not** in the table: `1.1.1.1`. For a destination behind a router, the frame goes to the **router's** MAC, with `1.1.1.1` in the IP header. MAC addresses change at every hop; IP addresses don't (unless NAT rewrites them). Each router replaces the link header and keeps the IP header.
 
 States you will see: `REACHABLE` (confirmed recently; here for about 30 seconds, `net.ipv4.neigh.default.base_reachable_time_ms`), `STALE` (still used, but checked again on next use), `FAILED` (nobody answered: the host is down or not on this link), `PERMANENT` (set by hand). IPv6 does the same job with ICMPv6 "neighbour solicitation" instead of ARP, and `ip neigh` shows both.
 
 ### Try it: watch ARP happen
 
-To see ARP for real, we need a link with two ends and real MAC addresses. We can build one without root. `unshare -Urn` makes a user namespace and a network namespace, where we are root (see [Namespaces and cgroups](../linux/namespaces-and-cgroups.md#network-namespaces-one-cable-unplugged)). Inside, we start a second network namespace and connect the two with a **veth pair**, a virtual cable:
+To see ARP for real, we need a link with two ends and real MAC addresses. We can build one without root. `unshare -Urn` makes a user namespace and a network namespace, where we are root (see [Namespaces and cgroups](../linux/namespaces-and-cgroups.md#network-namespaces-a-separate-network-stack)). Inside, we start a second network namespace and connect the two with a **veth pair**, a virtual cable:
 
 ```sh
 #!/bin/sh
@@ -353,7 +353,7 @@ $ head -13 cap2.txt
 
 - The request goes to **`ff:ff:ff:ff:ff:ff`**, the broadcast MAC: everyone on the link gets it. Bytes 12-13, `08 06`, say "ARP inside". Then: hardware type 1 (Ethernet), protocol `08 00` (IPv4), address sizes 6 and 4, **opcode 1 (request)**, sender MAC and IP, an empty target MAC, and the target IP `0a 00 00 02` (10.0.0.2).
 - The reply goes **only to us**, opcode 2, and fills in the MAC.
-- The SYN that follows goes to `12:9f:2a:df:9f:9f` with EtherType `08 00`: IPv4. Its destination MAC is the first 6 bytes, its source MAC the next 6: the opposite order of how you'd say "from, to". 72 µs for the ARP round trip, paid once per neighbour, not per packet.
+- The SYN that follows goes to `12:9f:2a:df:9f:9f` with EtherType `08 00`: IPv4. Its destination MAC is the first 6 bytes, its source MAC the next 6: destination comes first. 72 µs for the ARP round trip, paid once per neighbour, not per packet.
 
 ## Ports and the 4-tuple
 
@@ -418,7 +418,7 @@ What happens to a packet that is too big for a link on the way?
 
 TCP avoids most of this by never making packets too big in the first place. In the SYN, each side announces its **MSS**, maximum segment size: the most TCP payload it wants per packet. MSS = MTU − 20 (IP header) − 20 (TCP header). The veth capture above shows `mss 1460` = 1500 − 40.
 
-Each side announces its own MSS, and each **sends** no more than the other side announced. Let's make the server's link smaller than the client's: the same veth setup, but with `ip link set veth1 mtu 1400` on the server side, and a connection that stays open:
+Each side announces its own MSS, and each **sends** no more than the other side announced. The next run gives the server's link a smaller MTU than the client's. It uses the same veth setup, but with `ip link set veth1 mtu 1400` on the server side, and a connection that stays open:
 
 ```console
 $ unshare -Urn ./mss.sh
@@ -430,7 +430,7 @@ mss:1348 pmtu:1500 rcvmss:536 advmss:1448
 
 The client offers 1460, the server answers 1360 (= 1400 − 40). The client's `mss` is now 1348: 1360 minus 12 bytes for the timestamp option that rides in every packet. `advmss:1448` is what the client announced, minus the same 12.
 
-Now the "big requests hang" ticket. MSS only knows the MTU **at both ends**. If a tunnel **in the middle** has a smaller MTU, and the ICMP "fragmentation needed" messages are blocked by a firewall, you get a **PMTU black hole**: the handshake and small requests work (small packets fit), and the first full-size packet disappears without a trace. TCP retransmits it, at the same size, until it gives up. The fixes: allow ICMP type 3 code 4 through firewalls, lower the MTU on the tunnel's ends, or **clamp the MSS** on the router (rewrite the MSS option in SYNs that pass through). Linux can also search for the path MTU itself with `net.ipv4.tcp_mtu_probing=1`; it is `0` (off) here.
+This explains the "big requests hang" ticket. MSS only knows the MTU **at both ends**. If a tunnel **in the middle** has a smaller MTU, and the ICMP "fragmentation needed" messages are blocked by a firewall, you get a **PMTU black hole**: the handshake and small requests work (small packets fit), and the first full-size packet is lost, with no error. TCP retransmits it, at the same size, until it gives up. The fixes: allow ICMP type 3 code 4 through firewalls, lower the MTU on the tunnel's ends, or **clamp the MSS** on the router (rewrite the MSS option in SYNs that pass through). Linux can also search for the path MTU itself with `net.ipv4.tcp_mtu_probing=1`; it is `0` (off) here.
 
 ## Loopback is not a wire
 
@@ -444,7 +444,7 @@ Now the "big requests hang" ticket. MSS only knows the MTU **at both ends**. If 
 
 ## Try it: capture a real packet
 
-Time to look inside. `tcpdump` isn't installed here, and needs root anyway. But a **packet socket** (`AF_PACKET`) receives every frame on an interface, headers and all. It needs `CAP_NET_RAW`, which we have inside `unshare -Urn`. Here is a small capturer that decodes Ethernet, ARP, IPv4 and TCP itself, so you see every field come out of the bytes:
+`tcpdump` isn't installed here, and needs root anyway. But a **packet socket** (`AF_PACKET`) receives every frame on an interface, headers and all. It needs `CAP_NET_RAW`, which we have inside `unshare -Urn`. Here is a small capturer that decodes Ethernet, ARP, IPv4 and TCP itself, so you can see how each field is read from the bytes:
 
 ```go
 // Command sniff prints the TCP packets on one network interface,
@@ -767,13 +767,13 @@ Ten packets to move 9 bytes of data. Three to open (`SYN`, `SYN,ACK`, `ACK`), fo
 | 70    | `01`                            | option kind 1            | **no-op**, padding so the next option is aligned                   |
 | 71-73 | `03 03 07`                      | option kind 3, length 3  | **window scale** 7: "multiply my window by 2^7 from now on"        |
 
-Three details worth a second look:
+Three details to note:
 
 1. **MSS 65495 on loopback.** The biggest IPv4 packet is 65,535 bytes (the 16-bit total length field). Take off 20 bytes of IP and 20 of TCP header and you get 65,495. On the veth link it was 1460, from the 1500-byte MTU.
-2. **The window field is only 16 bits**, so it can't say more than 65,535 bytes. The window scale option fixes that: after the handshake, every window value is shifted left by 7. In the later packets, `win=512` means 512 × 128 = **65,536 bytes**. Your capture tool must have seen the SYN to know the scale. A capture started mid-connection shows windows that look absurdly small.
-3. **The TCP checksum `fe30` is wrong, on purpose.** The TCP checksum covers the header, the data, and a "pseudo-header" of the IP addresses and length. Normally the network card fills it in (**checksum offload**): the kernel writes only the pseudo-header's part, and the card finishes the job. Loopback has no card and nothing can get corrupted, so nobody ever finishes it. `0xfe30` is exactly the pseudo-header part. On a real NIC, `tcpdump` on the sending host shows the same "bad" checksums, and that is normal.
+2. **The window field is only 16 bits**, so it can't say more than 65,535 bytes. The window scale option fixes that: after the handshake, every window value is shifted left by 7. In the later packets, `win=512` means 512 × 128 = **65,536 bytes**. Your capture tool must have seen the SYN to know the scale. A capture started mid-connection shows windows that look far too small.
+3. **The TCP checksum `fe30` is not valid, and this is expected.** The TCP checksum covers the header, the data, and a "pseudo-header" of the IP addresses and length. Normally the network card fills it in (**checksum offload**): the kernel writes only the pseudo-header's part, and the card finishes the job. Loopback has no card and nothing can get corrupted, so nobody ever finishes it. `0xfe30` is exactly the pseudo-header part. On a real NIC, `tcpdump` on the sending host shows the same "bad" checksums, and that is normal.
 
-### One more: a real HTTP request
+### A real HTTP request
 
 Run [`ordersd`](../go/services.md) in a namespace, capture port 8080, and create an order with `orderctl`. The fourth packet carries the request, and the ASCII column on the right shows that HTTP/1.1 really is just text in a TCP segment:
 

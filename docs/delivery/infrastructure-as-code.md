@@ -2,7 +2,7 @@
 
 ## Why care?
 
-Four messages from teams that run real infrastructure:
+Teams that run real infrastructure report problems like these four:
 
 - "Staging works, production doesn't. Somebody changed a firewall rule in the cloud console in March. Nobody knows which one."
 - "The PR changed one line in a module. The plan said `3 to destroy`. Nobody read the plan. One of the three was the production database."
@@ -11,17 +11,17 @@ Four messages from teams that run real infrastructure:
 
 **Infrastructure as code (IaC)** means you describe servers, networks, DNS records, buckets and databases in files, review them in pull requests like any other code, and let a tool make the real world match. The best-known tools are **Terraform** and its open-source fork **OpenTofu**. They share the language (HCL), the model and almost all commands.
 
-This page explains that model: **configuration, state, plan, apply**. You run all of it for real with OpenTofu 1.13 on a laptop, using providers that create only local files, so nothing costs money and nothing can break. Then you break it on purpose: drift, a lock fight, a stale plan, a secret in the state.
+This page explains that model: **configuration, state, plan, apply**. You run all of it for real with OpenTofu 1.13 on a laptop, using providers that create only local files, so nothing costs money and nothing can break. Then you break it on purpose: drift, two runs that compete for a lock, a stale plan, a secret in the state.
 
-## The idea: the architect, the plans and the site log
+## The idea: configuration, state and plan
 
-A building company works with three documents:
+OpenTofu works with three things:
 
-- The **drawing**: what the building should look like. That's your **configuration** (`*.tf` files).
-- The **site log**: what was actually built, with the serial number of every beam. That's the **state** (`terraform.tfstate`).
-- The **work order**: "add two windows on floor 3, remove the old door". The site manager writes it by comparing the drawing with what is there now. That's the **plan**.
+- The **configuration** (`*.tf` files): what the infrastructure should look like.
+- The **state** (`terraform.tfstate`): what OpenTofu created, with the real ID of every object.
+- The **plan**: the list of actions needed to make the real world match the configuration. OpenTofu makes it by comparing the configuration with the state and with what exists now.
 
-Nobody builds without a work order, and nobody signs a work order without reading it. If someone knocked out a wall without telling anyone, the next inspection finds it: that's **drift**.
+Nothing changes without a plan, and a person reads the plan before it is applied. A change made outside OpenTofu, for example by hand in a cloud console, is **drift**. The next plan finds it.
 
 ```mermaid
 flowchart LR
@@ -34,7 +34,7 @@ flowchart LR
     APPLY -->|record new IDs| ST
 ```
 
-This is a cousin of the [Kubernetes reconciliation loop](../kubernetes/reconciliation.md): desired state, observed state, compute the difference, act. There are two big differences. Kubernetes reconciles **all the time, by itself**. OpenTofu reconciles **only when you run it**, and it shows you the difference first and waits for a human. The other: Kubernetes keeps its desired state in etcd; OpenTofu needs its own state file to know which real objects belong to it.
+This is similar to the [Kubernetes reconciliation loop](../kubernetes/reconciliation.md): desired state, observed state, compute the difference, act. There are two big differences. Kubernetes reconciles **all the time, by itself**. OpenTofu reconciles **only when you run it**, and it shows you the difference first and waits for a human. The other: Kubernetes keeps its desired state in etcd; OpenTofu needs its own state file to know which real objects belong to it.
 
 ## Under the hood
 
@@ -298,7 +298,7 @@ Look at the addresses: `module.env["prod"].local_file.config`. The module call, 
     }
 ```
 
-`(known after apply)`: the value only exists once the object exists, like a cloud ID or an IP address. `(sensitive value)`: the provider marked the attribute as secret, so the plan hides it. Hidden in the plan does **not** mean hidden in the state. Hold that thought.
+`(known after apply)`: the value only exists once the object exists, like a cloud ID or an IP address. `(sensitive value)`: the provider marked the attribute as secret, so the plan hides it. Hidden in the plan does **not** mean hidden in the state. Step 5 shows why this matters.
 
 ### Step 4: apply the saved plan
 
@@ -371,7 +371,7 @@ resource "random_password" "db" {
 }
 ```
 
-Looks safe. Now look at the file itself:
+This output looks safe. Now look at the file itself:
 
 ```console
 $ ls -l terraform.tfstate
@@ -390,7 +390,7 @@ $ cat out/staging/db-password
 8Kdgqfqh8NoZCvnnNx9J
 ```
 
-There it is: the staging database password, in plain JSON, in a file that anyone on the machine can read (`-rw-r--r--`). `(sensitive value)` was only a display filter. The fields to know:
+The output shows the staging database password, in plain JSON, in a file that anyone on the machine can read (`-rw-r--r--`). `(sensitive value)` was only a display filter. The fields to know:
 
 - `serial` goes up with each write. A backend can refuse to overwrite a newer serial with an older one.
 - `lineage` is set once when the state is created. A state with a different lineage is a different state, even with the same resources: OpenTofu refuses to mix them up.
@@ -464,7 +464,7 @@ $ tofu plan | tail -1
 No changes. Your infrastructure matches the configuration.
 ```
 
-Now be the colleague who "quickly fixes" production by hand:
+Now change a managed file by hand, as someone might do to fix production quickly:
 
 ```console
 $ echo "ORDERS_REPLICAS=5" >> out/staging/ordersd.env
@@ -608,7 +608,7 @@ OpenTofu will perform the following actions:
 Plan: 2 to add, 0 to change, 2 to destroy.
 ```
 
-`2 to destroy`. For files that's fine. For a database it would be a disaster, and the summary line looks just as calm. That's why reviewers read the **actions**, not the diff of the `.tf` files. A machine-readable plan makes this easy to automate:
+`2 to destroy`. For files that's fine. For a database it would delete all its data, and the summary line looks the same. That's why reviewers read the **actions**, not the diff of the `.tf` files. A machine-readable plan makes this easy to automate:
 
 ```console
 $ tofu show -json tfplan | jq -r '.resource_changes[] | select(.change.actions != ["no-op"]) | "\(.change.actions | join(",")) \(.address)"'
@@ -642,7 +642,7 @@ The given plan file can no longer be applied because the state was changed by
 another operation after the plan was created.
 ```
 
-This protects you from the classic pipeline bug: plan on Monday, review on Tuesday, apply on Wednesday after someone else already applied a different change. The plan file remembers the state it was made from, and refuses if that state moved. Make a new plan, and review again.
+This protects you from a common pipeline bug: plan on Monday, review on Tuesday, apply on Wednesday after someone else already applied a different change. The plan file remembers the state it was made from, and refuses if that state moved. Make a new plan, and review again.
 
 ### Step 10: locking
 
@@ -867,7 +867,7 @@ Terraform and OpenTofu split in 2023, when HashiCorp moved Terraform to a source
 - **Providers** turn resource types into API calls. `init` downloads them; `.terraform.lock.hcl` pins versions and checksums. Commit it.
 - **State** maps addresses to real IDs. It must be shared (remote backend), locked, and protected: it contains secrets in plain text. OpenTofu can encrypt it.
 - Watch for `-/+` (**replace**) and `-` (**destroy**) in every plan. `tofu show -json` lets CI check actions automatically.
-- Apply the **saved plan**; stale plans are refused. Locks stop two writers; `-lock-timeout` waits politely.
+- Apply the **saved plan**; stale plans are refused. Locks stop two writers; `-lock-timeout` waits for the lock instead of failing.
 - **Drift** is any change made outside OpenTofu. `plan` shows it; `-detailed-exitcode` turns it into an alert; the next apply undoes it.
 - **Modules** with validated inputs replace copy-paste between environments. `moved` blocks make refactoring safe.
 

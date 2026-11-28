@@ -9,16 +9,14 @@ Four messages from one team's chat, in one week:
 - "`ordersd` starts, but it can't read its own password file. The file is right there."
 - "A CI job had a 'read-only' token. It deleted pods in production."
 
-None of these is a bug. Kubernetes gives you three simple tools: **ConfigMaps** for settings, **Secrets** for credentials, and **service accounts with RBAC** for "who may do what". Each one is simpler than its name suggests, and each one has sharp edges. On this page you deploy `ordersd` with all three, read a Secret straight out of etcd, decode a pod's token, and lock a service account into one namespace.
+None of these is a bug. Kubernetes gives you three simple tools: **ConfigMaps** for settings, **Secrets** for credentials, and **service accounts with RBAC** for "who may do what". Each one is simpler than its name suggests, and each one has traps. On this page you deploy `ordersd` with all three, read a Secret straight out of etcd, decode a pod's token, and lock a service account into one namespace.
 
-## The idea: a hotel room
+## The idea: settings, credentials and identity, all from the API
 
-Think of a pod as a hotel room.
-
-- A **ConfigMap** is the **card on the desk**: Wi-Fi name, breakfast hours. Anyone in the room can read it. If the hotel prints a new card, a cleaner swaps it while you are out. But what you **wrote down** on arrival (an environment variable) does not change.
-- A **Secret** is an **envelope with your safe code**. It is sealed with tape, not with a lock. Anybody who picks it up can open it. The protection is that only some people may pick it up.
-- A **service account** is your **key card**. Every room gets one. It says who you are, and it stops working when you check out.
-- **RBAC** is the **list at the front desk** that says which doors each key card opens. The card itself opens nothing. The desk checks the list every time.
+- A **ConfigMap** holds plain settings, such as a log level. Every process in the pod can read it. When the ConfigMap changes, files made from it are replaced, but an environment variable that was set at start-up does not change.
+- A **Secret** holds credentials, such as a password. Its value is encoded, not encrypted: anyone who can read the object can read the value. The protection is access control on who may read it.
+- A **service account** is the pod's identity. Every pod has one. The pod gets a token that says who it is, and the token stops working when the pod is deleted.
+- **RBAC** (role-based access control) is the set of rules that says what each identity may do. The token alone allows nothing. The API server checks the rules on every request.
 
 ```mermaid
 flowchart LR
@@ -105,7 +103,7 @@ lrwxrwxrwx    1 root     root            32 Nov 26 21:42 ..data -> ..2026_11_26_
 lrwxrwxrwx    1 root     root            20 Nov 26 21:42 features.yaml -> ..data/features.yaml
 ```
 
-`features.yaml` is a symlink to `..data/features.yaml`, and `..data` is a symlink to a directory with a timestamp in its name. This is the atomic rename trick from [Filesystems](../linux/filesystems.md#under-the-hood-fsync-and-the-atomic-rename): to update, the kubelet writes a **new** timestamped directory, then swaps the `..data` symlink with one `rename`. A reader sees the old files or the new files, never half of each.
+`features.yaml` is a symlink to `..data/features.yaml`, and `..data` is a symlink to a directory with a timestamp in its name. This is the atomic rename technique from [Filesystems](../linux/filesystems.md#under-the-hood-fsync-and-the-atomic-rename): to update, the kubelet writes a **new** timestamped directory, then swaps the `..data` symlink with one `rename`. A reader sees the old files or the new files, never half of each.
 
 ### Files update, environment variables don't
 
@@ -135,7 +133,7 @@ maxItems: 50
 ```
 
 - The **file** changed, 62 seconds after the patch. A new timestamped directory, and `..data` points to it. The kubelet does not watch ConfigMaps for each pod; it re-syncs them every minute or so, through a cache. Expect "up to a minute or two", never "now".
-- The **variable** is still `info`. Environment variables are copied into the process when it starts (see [Signals and processes](../linux/signals-and-processes.md)). Nothing can change them from outside afterwards. Not the kubelet, not Kubernetes, nobody.
+- The **variable** is still `info`. Environment variables are copied into the process when it starts (see [Signals and processes](../linux/signals-and-processes.md)). Nothing outside the process can change them afterwards, including the kubelet.
 
 So for `ordersd`, which reads only variables, a ConfigMap change does nothing until the pod is **replaced**. Do it on purpose, with a rollout:
 
@@ -269,7 +267,7 @@ orders
 Opaque
 ```
 
-There it is: `s3cr3t-Passw0rd`, not even base64. The API server stores objects as protobuf, and base64 is only how JSON shows bytes. Every etcd backup, every etcd disk, every snapshot copied to a bucket has your passwords in it. This is the second message from the top of the page.
+The password `s3cr3t-Passw0rd` is in plain text, not even base64. The API server stores objects as protobuf, and base64 is only how JSON shows bytes. Every etcd backup, every etcd disk, every snapshot copied to a bucket has your passwords in it. This explains the second message at the top of the page.
 
 ### Encryption at rest
 
@@ -309,7 +307,7 @@ volumes:
       defaultMode: 0400
 ```
 
-The debug container, again, looks from the side:
+Look from the debug container again:
 
 ```console
 $ kubectl -n tutor-config exec tutor-ordersd-5884c89f68-fr2bb -c tutor-debug -- \
@@ -321,7 +319,7 @@ Uid:	65532	65532	65532	65532
 Gid:	65532	65532	65532	65532
 ```
 
-The files belong to `root`, mode `0400`, and the process is UID 65532. It cannot read them. That's the third message from the top. The fix is `fsGroup`: the kubelet gives the volume's files that group, and you open the mode to the group:
+The files belong to `root`, mode `0400`, and the process is UID 65532. It cannot read them. This explains the third message at the top of the page. The fix is `fsGroup`: the kubelet gives the volume's files that group, and you open the mode to the group:
 
 ```yaml
 spec:
@@ -402,7 +400,7 @@ lrwxrwxrwx    1 root     root            16 Nov 26 21:44 namespace -> ..data/nam
 lrwxrwxrwx    1 root     root            12 Nov 26 21:44 token -> ..data/token
 ```
 
-The same `..data` trick. And it is a tmpfs, in memory, like every Secret volume:
+The same `..data` symlink technique. And it is a tmpfs, in memory, like every Secret volume:
 
 ```console
 $ kubectl -n tutor-config exec tutor-sa-demo -- grep serviceaccount /proc/mounts
@@ -507,10 +505,10 @@ Read it field by field:
 
 - **`sub`**: the user name the API server will see, `system:serviceaccount:<namespace>:<name>`. RBAC rules use this name.
 - **`iss`** and **`aud`**: who signed it, and who it is for. The API server signed it with `sa.key` (RS256) and only accepts tokens with its own audience. Other systems (Vault, a cloud's workload identity) can be given tokens with **their** audience, and check the signature with the public keys at `/openid/v1/jwks`.
-- **`kubernetes.io.pod`** and **`.node`**: the token is **bound** to this pod. Delete the pod, and the token dies with it, even before `exp`.
+- **`kubernetes.io.pod`** and **`.node`**: the token is **bound** to this pod. Delete the pod, and the token stops working, even before `exp`.
 - **`exp - iat`** is 31,536,000 seconds: **one year**, although the pod asked for 3607 seconds. And `warnafter - iat` is exactly 3607.
 
-That last one is surprising. The API server flag `--service-account-extend-token-expiration` (default `true`) gives auto-mounted tokens a one-year life, so that old clients which read the token only once at start-up don't break after an hour. `warnafter` is when the API server starts **logging a warning** that a stale token was used. The kubelet still refreshes the file well before that, and good clients (client-go) re-read it. If you ask for a token yourself, you get what you ask for:
+The last point needs an explanation. The API server flag `--service-account-extend-token-expiration` (default `true`) gives auto-mounted tokens a one-year life, so that old clients which read the token only once at start-up don't break after an hour. `warnafter` is when the API server starts **logging a warning** that a stale token was used. The kubelet still refreshes the file well before that, and good clients (client-go) re-read it. If you ask for a token yourself, you get what you ask for:
 
 ```console
 $ kubectl -n tutor-config create token tutor-orders --duration=10m | cut -d. -f2 | b64json
@@ -604,11 +602,11 @@ $ kubectl auth can-i list pods -n default --as=$SA
 no
 ```
 
-Exactly the one thing, in exactly the one namespace. `kubectl auth can-i --list -n tutor-config --as=$SA` prints the whole picture; among the lines are `pods [] [] [get list watch]` and a few things every authenticated user may do, like `selfsubjectaccessreviews` (that's what `can-i` itself uses) and `GET /healthz`.
+The service account has exactly this one right, in exactly this one namespace. `kubectl auth can-i --list -n tutor-config --as=$SA` prints the whole picture; among the lines are `pods [] [] [get list watch]` and a few things every authenticated user may do, like `selfsubjectaccessreviews` (that's what `can-i` itself uses) and `GET /healthz`.
 
-### The real token, the real answer
+### Test with the pod's real token
 
-`can-i` is a prediction. Now use the pod's token for real. The admin kubeconfig has a client certificate, and a certificate wins over `--token`, so build a clean config on the command line:
+`can-i` is a prediction. Now use the pod's real token. The admin kubeconfig has a client certificate, and a certificate wins over `--token`, so build a clean config on the command line:
 
 ```console
 $ k() { kubectl --kubeconfig=/dev/null --server="$SERVER" --certificate-authority=ca.crt --token="$(cat tok.txt)" "$@"; }
@@ -660,7 +658,7 @@ $ k -n tutor-config get pods
 error: You must be logged in to the server (Unauthorized)
 ```
 
-A one-year `exp`, and it died with its pod. That's a **bound** token. An old-style token from a `kubernetes.io/service-account-token` Secret would still work, forever, until someone deletes the Secret. Don't create those.
+The token had a one-year `exp`, but it stopped working when its pod was deleted. That's a **bound** token. An old-style token from a `kubernetes.io/service-account-token` Secret would still work, forever, until someone deletes the Secret. Don't create those.
 
 ### ClusterRoles: reusable rules
 

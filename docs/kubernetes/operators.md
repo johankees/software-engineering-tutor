@@ -2,7 +2,7 @@
 
 ## Why care?
 
-Sooner or later, someone in your company says "let's write an operator". Then:
+At some point, someone in your company suggests writing an operator. Then you hear messages like these:
 
 - "The controller is at 100% CPU, and the logs show it reconciling the same object 50 times a second."
 - "We deleted the namespace. It has been `Terminating` for three days."
@@ -13,15 +13,15 @@ On the earlier pages you used controllers that come with Kubernetes: the Deploym
 
 This page teaches Kubernetes a new kind, `Order`, and writes a controller for it in Go with **controller-runtime**, the library under Kubebuilder and the Operator SDK. You run it on your laptop against the `kind` cluster, break it, and watch it heal.
 
-## The idea: the ticket rail in a restaurant kitchen
+## The idea: a new resource type and a loop that acts on it
 
-In a busy kitchen, waiters don't talk to the cooks. They write a ticket and clip it on the rail.
+An operator has two parts: a new kind of resource in the API, and a controller that acts on it.
 
-- The **rail** is the API server. Every ticket is a resource. Anyone can read the rail; it is the single source of truth.
-- A **ticket** says what the guest wants (the **spec**). The cook writes on the same ticket what has happened so far: "starter out, main cooking" (the **status**). The waiter never writes the status; the cook never changes the order.
-- The **cook** is a controller. They don't remember tickets in their head. Every time they look up, they read the ticket again and ask one question: **"what is the next step to make the plate match the ticket?"**
-- If a guest changes their order three times in ten seconds, the cook doesn't cook three meals. They read the ticket once, now, and cook what it says **now**.
-- Before a ticket is thrown away, the cook may need to do something: give back the reserved fish. A sticky note on the ticket says "don't throw away until the cook removes me". That's a **finalizer**.
+- The **API server** stores every resource, including the new kind. It is the single source of truth. Clients do not talk to the controller directly.
+- Each object has a **spec**, written by the user: what is wanted. The controller writes the **status**: what has happened so far. Users do not write the status, and the controller does not change the spec.
+- The **controller** keeps no memory of past events. Each time it runs, it reads the object again and answers one question: **"what is the next step to make the actual state match the spec?"**
+- If a user changes an object three times in ten seconds, the controller does not do the work three times. It reads the object once, and acts on what it says **now**.
+- Before an object is removed, the controller may need to clean up something outside the cluster, such as reserved stock. A **finalizer** on the object stops the deletion until the controller removes it.
 
 ```mermaid
 flowchart LR
@@ -40,7 +40,7 @@ flowchart LR
 
 Two things to notice:
 
-1. **Reads come from the local cache; writes go to the API server.** The cache is filled by one LIST and one long WATCH per kind. That is how 100 controllers can watch a cluster without killing the API server.
+1. **Reads come from the local cache; writes go to the API server.** The cache is filled by one LIST and one long WATCH per kind. That is how 100 controllers can watch a cluster without overloading the API server.
 2. **The queue holds names, not events.** `Reconcile` gets `tutor-operators/tutor-order-1`, never "the quantity changed from 1 to 3". It must look at the current state and work out what to do. This is **level-triggered** design, from [Reconciliation](reconciliation.md).
 
 ## Under the hood: a CustomResourceDefinition
@@ -176,7 +176,7 @@ spec:
 
 - **`openAPIV3Schema`** is the validation. The API server rejects objects that don't match, before they reach etcd. It also **prunes** unknown fields: send `spec.colour` and it is silently dropped. For rules across fields ("`discountCents` < total") there are CEL rules (`x-kubernetes-validations`, marker `+kubebuilder:validation:XValidation`), still without any webhook.
 - **`subresources: status`** splits the object in two. Writes to `/orders/x` ignore `status`; writes to `/orders/x/status` ignore everything but `status`. The user owns the spec, the controller owns the status, and RBAC can give each one only its half. It also means `metadata.generation` only increases on **spec** changes.
-- **`versions`**: one version is `storage: true`, the one etcd keeps. Later you add `v1`, serve both, and convert between them (by a conversion webhook if the shapes differ). Start at `v1alpha1` and you are allowed to break things once.
+- **`versions`**: one version is `storage: true`, the one etcd keeps. Later you add `v1`, serve both, and convert between them (by a conversion webhook if the shapes differ). Start at `v1alpha1`, and you may still make incompatible changes before `v1`.
 
 ### Install it and use it without any controller
 
@@ -255,7 +255,7 @@ The order is stored, validated and listed with your columns. `PHASE` and `TOTAL`
 
 ## Under the hood: client-go, the parts under the library
 
-controller-runtime is a thin, friendly layer over three parts of `k8s.io/client-go`. It pays to see them once without the layer. This small program watches ConfigMaps in `tutor-operators` with the raw parts:
+controller-runtime is a thin layer over three parts of `k8s.io/client-go`. It helps to see them once without the layer. This small program watches ConfigMaps in `tutor-operators` with the raw parts:
 
 ```go
 // One LIST, then one long WATCH, feeding a local cache.
@@ -336,7 +336,7 @@ cache synced
 22:49:59.516 reconcile tutor-operators/tutor-demo: gone
 ```
 
-Read it slowly. This is the whole operator model in ten lines:
+Read it line by line. These ten lines show the whole operator model:
 
 1. **Startup is an "add" for everything that exists** (`kube-root-ca.crt`). After a restart, your controller sees every object again. That's how it catches up on whatever it missed while it was down.
 2. **Five events, three reconciles.** The create started the first reconcile. The three patches arrived while it was sleeping, and marked the key dirty once, not three times.
@@ -559,7 +559,7 @@ The first run, with the order `tutor-order-1` from above already waiting (log co
 ...
 ```
 
-A real bug, kept on purpose. The first version built the condition status with `metav1.ConditionStatus(strconv.FormatBool(ready))`, which gives `"true"`. The API wants `"True"`. The schema caught it. Look at how often it retried:
+This is a real bug, kept on purpose. The first version built the condition status with `metav1.ConditionStatus(strconv.FormatBool(ready))`, which gives `"true"`. The API wants `"True"`. The schema caught it. Look at how often it retried:
 
 ```console
 $ grep 'Reconciler error' operator-bug.log | awk '{print $1}' | uniq -c
@@ -774,7 +774,7 @@ To run it **in** the cluster you need four more things. Kubebuilder (`kubebuilde
 
 1. An **image** (static Go binary, distroless, see [Building images](../containers/building-images.md)) and a Deployment.
 2. A **ServiceAccount with RBAC**: `get/list/watch/update` on `orders`, `update` on `orders/status` and `orders/finalizers`, and `get/list/watch/create/update` on `configmaps`. Generate it from `// +kubebuilder:rbac:...` markers next to `Reconcile` (see [Config and secrets](config-and-secrets.md) for RBAC).
-3. **Leader election** (`ctrl.Options{LeaderElection: true, LeaderElectionID: ...}`) if you run more than one replica. Only the leader reconciles; the others wait with a warm cache. Without it, two replicas reconcile the same objects and fight. That's the fourth message from "Why care?".
+3. **Leader election** (`ctrl.Options{LeaderElection: true, LeaderElectionID: ...}`) if you run more than one replica. Only the leader reconciles; the others wait with a warm cache. Without it, two replicas reconcile the same objects and overwrite each other's work. That explains the fourth message from "Why care?".
 4. **Health and metrics endpoints** (`HealthProbeBindAddress`, `Metrics`), wired to probes as in [Pods](pods.md).
 
 ## Traps

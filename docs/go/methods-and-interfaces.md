@@ -2,7 +2,7 @@
 
 ## Why care?
 
-Your service sends an email when an order ships. In tests, you don't want to send real emails. In Java you would reach for a mocking framework, an `implements EmailSender` clause, and maybe a dependency injection container.
+Your service sends an email when an order ships. In tests, you don't want to send real emails. In Java you would typically use a mocking framework, an `implements EmailSender` clause, and maybe a dependency injection container.
 
 In Go, you write this, in the package that _needs_ the email:
 
@@ -12,7 +12,7 @@ type Notifier interface {
 }
 ```
 
-That's all. The real email client never mentions `Notifier`. Your test fake never mentions it either. They both just have a `Notify` method, and that is enough. No `implements`. No framework.
+That is the whole declaration. The real email client never mentions `Notifier`. Your test fake never mentions it either. They both have a `Notify` method, and that is enough. There is no `implements` clause and no framework.
 
 This small idea, **interfaces are satisfied implicitly**, shapes how all Go code is designed. It is why Go codebases have small interfaces, few dependencies between packages, and tests without mock libraries. This page shows how methods and interfaces work, what happens in memory, and the conventions that come from them.
 
@@ -50,7 +50,7 @@ func (c *Cart) Add(it Item) { c.items = append(c.items, it) } // pointer receive
 
 With a value receiver, `Add` would append to a **copy** of the cart, and the change would disappear (same reason as `appendOne` in [Types and data](types-and-data.md)).
 
-Go is friendly at the call site: if `cart` is an addressable variable, `cart.Add(x)` automatically becomes `(&cart).Add(x)`. And a pointer `p.Total()` automatically becomes `(*p).Total()`. So you rarely type `&` or `*` for method calls.
+Go helps at the call site: if `cart` is an addressable variable, `cart.Add(x)` automatically becomes `(&cart).Add(x)`. And a pointer `p.Total()` automatically becomes `(*p).Total()`. So you rarely type `&` or `*` for method calls.
 
 !!! abstract "Convention: choosing the receiver type"
 
@@ -62,7 +62,7 @@ Go is friendly at the call site: if `cart` is an addressable variable, `cart.Add
 
     **Why:** Mixing makes the **method set** (next section) confusing: some methods are available on
     a value and some aren't, so a type may satisfy an interface as `*T` but not as `T`, and callers
-    must remember which. One receiver kind per type removes that puzzle. And pointer receivers on
+    must remember which. One receiver kind per type removes that confusion. And pointer receivers on
     types with mutexes are required for correctness: a value receiver would lock a copy.
     Source: [Go Code Review Comments: Receiver Type](https://go.dev/wiki/CodeReviewComments#receiver-type).
 
@@ -73,12 +73,12 @@ Go is friendly at the call site: if `cart` is an addressable variable, `cart.Add
     or `self`.
 
     **Why:** The receiver appears on almost every line of a method. A short, predictable name keeps
-    lines short and lets the reader recognise it instantly. `this`/`self` suggest a special,
-    magic object, but in Go the receiver is just a parameter, and the name should say so.
+    lines short and lets the reader recognise it immediately. `this`/`self` suggest a special
+    object, but in Go the receiver is an ordinary parameter, and the name should show that.
 
 ## Method sets: the rule behind "does not implement"
 
-This compile error confuses every Go beginner once:
+Most Go beginners meet this compile error at some point:
 
 ```go
 type Notifier interface {
@@ -112,7 +112,7 @@ The **method set** of a type is the list of methods you can call through an inte
 | `T` (a value)                | only methods with **value** receivers        |
 | `*T` (a pointer)             | methods with value **and** pointer receivers |
 
-**Why this rule?** When you put a value `EmailNotifier{}` into an interface, the interface holds **its own copy** of that value. If Go let you call `Notify` (which modifies `e.sent`) on it, the method would change that hidden copy, and your change would be lost. Silent lost writes are a terrible bug. So the compiler refuses. With `&EmailNotifier{}`, the interface holds a pointer to the real value, and changes stick.
+**Why this rule?** When you put a value `EmailNotifier{}` into an interface, the interface holds **its own copy** of that value. If Go let you call `Notify` (which modifies `e.sent`) on it, the method would change that hidden copy, and your change would be lost. Changes that are lost without any error are hard to find. So the compiler refuses. With `&EmailNotifier{}`, the interface holds a pointer to the real value, and changes stick.
 
 The fix is `var n Notifier = &EmailNotifier{}`.
 
@@ -184,7 +184,7 @@ bytes written: 36
 
 The line `var _ io.Writer = (*CountingWriter)(nil)` is a **compile-time assertion**. It costs nothing at run time. If someone changes the `Write` signature by mistake, the build fails right here, with a clear message, instead of somewhere far away where the type is used.
 
-### Why implicit? The deep reason
+### Why interfaces are implicit
 
 In Java or C#, a class must say `implements Reader`. That means the **producer** must know about the interface in advance. Go reverses this:
 
@@ -246,8 +246,8 @@ This leads to one of the most quoted Go guidelines: **"Accept interfaces, return
 
     **Why:** "The bigger the interface, the weaker the abstraction" (a Go proverb). A one-method
     interface can be satisfied by many types, including a plain function adapter
-    (`http.HandlerFunc`), so it is extremely reusable. A 10-method interface has exactly one real
-    implementation and makes every fake painful to write.
+    (`http.HandlerFunc`), so it is very reusable. A 10-method interface usually has exactly one real
+    implementation and makes every fake hard to write.
 
 ## Under the hood: what an interface value is
 
@@ -274,7 +274,7 @@ itab: ┌───────────────────────�
 
 ### The nil interface trap
 
-This one causes real production bugs. Read it twice.
+This trap causes real production bugs.
 
 ```go
 package main
@@ -399,7 +399,7 @@ nil
 stdout is a StringWriter
 ```
 
-The last part shows a powerful pattern: **optional interfaces** (also called interface upgrades). `io.Copy` checks if the source has a `WriteTo` method or the destination has `ReadFrom`, and uses the faster path if so. `http.ResponseWriter` may also be an `http.Flusher`. You accept a small interface, and check for a bigger one when it helps.
+The last part shows a useful pattern: **optional interfaces** (also called interface upgrades). `io.Copy` checks if the source has a `WriteTo` method or the destination has `ReadFrom`, and uses the faster path if so. `http.ResponseWriter` may also be an `http.Flusher`. You accept a small interface, and check for a bigger one when it helps.
 
 !!! warning "Trap: type switches on errors"
 
@@ -485,7 +485,7 @@ Output:
     **Why:** Embedding exports everything. If `Service` embeds `*sql.DB` "to save typing", every
     caller can now call `service.Exec(...)` and bypass your service's rules, and you can never remove
     that without breaking them. Embedding a `sync.Mutex` in an exported type has the same problem:
-    callers can `Lock` your struct. A named field keeps the inside inside. Go's designers chose
+    callers can `Lock` your struct. A named field keeps the internals private. Go's designers chose
     composition over inheritance because class hierarchies tend to get deep and tightly coupled;
     small parts you plug together are easier to change.
 
@@ -493,7 +493,7 @@ Embedding also works in **interfaces** (to combine them, as with `io.ReadCloser`
 
 ## Function types can have methods
 
-A favourite Go trick. From `net/http`:
+This is a common Go pattern. From `net/http`:
 
 ```go
 type Handler interface {

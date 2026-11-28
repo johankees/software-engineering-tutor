@@ -2,9 +2,9 @@
 
 ## Why care?
 
-A new colleague clones your repository. They run the tests. Everything is red. After two hours you find the reason: they have Go 1.25, you have Go 1.27, and the code uses a function that only exists in 1.27. Meanwhile CI uses a third version, and the binary in production says `version: dev`, so nobody knows which commit is running.
+A new colleague clones your repository. They run the tests, and every test fails. After two hours you find the reason: they have Go 1.25, you have Go 1.27, and the code uses a function that only exists in 1.27. Meanwhile CI uses a third version, and the binary in production says `version: dev`, so nobody knows which commit is running.
 
-None of this is about the Go _language_. It is about the **toolchain**: the programs that turn your code into a binary. In Go, the toolchain is simple and strict, and when you understand it, these problems disappear.
+None of this is about the Go _language_. It is about the **toolchain**: the programs that turn your code into a binary. In Go, the toolchain is simple and strict. When you understand it, you can prevent these problems.
 
 ## The idea: one tool does everything
 
@@ -46,7 +46,7 @@ go = "1.27"
 golangci-lint = "2.15"
 ```
 
-When you `cd` into the folder, mise puts the right versions on your `PATH`. CI uses the same file. Now "works on my machine" means "works on every machine".
+When you `cd` into the folder, mise puts the right versions on your `PATH`. CI uses the same file. So every machine builds with the same tool versions.
 
 Check what you have:
 
@@ -65,7 +65,7 @@ The format is `go<major>.<minor>.<patch> <os>/<arch>`. Go releases a new **minor
     **Rule:** upgrade to each new minor version within a few months, and take every patch release.
 
     **Why:** Go has the **Go 1 compatibility promise**: code written for Go 1.0 in 2012 still
-    compiles today. Upgrades are almost always boring, so there is little reason to wait. And old
+    compiles today. Upgrades almost never need code changes, so there is little reason to wait. And old
     versions stop getting security fixes after one year. "We are stuck on Go 1.19" is a security
     finding in an audit, not a stability choice.
 
@@ -102,7 +102,7 @@ auto
 
     Before 2018, _all_ Go code had to live inside one folder, `$GOPATH/src/github.com/...`.
     There were no versions: you always got the latest commit of every dependency. It was simple,
-    and it was terrible for companies, because builds were not reproducible. **Go modules**
+    but it was a poor fit for companies, because builds were not reproducible. **Go modules**
     (Go 1.11, default since 1.16) fixed this. Today your code can live anywhere. If an old blog
     post tells you to set `GOPATH` or put code in `$GOPATH/src`, the post is out of date.
 
@@ -130,7 +130,7 @@ Most `go` commands take **package patterns**:
 | `github.com/acme/orders/cmd/...` | Every package under that import path       |
 | `std`                            | The whole standard library                 |
 
-`go test ./...` and `go vet ./...` are the two commands you will type most in your career.
+`go test ./...` and `go vet ./...` are the two commands you will use most often.
 
 ## Building: one static binary
 
@@ -140,7 +140,7 @@ go build -o bin/ordersd ./cmd/ordersd
 
 The result is **one file**. No runtime to install, no `node_modules`, no JVM, no shared libraries (by default). You copy that file to a server or into an empty container image, and it runs.
 
-Why did Go choose this? Google deploys to huge fleets of machines. With one self-contained binary, a deployment is "copy a file". There is no "the server has the wrong version of libssl" problem. This is also why Go is so popular for containers and CLI tools.
+Go chose this because Google deploys to very large numbers of machines. With one self-contained binary, a deployment is "copy a file". There is no "the server has the wrong version of libssl" problem. This is also why Go is so popular for containers and CLI tools.
 
 !!! info "cgo and `CGO_ENABLED`"
 
@@ -154,7 +154,7 @@ Why did Go choose this? Google deploys to huge fleets of machines. With one self
 
 ### Under the hood: why Go compiles so fast
 
-Compile speed was one of the original design goals, because slow builds kill productivity in big codebases. Several language rules exist **only** to make builds fast:
+Compile speed was one of the original design goals, because slow builds waste a lot of engineering time in big codebases. Several language rules exist **only** to make builds fast:
 
 1. **Unused imports are a compile error.** Every import costs build time. If the compiler allowed unused imports, big codebases would collect thousands of them.
 2. **Import cycles are forbidden.** Packages form a tree without loops (a directed acyclic graph), so they can be compiled in order, in parallel, each one once.
@@ -338,7 +338,7 @@ Many companies set `GOTOOLCHAIN=local` in CI, so builds only use the Go version 
 
     **Why:** the `go` line forces everyone who depends on your module to use at least that
     version. A library that needs `go 1.27` forces every user to upgrade. An application has no
-    users like that, so it can just use the newest features.
+    users like that, so it can use the newest features.
 
 ## Reading documentation offline: `go doc`
 
@@ -361,7 +361,7 @@ Useful forms:
 
 - `go doc net/http.Server` or `go doc http Server.Shutdown`: one type or method.
 - `go doc -short errors`: a one-line summary of everything in a package.
-- `go doc -all ./internal/order`: everything in _your_ package. Great for review: "does our API read well?"
+- `go doc -all ./internal/order`: everything in _your_ package. Useful in code review, to check that the API reads well.
 - `go doc -http`: serves your package docs as a website on your machine, like [pkg.go.dev](https://pkg.go.dev).
 
 !!! tip "Trust `go doc` over blog posts"
@@ -414,7 +414,7 @@ Useful forms:
 ??? question "4. Why do services usually build with `CGO_ENABLED=0`?"
 
     The binary is then fully static: it does not need the system C library, so it runs in a
-    minimal (`scratch` or distroless) image on any Linux, and cross-compiling just works.
+    minimal (`scratch` or distroless) image on any Linux, and cross-compiling needs no extra setup.
 
 ??? question "5. Why should a library keep its `go` line low, while an application can use the newest version?"
 

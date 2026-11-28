@@ -16,17 +16,17 @@ $ docker exec -it tutor-pg psql -U postgres -d tutor_indexes
 tutor_indexes=#
 ```
 
-## The idea: the index at the back of a book
+## The idea: a sorted copy that points to rows
 
-A cookbook has 600 pages. You want every recipe with lentils.
+An index works like the index at the back of a book: sorted terms, each with the pages where they appear.
 
-- **Without an index**, you read all 600 pages. That is a **sequential scan**. It is not stupid: reading pages in order is fast, and if half the recipes have lentils, it is the best you can do.
-- **With the index at the back**, you look up "lentils" (alphabetical, so you find it in seconds), and it says "pages 12, 97, 341". You turn to those three pages. That is an **index scan**.
-- The index is **sorted by one thing**. An index on "ingredient" does not help you find "recipes that take under 20 minutes".
-- If the index line already says "lentils: soup, p. 12", and the name is all you wanted, you never open page 12. That is an **index-only scan**.
-- Every new recipe means updating the index too. A book with ten indexes (by ingredient, by time, by country...) is slow to write.
+- **Without an index**, PostgreSQL reads every page of the table and checks every row. That is a **sequential scan**. It is often a good plan: reading pages in order is fast, and if half the rows match, nothing else is faster.
+- **With an index**, PostgreSQL looks up the value in the sorted index, which is fast because the index is sorted. The index entry gives the row addresses, for example "page 12, page 97, page 341". PostgreSQL reads only those pages. That is an **index scan**.
+- An index is **sorted by its key columns**. An index on `customer_id` does not help a query that filters on `created_at`.
+- If the index entry already holds every column the query needs, PostgreSQL does not read the table page at all. That is an **index-only scan**.
+- Every new row must also be added to every index on the table. A table with ten indexes is slow to write.
 
-A PostgreSQL B-tree is that index, built from 8 kB pages, with a few levels so it never needs more than a handful of page reads to find anything.
+A PostgreSQL B-tree is such an index, built from 8 kB pages. It has only a few levels, so it never needs more than a handful of page reads to find a key.
 
 ```mermaid
 flowchart TB
@@ -156,7 +156,7 @@ SELECT * FROM orders WHERE id = '01a219f6-225a-7001-8680-d03610cddf31';
 (8 rows)
 ```
 
-`shared hit=4`: root, internal page, leaf, heap page. Four pages out of 14,000. That is the whole trick.
+`shared hit=4`: root, internal page, leaf, heap page. Four pages out of 14,000. That is why an index lookup is fast.
 
 ### An index on a column with duplicates
 
@@ -286,7 +286,7 @@ WHERE created_at >= '2026-03-01' AND created_at < '2026-03-01 00:10';
  Execution Time: 0.231 ms
 ```
 
-`Index Searches: 7`: a few descents from the root, one per status section and some to find the next section, instead of one. With 20,000 customers it would be 20,000 descents, and the planner chose the sequential scan. Skip scan is a nice extra, not a reason to get the column order wrong.
+`Index Searches: 7`: a few descents from the root, one per status section and some to find the next section, instead of one. With 20,000 customers it would be 20,000 descents, and the planner chose the sequential scan. Skip scan is a useful extra, not a reason to get the column order wrong.
 
 ## Covering indexes and index-only scans
 
@@ -313,7 +313,7 @@ WHERE customer_id = 'customer-42';
 (9 rows)
 ```
 
-4 pages instead of 53 with the plain index. But there's a catch. Change those rows and ask again:
+4 pages instead of 53 with the plain index. This only works while the rows do not change. Change those rows and ask again:
 
 ```console
 tutor_indexes=# UPDATE orders SET total_cents = total_cents + 1 WHERE customer_id = 'customer-42';
@@ -630,7 +630,7 @@ docker exec tutor-pg dropdb -U postgres tutor_indexes
 
 ## Traps
 
-- **Testing on a small table.** With 1,000 rows every query is fast, and the planner happily ignores your index. Test with production-like volume and distribution.
+- **Testing on a small table.** With 1,000 rows every query is fast, and the planner often ignores your index. Test with production-like volume and distribution.
 - **Wrong column order.** `(created_at, customer_id)` does not serve `WHERE customer_id = ? ORDER BY created_at`. Equality columns first, then the sort or range column.
 - **Wrapping the column in a function.** `WHERE lower(email) = ?`, `WHERE created_at::date = ?` and `WHERE id::text = ?` can't use a plain index on the column. Write the condition on the bare column (`created_at >= ? AND created_at < ?`) or build an expression index.
 - **Indexing every column "just in case".** Each one slows every insert, may turn HOT updates into full updates, and takes RAM from the cache.

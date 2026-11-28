@@ -2,7 +2,7 @@
 
 ## Why care?
 
-Four sentences that describe a team in trouble:
+These four statements describe a team with a delivery problem:
 
 - "The feature branch is three weeks old. Merging it will take two days."
 - "Please don't merge anything this week, we are stabilizing the release branch."
@@ -13,13 +13,13 @@ Every one of these is a **batch size** problem. Big batches wait longer, conflic
 
 It is not a Git trick. It's the reason the [CI pipeline](ci-pipelines.md) must be fast, the reason [builds must be reproducible](reproducible-builds.md), and the reason you will need [feature flags](feature-flags.md) on the next page. On this page you see why small wins, then you build a **stack** of dependent branches with plain Git and with Git Town, keep it up to date when main moves, and ship it piece by piece.
 
-## The idea: a motorway with short on-ramps
+## The idea: integrate small changes often
 
-Picture main as a motorway. Every change has to merge into the traffic.
+Every change must eventually join main. How long a branch lives decides how hard that is.
 
-- A **short-lived branch** is a short on-ramp: you join quickly, at the speed of the traffic, and nobody has to brake.
-- A **long-lived feature branch** is a side road that runs next to the motorway for 20 km. When you finally try to merge, the traffic has changed completely. You stop, you wait, you cause a jam.
-- A **release branch that people develop on** is a second motorway. Now every fix must be driven onto both.
+- A **short-lived branch** starts from a recent main and joins it again within a day. Main has changed little in that time, so the merge is easy.
+- A **long-lived feature branch** stays apart from main for weeks. By the time you merge, main has changed a lot. The merge conflicts, takes days, and blocks other work.
+- A **release branch that people develop on** is a second main. Every fix must be made on both branches, and the two drift apart.
 
 ```mermaid
 gitGraph
@@ -37,7 +37,7 @@ gitGraph
     checkout feature-big
     commit id: "big 3"
     checkout main
-    merge feature-big id: "merge hell"
+    merge feature-big id: "large merge"
 ```
 
 The same work, trunk-based. Three small branches, each merged within a day:
@@ -62,7 +62,7 @@ gitGraph
 
 ## Under the hood: why small is safer
 
-### Batch size, in numbers you can feel
+### Batch size and risk
 
 The risk of a merge grows faster than its size:
 
@@ -82,9 +82,9 @@ The DORA research programme (the "Accelerate" book and the yearly State of DevOp
 5. **Releases are cut from main**, by tag or by a short-lived release branch that only receives cherry-picked fixes. Nobody develops on a release branch.
 6. **Fix forward or revert fast.** A red main is everyone's problem. Revert first, discuss later.
 
-### But my feature takes three weeks
+### Features that take weeks
 
-It does. It just doesn't have to be **one PR**. Split by layer, and keep each slice working:
+A large feature does not have to be **one PR**. Split by layer, and keep each slice working:
 
 1. A PR that adds the domain type and its tests. Nothing calls it yet.
 2. A PR that adds the storage method.
@@ -92,7 +92,7 @@ It does. It just doesn't have to be **one PR**. Split by layer, and keep each sl
 4. A PR that adds the `orderctl` command.
 5. A PR that turns the flag on, first in staging.
 
-Each one is small and safe on its own. The problem: PR 2 needs PR 1's code. If you wait for review of each one before starting the next, you lose days. That's where **stacked changes** come in.
+Each one is small and safe on its own. The problem: PR 2 needs PR 1's code. If you wait for review of each one before starting the next, you lose days. **Stacked changes** solve this.
 
 ## Under the hood: stacked changes
 
@@ -107,7 +107,7 @@ flowchart BT
     cli --> api
 ```
 
-You review `api` against `main`, and `cli` against `api`. When `api` merges, `cli` is retargeted to `main`. Simple in theory. In practice, two things go wrong: **main moves**, and **the bottom of the stack gets squash-merged**. Let's make both happen.
+You review `api` against `main`, and `cli` against `api`. When `api` merges, `cli` is retargeted to `main`. In practice, two things go wrong: **main moves**, and **the bottom of the stack gets squash-merged**. The next two sections show both.
 
 ## Try it: a stack with plain Git
 
@@ -137,7 +137,7 @@ $ git log --oneline --graph --all --decorate
 * 3db45c3 feat: order package
 ```
 
-Look closely. `cli` moved, and it took a **copy** of the api commit with it (`ebd9af8`). But the `api` branch still points to the **old** commit `5cf4645`. Now there are two versions of the api change. Push `api` and its PR is based on old main; push `cli` and its PR contains the api change a second time. This is the classic stacked-branch mess.
+`cli` moved, and it took a **copy** of the api commit with it (`ebd9af8`). But the `api` branch still points to the **old** commit `5cf4645`. Now there are two versions of the api change. Push `api` and its PR is based on old main; push `cli` and its PR contains the api change a second time. This is the most common problem with stacked branches.
 
 Same starting point, with `--update-refs`:
 
@@ -160,7 +160,7 @@ One straight line. Git noticed that the branch `api` pointed **into** the range 
 git config --global rebase.updateRefs true
 ```
 
-Plain Git handles the "main moved" problem. It doesn't remember that `cli` **belongs on** `api`: that knowledge is in your head. For one stack, fine. For three stacks, a tool helps.
+Plain Git handles the "main moved" problem. It doesn't remember that `cli` **belongs on** `api`: that knowledge is in your head. That is manageable for one stack. For several stacks, a tool helps.
 
 ## Try it: the same stack with Git Town
 
@@ -192,7 +192,7 @@ branch cli is now a feature branch
 $ git add ctl.go && git commit -qm "feat(cli): orderctl status command"
 ```
 
-Every Git Town command prints the Git commands it runs, prefixed with the branch it was on. There's no magic to trust. The stack is now recorded:
+Every Git Town command prints the Git commands it runs, prefixed with the branch it was on. You can see every step it takes. The stack is now recorded:
 
 ```console
 $ git town branch
@@ -280,7 +280,7 @@ $ git log --oneline --graph --all --decorate
 * bdde22c feat: order package
 ```
 
-Here is the second classic problem. Main has the api change as the squash commit `fc985f0`. `cli` still has the **original** api commit `0c92b4f` under it. Same change, two commits. Git Town already moved `cli`'s parent to `main`. Sync it:
+This is the second common problem. Main has the api change as the squash commit `fc985f0`. `cli` still has the **original** api commit `0c92b4f` under it. Same change, two commits. Git Town already moved `cli`'s parent to `main`. Sync it:
 
 ```console
 $ git switch -q cli
@@ -335,7 +335,7 @@ $ git log --oneline --graph --all
 
 `git rebase --onto <new base> <old base> <branch>` reads: "take the commits of `<branch>` that come after `<old base>`, and replay them on `<new base>`". It's the same form Git Town used in `sync --all` above. If you deleted the parent branch already, find its old tip in the reflog (see [Recovery and history](../git/recovery-and-history.md)).
 
-And when a Git Town command surprised you:
+If a Git Town command did something you did not expect, undo it:
 
 ```console
 $ git town undo
@@ -351,7 +351,7 @@ On GitHub, `git town propose` opens the PR for the current branch against its **
 
 ## Under the hood: merge queues
 
-Small PRs and fast CI create a new problem. Picture two PRs, both green:
+Small PRs and fast CI create a new problem. Take two PRs that both passed CI:
 
 - PR #41 renames `Order.Qty` to `Order.Quantity` everywhere.
 - PR #42 adds a new handler that uses `Order.Qty`.
@@ -383,7 +383,7 @@ What you have to know as a CI author:
 
 - A merge queue tests a commit that **no developer pushed**. On GitHub, it triggers your workflows with the `merge_group` event on a temporary branch. If your workflow only listens to `pull_request` and `push`, the required check never runs, and the queue waits forever. Add `merge_group:` to `on:`.
 - Main only ever moves to a commit that passed CI **as it is**. "Main is always green" is no longer a hope, it is guaranteed by construction.
-- Queues test several entries in parallel, speculatively (the third entry is tested on top of the first two). Fast CI makes the queue fast. Slow CI makes it a traffic jam.
+- Queues test several entries in parallel, speculatively (the third entry is tested on top of the first two). Fast CI makes the queue fast. With slow CI, every PR in the queue waits longer.
 - GitLab calls the same idea "merge trains". Other tools (Bors, Mergify, Aviator) existed before forges built it in.
 
 <!-- TODO(real-output): on a GitHub repository with a merge queue enabled for main, add `merge_group:` to ci.yml, queue two PRs, and capture `gh run list --event merge_group` (temporary branches named like gh-readonly-queue/main/pr-41-<sha>) and the queue page. GitHub-only feature: not reproducible offline. -->

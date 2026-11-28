@@ -2,10 +2,10 @@
 
 ## Why care?
 
-Two real incidents, same week, same company:
+Two common incidents:
 
-1. **The export that ate the server.** A nightly job exports all orders as CSV. It reads every order into a slice, builds the CSV in a `bytes.Buffer`, compresses it, and uploads it. With 200,000 orders it was fine. With 9 million it used 14 GB of memory and the container was killed.
-2. **The service that froze.** The orders service calls the payment provider with `http.Get(url)`. One day the provider stops answering, but keeps the TCP connections open. `http.Get` has **no timeout**. Every request to the orders service waits forever. After a few minutes all goroutines are stuck, and the service is down, even though only payments were broken.
+1. **An export that runs out of memory.** A nightly job exports all orders as CSV. It reads every order into a slice, builds the CSV in a `bytes.Buffer`, compresses it, and uploads it. With 200,000 orders it was fine. With 9 million it used 14 GB of memory and the container was killed.
+2. **A service that stops responding.** The orders service calls the payment provider with `http.Get(url)`. One day the provider stops answering, but keeps the TCP connections open. `http.Get` has **no timeout**. Every request to the orders service waits forever. After a few minutes all goroutines are stuck, and the service is down, even though only payments were broken.
 
 Neither needed a library. Both are fixed with the standard library, used the way it is designed to be used. Go's standard library is big, high-quality and stable: in many teams, a service has only a handful of third-party dependencies. This page covers the parts you use every day, and the design ideas behind them.
 
@@ -20,7 +20,7 @@ Neither needed a library. Both are fixed with the standard library, used the way
 
 ## `io.Reader` and `io.Writer`: the most important interfaces in Go
 
-Almost everything that moves bytes in Go speaks one of two tiny interfaces:
+Almost everything that moves bytes in Go uses one of two small interfaces:
 
 ```go
 type Reader interface {
@@ -35,19 +35,19 @@ type Writer interface {
 - **`Read`** fills `p` with up to `len(p)` bytes and says how many (`n`). At the end it returns `io.EOF`.
 - **`Write`** writes the bytes from `p` and says how many it wrote. If `n < len(p)`, `err` must say why.
 
-That's it. And because the interfaces are so small, **everything** implements them:
+Because the interfaces are so small, almost **every** type that handles bytes implements them:
 
-| Reads (`io.Reader`)                          | Writes (`io.Writer`)                |
-| -------------------------------------------- | ----------------------------------- |
-| `*os.File`, `os.Stdin`                       | `*os.File`, `os.Stdout`             |
-| `http.Request.Body`, `http.Response.Body`    | `http.ResponseWriter`               |
-| `*gzip.Reader`, `*bufio.Reader`              | `*gzip.Writer`, `*bufio.Writer`     |
-| `strings.NewReader(s)`, `bytes.NewReader(b)` | `*bytes.Buffer`, `*strings.Builder` |
-| `net.Conn`                                   | `net.Conn`, `hash.Hash` (sha256!)   |
+| Reads (`io.Reader`)                          | Writes (`io.Writer`)                  |
+| -------------------------------------------- | ------------------------------------- |
+| `*os.File`, `os.Stdin`                       | `*os.File`, `os.Stdout`               |
+| `http.Request.Body`, `http.Response.Body`    | `http.ResponseWriter`                 |
+| `*gzip.Reader`, `*bufio.Reader`              | `*gzip.Writer`, `*bufio.Writer`       |
+| `strings.NewReader(s)`, `bytes.NewReader(b)` | `*bytes.Buffer`, `*strings.Builder`   |
+| `net.Conn`                                   | `net.Conn`, `hash.Hash` (e.g. sha256) |
 
 ### Why this design matters: composition
 
-Because every piece speaks the same interface, you can **plug them together** like pipes. Data flows through in small chunks. Nothing ever holds the whole file.
+Because every piece implements the same interface, you can **connect them** like pipes. Data flows through in small chunks. Nothing ever holds the whole file.
 
 ```mermaid
 flowchart LR
@@ -127,7 +127,7 @@ wrote 52324542 bytes, sha256 c19a58b67ce4283c
 max RSS: 13892 KB, 4.95 s
 ```
 
-Ten times more data, **the same 13 MB of memory**. Notice also what `ExportCSV` does **not** know: it doesn't know about files, hashes or byte counters. It takes an `io.Writer`. In a test you pass a `bytes.Buffer`. In an HTTP handler you pass the `http.ResponseWriter`, and the export streams straight to the browser. In a job you pass an S3 upload writer. Same function.
+Ten times more data uses **the same 13 MB of memory**. Notice also what `ExportCSV` does **not** know: it doesn't know about files, hashes or byte counters. It takes an `io.Writer`. In a test you pass a `bytes.Buffer`. In an HTTP handler you pass the `http.ResponseWriter`, and the export streams straight to the browser. In a job you pass an S3 upload writer. Same function.
 
 !!! abstract "Convention: accept `io.Reader`/`io.Writer`, not files or byte slices"
 
@@ -145,7 +145,7 @@ Ten times more data, **the same 13 MB of memory**. Notice also what `ExportCSV` 
 | `io.MultiWriter(w1, w2, …)` | write the same bytes to several writers                            |
 | `io.TeeReader(r, w)`        | read from `r`, and copy what you read to `w` (e.g. hash an upload) |
 | `io.LimitReader(r, n)`      | stop after `n` bytes: never trust a size from outside              |
-| `io.ReadAll(r)`             | read everything into memory. Only for **small, bounded** input!    |
+| `io.ReadAll(r)`             | read everything into memory. Only for **small, bounded** input.    |
 | `io.NopCloser(r)`           | turn a `Reader` into a `ReadCloser` with a no-op `Close`           |
 | `io.Pipe()`                 | connect a writer in one goroutine to a reader in another           |
 
@@ -174,7 +174,7 @@ if err := sc.Err(); err != nil { // don't forget: Scan returns false on errors t
 
 ## JSON: `encoding/json/v2`
 
-JSON is the language of web APIs. Go 1.27 ships a new JSON package, `encoding/json/v2`, next to the classic `encoding/json`. The classic package is not going away (the compatibility promise), and it is now built on top of the same engine. But new code should use v2, because its **defaults are safer**.
+JSON is the most common data format for web APIs. Go 1.27 ships a new JSON package, `encoding/json/v2`, next to the classic `encoding/json`. The classic package is not going away (the compatibility promise), and it is now built on top of the same engine. But new code should use v2, because its **defaults are safer**.
 
 ### Struct tags
 
@@ -265,7 +265,7 @@ if err := json.UnmarshalRead(r.Body, &req, json.RejectUnknownMembers(true)); err
 }
 ```
 
-`json.MarshalWrite(w, v)` and `json.UnmarshalRead(r, &v)` work on `io.Writer` and `io.Reader`, so they fit the composition story above.
+`json.MarshalWrite(w, v)` and `json.UnmarshalRead(r, &v)` work on `io.Writer` and `io.Reader`, so they compose with the readers and writers above.
 
 !!! abstract "Convention: separate API types from domain types"
 
@@ -277,7 +277,7 @@ if err := json.UnmarshalRead(r.Body, &req, json.RejectUnknownMembers(true)); err
     price, a fraud score) can leak into a response just because someone exported it. Keep the `order` package free of
     JSON tags. The [reference project](services.md) does exactly this.
 
-## `time`: the hardest "simple" package
+## `time`: instants, zones and durations
 
 Time causes many production bugs. The `time` package gets the hard parts right, if you know four rules.
 
@@ -333,7 +333,7 @@ Same moment, but `==` compares the struct fields, including the location. `t.Equ
 
 The value from `time.Now()` contains the **wall clock** (date and time, which can jump when NTP corrects it) and a **monotonic clock** reading (which only moves forward). `time.Since(start)` and `t.Sub(u)` use the monotonic part when both values have it. So durations you measure are correct even if the system clock jumps. Operations like `t.UTC()`, `t.Round(0)` or a database round trip strip the monotonic reading.
 
-And: inject the clock. A service that calls `time.Now()` deep inside is hard to test. Pass a `now func() time.Time` (see [Testing](testing.md)), or use `testing/synctest`.
+Also, inject the clock. A service that calls `time.Now()` deep inside is hard to test. Pass a `now func() time.Time` (see [Testing](testing.md)), or use `testing/synctest`.
 
 ### `time.Duration`
 
@@ -388,7 +388,7 @@ func (c Customer) LogValue() slog.Value {
 }
 ```
 
-The email address and card number never reach the log system. That is GDPR and PCI compliance done in the type system, not by hoping everyone remembers.
+The email address and card number never reach the log system. The type system enforces this rule for GDPR and PCI compliance, so it does not depend on every developer remembering it.
 
 !!! tip "One logger, several outputs (Go 1.26)"
 
@@ -403,7 +403,7 @@ The email address and card number never reach the log system. That is GDPR and P
 !!! abstract "Convention: pass the logger in; use the `...Context` methods"
 
     **Rule:** give components their `*slog.Logger` through their constructor, not through the global
-    `slog.Default()`. Log with `InfoContext(ctx, ...)` and friends.
+    `slog.Default()`. Log with `InfoContext(ctx, ...)` and the other `...Context` methods.
 
     **Why:** explicit dependencies make tests quiet and easy (pass a logger that writes to a buffer, or
     `slog.New(slog.DiscardHandler)`), and each component can carry its own attributes. The `ctx` lets a handler add
@@ -442,7 +442,7 @@ func NewHTTPClient() *http.Client {
 
 There are two layers of protection, and you want both:
 
-- **`Client.Timeout`**: an upper limit for the whole request. A safety net.
+- **`Client.Timeout`**: an upper limit for the whole request. It is a fallback.
 - **A `context` deadline per request** (`http.NewRequestWithContext`): the real limit, taken from the incoming request's remaining time budget (see [Context and cancellation](context.md)). When the user gives up, the outgoing call stops too.
 
 Against a server that never answers:
@@ -487,7 +487,7 @@ migrations/0001_orders.sql: CREATE TABLE orders (id uuid PRIMARY KEY);
 migrations/0002_status.sql: ALTER TABLE orders ADD COLUMN status text NOT NULL;
 ```
 
-`embed.FS` implements `fs.FS`, the file system interface. So `http.FileServerFS(static)`, `template.ParseFS(templates, "*.html")` and most migration tools accept it directly. No "file not found because the Docker image forgot to copy the folder" bugs. The paths are relative to the Go source file, and can't go up (`..`) or outside the module.
+`embed.FS` implements `fs.FS`, the file system interface. So `http.FileServerFS(static)`, `template.ParseFS(templates, "*.html")` and most migration tools accept it directly. The files can't go missing because a Docker image did not copy a folder. The paths are relative to the Go source file, and can't go up (`..`) or outside the module.
 
 ## Files and paths: `os`, `path/filepath`, `os.Root`
 
@@ -524,7 +524,7 @@ open: openat /etc/passwd: path escapes from parent
 
 Every path is resolved **inside** the root, also through symbolic links. Use it whenever any part of a file path comes from outside.
 
-## Small but everywhere
+## Small, common packages
 
 ### `uuid` (Go 1.27)
 

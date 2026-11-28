@@ -2,22 +2,22 @@
 
 ## Why care?
 
-More real messages:
+More real questions from on-call engineers:
 
 - "`docker stop` always takes exactly 10 seconds, and the logs never say 'shutdown complete'."
 - "`ps` shows hundreds of processes in state `Z`. What are they, and why won't `kill -9` remove them?"
 - "Our Go service calls a script with a timeout. The timeout fires, `Run` returns, but the script's children are still running an hour later."
 - "The job exited with code 137. What does that mean?"
 
-The [Fundamentals](../fundamentals/processes-and-threads.md) told you that a signal is a message from the kernel and that `SIGTERM` is a request. The [Go chapter](../go/services.md#graceful-shutdown) built a graceful shutdown for `ordersd`. This page shows the machinery between them: how processes are born, how they die, who collects their exit status, and why one process, **PID 1**, plays by different rules. Every one of the stories above is a few lines of output away.
+The [Fundamentals](../fundamentals/processes-and-threads.md) told you that a signal is a message from the kernel and that `SIGTERM` is a request. The [Go chapter](../go/services.md#graceful-shutdown) built a graceful shutdown for `ordersd`. This page shows the machinery between them: how processes are born, how they die, who collects their exit status, and why one process, **PID 1**, plays by different rules. Each problem above is explained with real output on this page.
 
-## The idea: a family where parents must sign the death certificate
+## The idea: a process tree where parents collect the exit status
 
-Processes form a **family tree**. Every process has a parent (`PPid`). A process is born as a copy of its parent, and then usually becomes something else.
+Processes form a **tree**. Every process has a parent (`PPid`). A new process starts as a copy of its parent, and then usually loads a different program.
 
-When a process dies, it does not vanish. Its memory and files are freed at once, but a tiny record stays: its PID and its **exit status**, the "death certificate". The parent must come and **sign** it by calling `wait`. Until then the dead child is a **zombie**.
+When a process exits, it does not disappear at once. The kernel frees its memory and files, but keeps a small record: its PID and its **exit status**. The parent must read that record by calling `wait`. Until then, the dead child is a **zombie**.
 
-If the parent dies first, the children are **orphans**. The kernel gives them a new parent: the nearest **subreaper**, or **PID 1**, the ancestor of everything. PID 1 is expected to sign certificates for all orphans, forever. That is a real job, and many programs that end up as PID 1 in a container don't do it.
+If the parent exits first, its children become **orphans**. The kernel gives them a new parent: the nearest **subreaper**, or **PID 1**, the first process. PID 1 must call `wait` for every orphan it receives, for as long as it runs. Many programs that run as PID 1 in a container do not do this.
 
 ```mermaid
 stateDiagram-v2
@@ -49,7 +49,7 @@ before exec: pid 216856, /usr/bin/dash
 after exec:  pid 216856, /usr/bin/bash
 ```
 
-The first command forks: new PID, and the child's `PPID` is the parent. The second uses the shell's `exec` builtin: same PID 216856, but `/proc/<pid>/exe` changed from `dash` to `bash`. No new process. Keep this `exec` in mind; it is the fix for the `docker stop` story later.
+The first command forks: new PID, and the child's `PPID` is the parent. The second uses the shell's `exec` builtin: same PID 216856, but `/proc/<pid>/exe` changed from `dash` to `bash`. No new process. Keep this `exec` in mind; it is the fix for the `docker stop` problem later.
 
 ### How Go starts a process: no plain fork
 
@@ -80,7 +80,7 @@ A process ends in one of two ways:
 - It calls **`exit(n)`**. Only the low **8 bits** of `n` survive: 0 to 255.
 - It is **killed by a signal**. Then there is no exit code at all; the wait status records the signal number.
 
-Shells squeeze both into one number, `$?`. For a signal, they report **128 + the signal number**:
+Shells combine both into one number, `$?`. For a signal, they report **128 + the signal number**:
 
 ```console
 $ sh -c "exit 3"; echo "exit 3 -> $?"
@@ -150,7 +150,7 @@ kill -KILL $$  err=signal: killed  ExitCode()=-1  signal=9
 
 ## Under the hood: wait and zombies
 
-When a child dies, the kernel keeps its **task struct** (PID, exit status, CPU time used) and sends the parent `SIGCHLD`. The parent reads the status with `wait4` or `waitid`. Until it does, the child is a zombie. Let's make one on purpose: start a child and "forget" to call `Wait`.
+When a child dies, the kernel keeps its **task struct** (PID, exit status, CPU time used) and sends the parent `SIGCHLD`. The parent reads the status with `wait4` or `waitid`. Until it does, the child is a zombie. The next program makes one on purpose: it starts a child and does not call `Wait` at once.
 
 ```go
 package main
@@ -230,7 +230,7 @@ Name:	Relay(589)
 PPid:	587
 ```
 
-The new parent is not PID 1 but process 588, part of WSL's `/init`. It has marked itself a **child subreaper** with `prctl(PR_SET_CHILD_SUBREAPER)`. The rule: an orphan goes to the nearest ancestor that is a subreaper; if there is none, to PID 1 of its PID namespace. `systemd --user`, container shims (`containerd-shim`) and `tini -s` use the same trick, so they can wait for everything started below them.
+The new parent is not PID 1 but process 588, part of WSL's `/init`. It has marked itself a **child subreaper** with `prctl(PR_SET_CHILD_SUBREAPER)`. The rule: an orphan goes to the nearest ancestor that is a subreaper; if there is none, to PID 1 of its PID namespace. `systemd --user`, container shims (`containerd-shim`) and `tini -s` use the same mechanism, so they can wait for everything started below them.
 
 You can be a subreaper in Go, with one raw system call:
 
@@ -283,19 +283,19 @@ The orphaned `sleep` now has our program as its parent (`214510`), and `Wait4(-1
 
     `Wait4(-1)` reaps **any** child, including ones that `os/exec` is about to `Wait` for. Then
     `cmd.Wait` fails with `waitid: no child processes`. A real reaper either runs no `os/exec`
-    children of its own, or is a separate tiny process. That is exactly why tini exists.
+    children of its own, or is a separate tiny process. That is the reason tini exists.
 
 ## Under the hood: signal dispositions and masks
 
 For each signal, a process has a **disposition**:
 
-- **Default** (`SIG_DFL`): what the kernel does if nobody asks. For most signals: terminate. For `SIGQUIT`, `SIGSEGV` and friends: terminate and dump core. For `SIGCHLD`, `SIGURG`, `SIGWINCH`: nothing. For `SIGSTOP`, `SIGTSTP`: stop.
+- **Default** (`SIG_DFL`): what the kernel does if nobody asks. For most signals: terminate. For `SIGQUIT`, `SIGSEGV` and similar signals: terminate and dump core. For `SIGCHLD`, `SIGURG`, `SIGWINCH`: nothing. For `SIGSTOP`, `SIGTSTP`: stop.
 - **Ignore** (`SIG_IGN`).
 - **Catch**: run a handler function.
 
 Each **thread** also has a **signal mask**: signals it **blocks** for now. A blocked signal stays **pending** until unblocked. A signal sent to a process is delivered to any one thread that doesn't block it.
 
-`SIGKILL` and `SIGSTOP` can't be caught, ignored or blocked. That's the whole point of them.
+`SIGKILL` and `SIGSTOP` can't be caught, ignored or blocked. That is their purpose: they always work.
 
 All of this is visible in `/proc/<pid>/status`, as 64-bit hex masks (bit N−1 = signal N):
 
@@ -352,7 +352,7 @@ $ sigs 7
 HUP INT QUIT
 ```
 
-Two inheritance rules hide in these numbers:
+These numbers show two inheritance rules:
 
 - **Ignored signals stay ignored across `exec`.** `nohup` is just "ignore `SIGHUP`, then exec". A non-interactive shell runs background jobs with `SIGINT` and `SIGQUIT` ignored (`0x6`), so Ctrl+C in the terminal won't hit them.
 - **Caught signals reset to default across `exec`.** The handler's code is gone after exec, so the kernel can't keep pointing at it.
@@ -373,7 +373,7 @@ The first rule leaks into Go too. Go keeps `SIGHUP` and `SIGINT` ignored if they
 | `SIGURG`  | ignore    | Kernel (out-of-band data) or the Go runtime    | Goroutine preemption. Ignore it in `strace` output            |
 | `SIGSTOP` | stop      | `kill -STOP`, debuggers                        | Can't catch. `SIGCONT` resumes                                |
 
-`SIGQUIT` is a free debugging tool. A stuck Go process tells you where every goroutine is:
+`SIGQUIT` is a useful debugging tool. A stuck Go process prints where every goroutine is:
 
 ```console
 $ bash -c './plain 2>quit.txt & sleep 0.3; kill -QUIT $!; wait $!; echo "exit $?"'
@@ -444,7 +444,7 @@ sequenceDiagram
     end
 ```
 
-That second branch is the `docker stop` story. But a well-written Go service can still land there, for a reason that has nothing to do with Go: **who is PID 1**. First, though, a detour through the terminal.
+That second branch is the `docker stop` problem. But a well-written Go service can still land there, for a reason that has nothing to do with Go: **who is PID 1**. Before that, the next section explains how the terminal sends signals.
 
 ## Under the hood: process groups, sessions and Ctrl+C
 
@@ -501,7 +501,7 @@ $ ps -o pid,ppid,pgid,comm --ppid $$
 
 ### Process groups in Go: kill the whole tree
 
-Now the "children still running an hour later" story. `exec.CommandContext` kills the child when the context ends. But only the **child**. If the child is a shell script that started its own children, they become orphans and keep running.
+Now the "children still running an hour later" problem. `exec.CommandContext` kills the child when the context ends. But only the **child**. If the child is a shell script that started its own children, they become orphans and keep running.
 
 ```go
 // Command pgrp shows why killing a child is not the same as killing its children.
@@ -553,7 +553,7 @@ killGroup=true  Run: signal: terminated
 
 Without a process group: the context fired, the default `Cancel` sent `SIGKILL` to `sh`, `Run` returned, and the `sleep` lives on, adopted by the subreaper 588. With `Setpgid` and a custom `Cancel`, one `kill(-pgid, SIGTERM)` reaches the whole tree, and it also gives the children a chance to clean up (a `TERM`, not a `KILL`).
 
-`Setpgid` has a second effect: the child leaves your process group, so **a Ctrl+C in your terminal no longer reaches it**. Your program must forward the signal itself. That is often what you want for a supervisor, and a surprise for a CLI tool.
+`Setpgid` has a second effect: the child leaves your process group, so **a Ctrl+C in your terminal no longer reaches it**. Your program must forward the signal itself. That is often what you want for a supervisor, but often not what you expect in a CLI tool.
 
 `WaitDelay` matters if you capture output into a `bytes.Buffer`: `Wait` also waits until the child's stdout pipe is closed, and an orphaned grandchild keeps it open. `WaitDelay` caps that wait after the context ends.
 
@@ -592,7 +592,7 @@ $ kill -KILL 210916
 bash: line 7: 210914 Killed                     unshare -Urpf --mount-proc sleep 300
 ```
 
-`NSpid: 210916 1`: the same process is 210916 on the host and 1 inside. `SIGTERM` from the host: ignored. `SIGKILL` from inside the namespace (`nsenter` joins it): ignored. `SIGKILL` from the host: dead. The rule exists to protect `init`: if PID 1 dies, the kernel kills the whole namespace (on a real machine, it panics).
+`NSpid: 210916 1`: the same process is 210916 on the host and 1 inside. `SIGTERM` from the host is ignored. `SIGKILL` from inside the namespace (`nsenter` joins it) is ignored. `SIGKILL` from the host kills it. The rule exists to protect `init`: if PID 1 dies, the kernel kills the whole namespace (on a real machine, it panics).
 
 What about Go? The runtime installs handlers, so signals do reach a Go PID 1. If you did not `signal.Notify` for `SIGTERM`, the runtime tries to die by the signal, finds that PID 1 can't, and falls back. From `runtime/signal_unix.go`: _"If we are still somehow running, this probably means we're PID 1 immune to signals with default-terminate. Use a shell convention of exit(128+sig)"_. So a plain Go program as PID 1 still stops on `SIGTERM`, with exit code 143, but **not gracefully**. Handle the signal.
 
@@ -611,7 +611,7 @@ $ nsenter -t <pid> -U -p -m --preserve-credentials ps -o pid,ppid,stat,comm
 
 (`<pid>` is the host PID of the namespace's PID 1: `pgrep -P $!`.) PID 3 is the orphaned `sleep 0.1`. It exited long ago, its parent is now PID 1, and PID 1 will never reap it. The same happens when a Go service as PID 1 runs a shell script that leaves background processes behind, or uses a library that starts helpers and loses track of them.
 
-### tini: a real PID 1
+### tini: an init process for containers
 
 **tini** is a tiny init (about 750 KB) for containers. It does two jobs: **forward signals** to its child, and **reap all zombies**. Docker ships it as `docker-init`:
 
@@ -640,7 +640,7 @@ Does `ordersd` need tini? It handles `SIGTERM` and starts no child processes, so
 
 ### Shell entrypoints and `exec`
 
-Now the `docker stop` story. A common Dockerfile line: `ENTRYPOINT ["sh", "-c", "/ordersd"]`, or the shell form `CMD /ordersd`, which Docker runs as `/bin/sh -c "/ordersd"`, or a `start.sh` wrapper that sets some variables first. Then PID 1 is the **shell**, `ordersd` is its child, and:
+Now the `docker stop` problem. A common Dockerfile line: `ENTRYPOINT ["sh", "-c", "/ordersd"]`, or the shell form `CMD /ordersd`, which Docker runs as `/bin/sh -c "/ordersd"`, or a `start.sh` wrapper that sets some variables first. Then PID 1 is the **shell**, `ordersd` is its child, and:
 
 - The shell has no `SIGTERM` handler, so as PID 1 it **ignores** `SIGTERM` (rule 1).
 - The shell doesn't forward signals to its child either.
@@ -690,7 +690,7 @@ $ docker inspect -f '{{.State.ExitCode}}' sigdemo2
 143
 ```
 
-Ten seconds of waiting, then `SIGKILL` and 137. With `--init`, tini forwards `SIGTERM` to `sh`, which is not PID 1 any more and dies at once.
+Docker waits ten seconds, then sends `SIGKILL`: exit code 137. With `--init`, tini forwards `SIGTERM` to `sh`, which is not PID 1 any more and dies at once.
 
 So, for entrypoints:
 
@@ -782,4 +782,4 @@ So, for entrypoints:
 - **Ctrl+C** goes to the terminal's foreground **process group**. In Go, use `Setpgid` and `kill(-pgid)` to stop a whole child tree.
 - **PID 1** ignores signals it doesn't handle and must reap orphans. Use the exec form or `exec` in scripts, and **tini** when you run children.
 
-Next: the walls around a container. [Namespaces and cgroups](namespaces-and-cgroups.md).
+Next: how the kernel isolates a container. [Namespaces and cgroups](namespaces-and-cgroups.md).

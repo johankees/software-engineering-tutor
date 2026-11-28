@@ -4,7 +4,7 @@ A container is not a small virtual machine. It is a normal process with walls ar
 
 ## Why go deeper?
 
-`docker run` feels like magic, until:
+`docker run` hides a lot of detail. That detail matters when:
 
 - The image is 1.2 GB for a 15 MB Go binary.
 - A one-line code change makes CI rebuild every layer and download every module again.

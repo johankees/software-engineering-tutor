@@ -2,11 +2,11 @@
 
 ## Why care?
 
-- "`git reset --soft`, `--mixed`, `--hard`... I always look it up, and I'm still scared of it."
+- "`git reset --soft`, `--mixed`, `--hard`... I always look it up, and I'm still not sure what it will do."
 - "I staged half a file with `git add -p`, then changed the file again. What will the commit contain?"
 - "`git status` takes 6 seconds in our monorepo. Is that just how it is?"
 
-All of these are about the **index**: the file between your working folder and your commits. Most people think of it as "the list of staged files". It is much more than that, and once you see it, `reset` stops being scary.
+All of these are about the **index**: the file between your working folder and your commits. Most people think of it as "the list of staged files". It is much more than that, and once you know how it works, `reset` becomes predictable.
 
 ## The idea: three versions of every file
 
@@ -24,13 +24,13 @@ flowchart LR
 2. **The index**: the tree you are building for the **next** commit. It starts as a copy of HEAD.
 3. **The working tree**: the files you edit.
 
-Think of a photographer. HEAD is the last photo in the album. The working tree is the scene in front of you, changing all the time. The index is the **frame you have set up** for the next photo: who stands where. `git commit` takes the photo of the frame, not of the scene.
+The index is a **draft of the next commit**. You change the working tree all the time, and `git add` copies chosen changes into the draft. `git commit` records the index, not the working tree.
 
-`git status` is just two comparisons: **HEAD vs index** ("Changes to be committed") and **index vs working tree** ("Changes not staged").
+`git status` is two comparisons: **HEAD vs index** ("Changes to be committed") and **index vs working tree** ("Changes not staged").
 
 ## Under the hood: "staged" means "already in the object database"
 
-This is the surprise. `git add` does not "mark a file". It **writes a blob** right away, and puts its hash in the index:
+This part surprises many people: `git add` does not "mark a file". It **writes a blob** right away, and puts its hash in the index:
 
 ```console
 $ echo 'hello index' > hello.txt
@@ -92,7 +92,7 @@ index 0ff3bbb..a4164fb 100644
  5
 ```
 
-We said yes to the first hunk and no to the second. Git built a new version of the file in memory (`two` but still `19`), wrote it as blob `a4164fb`, and put that in the index:
+The answer was yes to the first hunk and no to the second. Git built a new version of the file in memory (`two` but still `19`), wrote it as blob `a4164fb`, and put that in the index:
 
 ```console
 $ git cat-file -p a4164fb | sed -n "1,3p;19p"
@@ -141,7 +141,7 @@ Then the first entry, for `cmd/main.go`:
 | `000b`                | flags: name length + **stage** bits | 11 characters, stage 0                |
 | `cmd/main.go`         | path, then zero padding             |                                       |
 
-`git ls-files --debug` prints the same data in a friendly way:
+`git ls-files --debug` prints the same data in a readable form:
 
 ```console
 $ git ls-files --debug hello.txt
@@ -153,7 +153,7 @@ hello.txt
   size: 10	flags: 0
 ```
 
-Notice two things. First, the index is **flat**: one entry per file, with the full path. There are no directory entries. Second, every entry has the **stat data** of the file on disk. That is the secret to speed.
+Notice two things. First, the index is **flat**: one entry per file, with the full path. There are no directory entries. Second, every entry has the **stat data** of the file on disk. That is what makes it fast.
 
 After the entries come optional **extensions**, each with a 4-letter signature. The important ones: `TREE` (cached tree hashes, so `write-tree` does not rehash unchanged directories), `REUC` (resolve-undo, to redo a conflict you resolved), `UNTR` (the untracked cache), `FSMN` (fsmonitor state) and `link` (split index). At the end is a checksum of the whole file.
 
@@ -190,16 +190,16 @@ So a `git status` costs about one `lstat()` per tracked file, plus reading the d
 
 ### Racy git
 
-There is a hole in the stat trick. Imagine:
+The stat check has a gap. Consider this case:
 
 1. You change `foo` and run `git add foo`. The index records `foo`'s mtime.
 2. Within the same second (or the same tick of your file system's clock), you change `foo` again, **keeping its size**.
 
-Now the stat data still matches. Git would think `foo` is unchanged. This is called **racy git**. Git's fix: when the index is written, Git remembers the index file's own mtime. Any entry whose mtime is the **same or newer** than the index file is "racily clean", and Git compares its **content**, not just stat data. When the index is written again, racily clean entries get their recorded size set to zero, so they can never match by accident later. You never see this; it is why Git is both fast and correct.
+Now the stat data still matches. Git would think `foo` is unchanged. This is called **racy git**. Git's fix: when the index is written, Git remembers the index file's own mtime. Any entry whose mtime is the **same or newer** than the index file is "racily clean", and Git compares its **content**, not only stat data. When the index is written again, racily clean entries get their recorded size set to zero, so they can never match by accident later. You never see this; it is why Git is both fast and correct.
 
 ## Under the hood: reset is "move three things"
 
-Now `reset` is easy. It does up to three steps, in order, and the mode says where to **stop**:
+Now `reset` is simple to explain. It does up to three steps, in order, and the mode says where to **stop**:
 
 | Step | What it does                              | `--soft` | `--mixed` (default) | `--hard` |
 | ---- | ----------------------------------------- | -------- | ------------------- | -------- |
@@ -207,7 +207,7 @@ Now `reset` is easy. It does up to three steps, in order, and the mode says wher
 | 2    | Make the **index** match the new commit   |          | yes                 | yes      |
 | 3    | Make the **working tree** match the index |          |                     | yes      |
 
-Watch it on a repo with commits `one` and `two`:
+Here it is on a repo with commits `one` and `two`:
 
 ```console
 $ git log --oneline
@@ -218,7 +218,7 @@ M  hello.txt
 dd2ea27 one
 ```
 
-`--soft`: the branch moved back, but the index still has `two`'s content. So the change shows as **staged**. This is "uncommit, keep everything staged", perfect for squashing the last few commits into one.
+`--soft`: the branch moved back, but the index still has `two`'s content. So the change shows as **staged**. This is "uncommit, keep everything staged", useful for squashing the last few commits into one.
 
 ```console
 $ git reset --mixed HEAD~1 && git status --short
@@ -235,7 +235,7 @@ HEAD is now at dd2ea27 one
 hello git
 ```
 
-`--hard`: everything matches `one`. The commit `two` is not deleted; the branch just doesn't point to it. Git saved the old position:
+`--hard`: everything matches `one`. The commit `two` is not deleted; the branch no longer points to it. Git saved the old position:
 
 ```console
 $ cat .git/ORIG_HEAD
@@ -244,7 +244,7 @@ $ git reset --hard ORIG_HEAD
 HEAD is now at d2b54c7 two
 ```
 
-!!! warning "The only truly dangerous part of `reset --hard`"
+!!! warning "The only part of `reset --hard` that loses data"
 
     Committed work is safe: the reflog and `ORIG_HEAD` have it. **Uncommitted changes in the
     working tree are not.** Step 3 overwrites them, and they were never in the object database.
@@ -282,8 +282,8 @@ Then try `git reset --soft HEAD~1`, `--mixed`, `--hard`, and look at `git status
 ## Traps
 
 - **Testing the working tree, committing the index.** After `add -p`, the commit is a state you never ran. Use `git stash push --keep-index`, test, then `git stash pop`.
-- **`git commit -a` surprises.** It stages all **tracked** modified files. New files are not included.
-- **`reset --hard` with uncommitted work.** The only part of Git that can lose data for real. Stash or commit first.
+- **What `git commit -a` includes.** It stages all **tracked** modified files. New files are not included.
+- **`reset --hard` with uncommitted work.** The only part of Git that can really lose data. Stash or commit first.
 - **Editing files with tools that keep the mtime.** Some copy or extract tools preserve the old mtime and size. Git may then miss the change until the stat data differs. `touch` the file or `git add` it explicitly.
 - **Turning on `untrackedCache` on a file system with broken directory mtimes** (some network mounts). Run `--test-untracked-cache` first.
 

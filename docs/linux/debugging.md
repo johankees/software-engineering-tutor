@@ -2,22 +2,22 @@
 
 ## Why care?
 
-The pager goes off at 03:00. "Orders API is slow." You SSH into the box. Now what?
+The pager alerts at 03:00: "Orders API is slow." You log in to the machine with SSH. Typical questions:
 
 - You run `top`. It shows a lot of numbers. Which ones matter?
 - The load average is 9.93. Is that bad? On how many CPUs?
 - `free` says only 7 GB of 16 GB is free. Are you out of memory?
 - The process uses almost no CPU, but requests hang. Where are they stuck?
 
-Most engineers poke around at random until something looks odd. This page gives you a **method** instead, and the tools to follow it. At the end, you diagnose three real problems in `ordersd` with nothing but the tools that ship with Ubuntu.
+Without a method, it is easy to check things at random until something looks wrong. This page gives you a **method** instead, and the tools to follow it. At the end, you diagnose three real problems in `ordersd` with nothing but the tools that ship with Ubuntu.
 
 All output on this page is real. It comes from a WSL2 machine: kernel 5.15.167.4, Ubuntu 24.04, 16 CPUs, 16 GB RAM, Go 1.27.4. Where a tool is not installed here, the page shows the command and says so.
 
-## The idea: a mechanic's checklist
+## The idea: the USE method
 
-A good mechanic does not guess. For each part of the car (engine, brakes, tyres) they ask the same three questions: _How hard is it working? Is anything waiting for it? Is anything broken?_
+Do not guess. Ask the same three questions about every part of the system: _How busy is it? Is anything waiting for it? Is anything failing?_
 
-Brendan Gregg turned this into the **USE method** for computers. For every **resource**, check:
+Brendan Gregg calls this the **USE method**. For every **resource**, check:
 
 - **U**tilization: how busy is it? (CPU 90% busy, disk busy 70% of the time.)
 - **S**aturation: how much work is **waiting** for it? (Threads in the run queue, requests in a socket backlog, pages swapped out.)
@@ -34,7 +34,7 @@ flowchart LR
     F -->|no| B
 ```
 
-Why it works: utilization alone lies. A disk at 60% can still have a long queue. A CPU at 100% is fine if nothing is waiting. **Saturation is usually where the pain is.** And errors are the cheapest thing to check, so check them early.
+Why it works: utilization alone is misleading. A disk at 60% can still have a long queue. A CPU at 100% is fine if nothing is waiting. **Saturation usually causes the problems users notice.** Errors are the cheapest thing to check, so check them early.
 
 Here is the checklist for one Linux box, with tools that exist on this machine:
 
@@ -51,7 +51,7 @@ The last two rows are not hardware, but they are resources. File descriptors run
 
 ## The first 60 seconds
 
-Gregg's famous checklist is ten commands you run in the first minute on a sick Linux box. Here it is, adapted to what is installed on this machine:
+Gregg's well-known checklist is ten commands you run in the first minute on a Linux machine with a problem. Here it is, adapted to what is installed on this machine:
 
 | Gregg's command     | What it tells you                       | Here                                    |
 | ------------------- | --------------------------------------- | --------------------------------------- |
@@ -87,7 +87,7 @@ Mem:           15922        2125       10733           3        3391       13796
 Swap:           4096           0        4096
 ```
 
-Nothing waits, nothing swaps, the CPUs are idle. Now let's learn to read each number.
+Nothing waits, nothing swaps, the CPUs are idle. The next sections explain each number.
 
 ## Under the hood: the load average
 
@@ -107,7 +107,7 @@ What is "load"? The kernel samples, every 5 seconds, the number of threads that 
 
 It then keeps an exponentially damped moving average of that count. The "1 minute" average is not a plain mean of the last minute; old samples fade out gradually.
 
-The second point is Linux-specific, and it surprises people. On most other Unix systems, load counts only CPU demand. On Linux, it also counts threads stuck in `D` state. So **a high load average with idle CPUs** usually means many threads blocked on disk or NFS, not a CPU problem. That is the "something is slow and `top` says the CPU is idle" story from the [chapter intro](index.md).
+The second point is Linux-specific, and many people do not expect it. On most other Unix systems, load counts only CPU demand. On Linux, it also counts threads stuck in `D` state. So **a high load average with idle CPUs** usually means many threads blocked on disk or NFS, not a CPU problem. That is the "something is slow and `top` says the CPU is idle" problem from the [chapter intro](index.md).
 
 How to read the number:
 
@@ -117,7 +117,7 @@ How to read the number:
 
 ## Under the hood: `vmstat 1`, column by column
 
-`vmstat 1` prints one line per second. `-w` makes the columns wide enough to stay aligned. This is the machine while `ordersd` was being hammered (incident 1 below):
+`vmstat 1` prints one line per second. `-w` makes the columns wide enough to stay aligned. This is the machine while `ordersd` was under heavy load (incident 1 below):
 
 ```console
 $ vmstat -w 1 5
@@ -152,9 +152,9 @@ $ vmstat -w 1 5
 | `st`           | % "stolen": time the hypervisor gave your vCPU to someone else | 0. On a cloud VM, steady `st` means a noisy neighbour |
 | `gu`           | % time running a guest VM (new in procps 4)                    | 0                                                     |
 
-Two columns deserve more words.
+Two columns need more explanation.
 
-**`wa` is idle time, not busy time.** It means "the CPU had nothing to do, and some I/O was pending". On a 16-CPU box one slow disk read can show `wa 6`, and a CPU-bound box can show `wa 0` while the disk is drowning, because the CPUs are never idle. Use `b` and `iostat` for disk saturation.
+**`wa` is idle time, not busy time.** It means "the CPU had nothing to do, and some I/O was pending". On a 16-CPU box one slow disk read can show `wa 6`, and a CPU-bound box can show `wa 0` while the disk is overloaded, because the CPUs are never idle. Use `b` and `iostat` for disk saturation.
 
 **`r` is the CPU saturation signal.** If `r` stays above the number of CPUs, threads queue for a CPU. Here `r` was 17 to 34 on 16 CPUs while `id` was still 9 to 34%. Both can be true in the same second: the samples are taken at different moments, and Go threads wake and sleep in bursts.
 
@@ -226,7 +226,7 @@ The WSL2 kernel is built without PSI. Most distribution kernels (Ubuntu, Debian,
 
 ### `ps` with the columns you want
 
-The default `ps` output is too thin. Choose your own columns with `-o`:
+The default `ps` output has too few columns. Choose your own columns with `-o`:
 
 ```console
 $ ps -eo pid,ppid,stat,nlwp,pcpu,pmem,rss,vsz,etime,comm --sort=-pcpu | head -6
@@ -238,7 +238,7 @@ $ ps -eo pid,ppid,stat,nlwp,pcpu,pmem,rss,vsz,etime,comm --sort=-pcpu | head -6
    5136    5095 Rsl     5  0.9  0.2 46584  81732    09:10:12 nvim
 ```
 
-`NLWP` is the number of threads ("light-weight processes"). `RSS` and `VSZ` are in KiB. Careful with `%CPU`: in `ps` it is **CPU time divided by the lifetime** of the process, not the current rate. `ordersd` shows 508% because it has been busy for most of its 57 seconds of life. A process that was busy for an hour and is idle now still shows a high `%CPU` in `ps`. Use `top` for "right now".
+`NLWP` is the number of threads ("light-weight processes"). `RSS` and `VSZ` are in KiB. Be careful with `%CPU`: in `ps` it is **CPU time divided by the lifetime** of the process, not the current rate. `ordersd` shows 508% because it has been busy for most of its 57 seconds of life. A process that was busy for an hour and is idle now still shows a high `%CPU` in `ps`. Use `top` for "right now".
 
 The `STAT` column is the process state, plus flags:
 
@@ -273,7 +273,7 @@ $ ps -o pid,ppid,stat,wchan:16,comm --ppid $! -p $!
 
 The child `sleep 0.1` exited, but its parent became `sleep 20` through `exec`, and `sleep` never reaps children. A zombie uses no memory, only a PID. Thousands of them mean a buggy parent.
 
-`D` state did not show up on this box: there was no slow disk or NFS mount to block on. On a real server, `ps -eLo pid,tid,stat,wchan:32,comm | awk '$3 ~ /^D/'` lists threads in `D` and the kernel function they wait in. Many `D` threads plus a high load average plus idle CPUs is the classic "storage is sick" pattern.
+`D` state did not show up on this box: there was no slow disk or NFS mount to block on. On a real server, `ps -eLo pid,tid,stat,wchan:32,comm | awk '$3 ~ /^D/'` lists threads in `D` and the kernel function they wait in. Many `D` threads plus a high load average plus idle CPUs is the typical pattern of a storage problem.
 
 `WCHAN` ("wait channel") is the kernel function a sleeping thread is blocked in. `hrtimer_nanosleep` is a sleep. You will see `futex_wait_queue_me` (waiting on a futex, which Go uses to park idle threads), `ep_poll` (waiting in `epoll`) and `do_signal_stop` (stopped).
 
@@ -491,7 +491,7 @@ $ dmesg -T --level=err,warn | tail -5
 $ dmesg -T | grep -iE 'oom|killed process|hung_task|blocked for more'
 ```
 
-No OOM kills, no hung tasks. Just WSL file-sharing noise. Three notes:
+No OOM kills, no hung tasks. Only messages from WSL's file sharing. Three notes:
 
 - Many distributions set `kernel.dmesg_restrict = 1`, and then `dmesg` needs root (`sudo dmesg`). On this machine it is 0, so it worked as a normal user. `journalctl -k` reads the same messages through journald ([systemd](systemd.md)), with permission set by journal groups.
 - `-T` converts kernel timestamps to wall-clock time, but the conversion ignores time spent suspended, so it can drift on laptops and VMs. Use `journalctl -k` when the exact time matters.
@@ -503,7 +503,7 @@ Everything so far is **counters**: how much, how often. When you need to know **
 
 ### `perf`: sampling the CPU
 
-`perf` asks the CPU to interrupt every N cycles (or N times per second) and records the stack that was running. Lots of samples in one function means that function burns CPU. It works for any program, in user space **and** the kernel, so it sees what pprof cannot: time spent in system calls, page faults and network code.
+`perf` asks the CPU to interrupt every N cycles (or N times per second) and records the stack that was running. Lots of samples in one function means that function uses a lot of CPU. It works for any program, in user space **and** the kernel, so it sees what pprof cannot: time spent in system calls, page faults and network code.
 
 ```sh
 perf top -p 202837
@@ -564,7 +564,7 @@ The first counts files opened by `ordersd`. The second is a tiny CPU profiler. T
 
 ## Try it: three incidents on `ordersd`
 
-Time to use all this. Build `ordersd` from the [Go chapter's](../go/index.md) example project into a scratch directory, start it, and write a small load generator that misbehaves on purpose.
+This section uses these tools on real problems. Build `ordersd` from the [Go chapter's](../go/index.md) example project into a scratch directory, start it, and write a small load generator that misbehaves on purpose.
 
 ```console
 $ D=$(mktemp -d "$TMPDIR/dbg.XXXXXX")
@@ -574,7 +574,7 @@ $ pgrep -x ordersd
 202837
 ```
 
-The load generator `loadgen` is one `main.go` with four modes. The interesting parts:
+The load generator `loadgen` is one `main.go` with four modes. The relevant parts:
 
 ```go
 case "leak":
@@ -617,7 +617,7 @@ $ curl -s -o /dev/null -w '%{size_download} bytes %{time_total}s\n' http://127.0
 $ ./loadgen-bin -mode list -c 32 -d 90s &
 ```
 
-Now pretend you know nothing, and walk the checklist.
+Now follow the checklist, as if you knew nothing about the cause.
 
 1. **`uptime`**: `load average: 9.93, 2.89, 1.06` a minute in. Rising fast.
 2. **`dmesg`**: nothing new. No OOM, no errors.
@@ -630,7 +630,7 @@ Now pretend you know nothing, and walk the checklist.
 
 The USE answer: **CPU utilization and saturation, caused by `ordersd`.** The Linux tools stop here; they show threads, not Go functions. The next step is a CPU profile from pprof ([Performance](../go/performance.md)), or `perf top` if you can't change the binary.
 
-You don't even need the profile to form a strong guess: one `curl` said it. `GET /v1/orders` returns **all** orders, 20 MB, every time. The handler copies, sorts and JSON-encodes 100,000 orders per call, the kernel copies 20 MB through loopback per call (the `sy` and `si` time), and the GC cleans up gigabytes of garbage (the RSS spike). The fix is not more CPUs. It is **pagination**: a `limit` and a cursor on the list endpoint.
+Even without the profile, the earlier `curl` output points to the cause. `GET /v1/orders` returns **all** orders, 20 MB, every time. The handler copies, sorts and JSON-encodes 100,000 orders per call, the kernel copies 20 MB through loopback per call (the `sy` and `si` time), and the GC cleans up gigabytes of garbage (the RSS spike). The fix is not more CPUs. It is **pagination**: a `limit` and a cursor on the list endpoint.
 
 When the test ended, memory came back down, but not all the way. The Go runtime returns freed memory to the OS gradually:
 
@@ -644,7 +644,7 @@ VmRSS:	  504180 kB
 Threads:	25
 ```
 
-The load average now reads high, higher, low: it is **falling**. The 5-minute value still remembers the storm.
+The load average now reads high, higher, low: it is **falling**. The 5-minute value still includes the load from the test.
 
 ### Incident 2: "too many open files" (a descriptor leak)
 
@@ -700,7 +700,7 @@ $ ss -tnp state established 'dport = :8080' | awk 'NR>1{print $NF}' | sed 's/,fd
     471 users:(("loadgen-bin",pid=211550))
 ```
 
-The server has the leak, but the **client** causes it. That is a common real-world finding: one misbehaving caller exhausts a service's descriptors, and the service is the one that pages you. `ordersd` survives because of its `IdleTimeout` of 60 seconds, which closes idle connections. A server without it would hold them until it hits `Max open files` and starts failing `accept()` with `EMFILE`.
+The server has the leak, but the **client** causes it. That is a common real-world finding: one misbehaving caller exhausts a service's descriptors, and the service is the one that triggers the alert. `ordersd` survives because of its `IdleTimeout` of 60 seconds, which closes idle connections. A server without it would hold them until it hits `Max open files` and starts failing `accept()` with `EMFILE`.
 
 To see **why** the client leaks, ask the Go runtime. `SIGQUIT` makes a Go program print every goroutine's stack and exit:
 
@@ -749,7 +749,7 @@ Threads:	25
 
 24 threads parked on a futex, one running (`0` means "not sleeping in the kernel"). From the kernel's point of view, `ordersd` is **completely healthy and idle**. No CPU, no blocked threads, no `D` state. Every Linux tool on this page says "fine".
 
-That is the trap with Go. The 50 stuck requests are 50 **goroutines** in the netpoller ([Processes and threads](../fundamentals/processes-and-threads.md)). They hold no thread. You need the Go runtime's view:
+This is a common problem with Go services. The 50 stuck requests are 50 **goroutines** in the netpoller ([Processes and threads](../fundamentals/processes-and-threads.md)). They hold no thread. You need the Go runtime's view:
 
 ```console
 $ kill -QUIT $P
@@ -822,9 +822,9 @@ $ ss -tan 'sport = :8080' | awk 'NR>1{print $1}' | sort | uniq -c
       1 LISTEN
 ```
 
-The process is stopped (`T`), yet all 20 connections are `ESTABLISHED`. **The kernel does the TCP handshake, not your program.** The connections wait in the listen queue: `Recv-Q 20` of a possible 4096. From the client's view, the connection succeeded and the server just never answers. Health checks that only test "can I connect?" pass happily.
+The process is stopped (`T`), yet all 20 connections are `ESTABLISHED`. **The kernel does the TCP handshake, not your program.** The connections wait in the listen queue: `Recv-Q 20` of a possible 4096. From the client's view, the connection succeeded and the server just never answers. Health checks that only test "can I connect?" still pass.
 
-Let it go again, and the queue drains at once:
+Resume it with `SIGCONT`, and the queue drains at once:
 
 ```console
 $ kill -CONT $P
@@ -897,18 +897,18 @@ Clean up when done: `pkill -x loadgen-bin`, stop `ordersd` with `kill $P` (or `S
 
 ## Recap
 
-- Use a method, not random poking. **USE**: for each resource, check **u**tilization, **s**aturation and **e**rrors.
+- Use a method, not random checks. **USE**: for each resource, check **u**tilization, **s**aturation and **e**rrors.
 - First 60 seconds: `uptime`, `dmesg | tail`, `vmstat 1`, `free -m`, `ss -s`, `top`. Add `mpstat`, `pidstat`, `iostat` and `sar` from `sysstat` on real servers.
 - Load average counts `R` **and** `D` threads on Linux. Compare it with the CPU count, and split it with `vmstat`'s `r` and `b`.
 - `vmstat`: skip the first line. `r` > CPUs is CPU saturation; `si`/`so` is memory saturation; `wa` is idle time; `st` is a noisy neighbour.
 - Watch `MemAvailable`, not `MemFree`. PSI (`/proc/pressure/*`) gives saturation directly, when the kernel has it.
-- `ps -eo` with your own columns, states `R S D Z T`, `WCHAN` for where it sleeps. `/proc/<pid>/{stat,status,limits,wchan,syscall,stack}` and `task/<tid>/sched` are the raw truth.
+- `ps -eo` with your own columns, states `R S D Z T`, `WCHAN` for where it sleeps. `/proc/<pid>/{stat,status,limits,wchan,syscall,stack}` and `task/<tid>/sched` are the raw data.
 - `ss`: `Recv-Q`/`Send-Q` on `ESTAB` are unread/unacked bytes; on `LISTEN` they are the accept queue and its limit. `lsof` shows every descriptor.
 - `perf` samples stacks, eBPF (bcc tools, `bpftrace`) traces kernel and user events cheaply. For Go code, pprof first.
 - Linux tools see threads, not goroutines. When a Go service is "idle but stuck", ask the Go runtime.
 
 ## You finished Linux
 
-You can now follow a request from your Go code down through system calls, file descriptors, the page cache and signals, see the walls of namespaces and cgroups, run a service under systemd, and debug the whole box with a method.
+You can now follow a request from your Go code down through system calls, file descriptors, the page cache and signals, see how namespaces and cgroups isolate processes, run a service under systemd, and debug the whole box with a method.
 
 Next, two chapters that build directly on this one. [Networking](../networking/index.md) opens the network stack you met in `ss`: TCP states, DNS, TLS and load balancers. [Containers](../containers/index.md) shows that a container is the namespaces and cgroups from this chapter, packaged into an image.

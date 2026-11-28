@@ -2,7 +2,7 @@
 
 ## Why care?
 
-Three questions you can't answer without this page:
+You cannot answer these three questions unless your builds are reproducible:
 
 - "The security team asks: is the `ordersd` binary in production really built from commit `2115e35`? Prove it."
 - "We rebuilt last month's release to patch one line, and the diff between the two binaries is 4 MB. What else changed?"
@@ -12,15 +12,13 @@ A build is **reproducible** when the same source, built with the same tools, giv
 
 Go is very good at this, but not by accident. On this page you build `ordersd` twice and get the same hash, then break reproducibility four different ways and see exactly which input leaked in each time.
 
-## The idea: a recipe that names every ingredient
+## The idea: name every input exactly
 
-A good bakery recipe doesn't say "some flour, bake until done". It says "500 g of brand X type 550 flour, 220 °C, 35 minutes". Then two bakers in two cities make the same bread.
+A build gives the same output only when every input is named exactly. "Go 1.27" is not exact enough; "Go 1.27.4, this download, this checksum" is. A build has three kinds of input:
 
-A build has the same three kinds of input:
-
-1. **The ingredients**: your source and every dependency. Fixed by the Git commit, `go.mod` and `go.sum`.
-2. **The oven**: the Go toolchain and every other tool. Fixed by `mise.toml` and `mise.lock`.
-3. **The kitchen**: everything about the machine that the build might pick up. The folder you build in, the time, environment variables, whether the Git tree is clean. You keep these **out** of the result with flags such as `-trimpath`.
+1. **Source and dependencies**: your code and every module it uses. Fixed by the Git commit, `go.mod` and `go.sum`.
+2. **Tools**: the Go toolchain and every other tool. Fixed by `mise.toml` and `mise.lock`.
+3. **The build machine**: everything about the machine that the build might pick up. The folder you build in, the time, environment variables, whether the Git tree is clean. You keep these **out** of the result with flags such as `-trimpath`.
 
 ```mermaid
 flowchart LR
@@ -42,7 +40,7 @@ flowchart LR
     B --> OUT["ordersd<br/>sha256 76dcd064..."]
 ```
 
-## Under the hood: pinning the oven
+## Under the hood: pinning the tools
 
 ### `mise.toml` and `mise.lock`
 
@@ -89,7 +87,7 @@ python         3.13.18  ~/src/tutor/mise.toml  3.13.18
 
 The [mise page](../toolbox/mise.md) explains how it puts these on your `PATH`. The [toolchain page](../go/toolchain.md#gotoolchain-go-manages-its-own-version) explains Go's own mechanism, `GOTOOLCHAIN`, which can download a newer Go when `go.mod` asks for one. In CI, set `GOTOOLCHAIN=local` so the build fails instead of quietly using a different compiler.
 
-### `go.sum`: the ingredient list with fingerprints
+### `go.sum`: a hash for every dependency
 
 `go.mod` says **which versions** you use. `go.sum` says **what those versions contain**: a hash of each module's files (`h1:`) and of its `go.mod`. The [Modules](../go/modules.md) page explains why Go needs no separate lock file. For reproducibility, the important part is that Go **checks** every module it uses against `go.sum`:
 
@@ -101,7 +99,7 @@ golang.org/x/vuln v1.10.0 h1:W/Im35AGknunDiqBysVe9VoMfaeTJE7lptrD+1s//aE=
 golang.org/x/vuln v1.10.0/go.mod h1:kNpckBWtSQiR+USd0ZgdhJCCWf/ZXOl1+n3Wybcj8eE=
 ```
 
-Now pretend somebody replaced that module's code. Change four characters of its hash in `go.sum`, and run the tool it provides:
+Now suppose somebody replaced that module's code. Change four characters of its hash in `go.sum`, and run the tool it provides:
 
 ```console
 $ go tool govulncheck -version
@@ -161,7 +159,7 @@ The `vcs.*` lines are controlled by `-buildvcs`. From `go help build`:
 		containing it, and the current directory are all in the same repository.
 ```
 
-### Build IDs: the cache's fingerprint
+### Build IDs: how the build cache knows what changed
 
 There is a second, hidden stamp: the **build ID**. `go tool buildid` prints it:
 
@@ -201,7 +199,7 @@ $ go tool buildid ../../../out2/ordersd
 oQpq5p4YYOlepjgZYBsj/414rDRUO6K8TCp_d-_l1/4cBZ0cxFEhFO7dyEHTFO/FMkEk6QHhktuW0IDDhzX
 ```
 
-Same hash, same build ID, from a different folder. That's the goal. Now break it.
+Same hash, same build ID, from a different folder. That is the goal. The next steps break it.
 
 ### 2. Break it: no `-trimpath`, different folders
 
@@ -257,7 +255,7 @@ That's exactly the hash of the `.git`-less copies in step 2. Without VCS stampin
 
 ### 4. Break it: the clock
 
-Teams love putting the build time into the version string. Watch what it does:
+Many teams put the build time into the version string. This is what it does:
 
 ```console
 $ for i in 1 2; do
@@ -283,7 +281,7 @@ $ for i in 1 2; do
 1281db864a4eb77f
 ```
 
-Even simpler: you don't need a time at all. `vcs.time` is already in the binary.
+You may not need a time at all. `vcs.time` is already in the binary.
 
 ### 5. Break it: the environment
 
@@ -325,7 +323,7 @@ The binary is not the end. A container image wraps it in a tar file with time st
 
 - **"We use Go, so it's reproducible."** Only with `-trimpath`, from a clean tree, with pinned tools and explicit `CGO_ENABLED` and `GOAMD64`.
 - **`latest` anywhere.** `go = "latest"`, `golangci-lint-action` with `version: latest`, `FROM golang:1.27`. Each one changes under you. Pin, and let a bot propose upgrades.
-- **Deleting `go.sum` lines to "fix" a checksum error.** That's turning off the alarm. Find out why the bytes changed.
+- **Deleting `go.sum` lines to "fix" a checksum error.** That turns off the check. Find out why the bytes changed.
 - **Build time in the version.** It makes every build unique. Use `vcs.time` or the commit time.
 - **Release builds on a laptop.** `vcs.modified=true`, a local path, a local Go version. Release builds come from CI, from a clean checkout.
 - **Checking only the binary.** The image around it has its own time stamps. Check the image digest too.
@@ -351,7 +349,7 @@ The binary is not the end. A container image wraps it in a tar file with time st
     `go.mod` selects module **versions**. `go.sum` records the **hash** of each module's
     content, and Go refuses to build when a download doesn't match. `mise.lock` does the same
     for **tools**: exact version, download URL, and checksum per platform for Go itself,
-    golangci-lint and friends.
+    golangci-lint and the other tools.
 
 ??? question "4. Why does Go's build cache never give you a stale result, even though it doesn't look at file times?"
 

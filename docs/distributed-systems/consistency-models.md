@@ -11,16 +11,16 @@ Four tickets from the `orders` system, all after "we added a read replica to tak
 
 Nothing crashed. Each component did exactly what its documentation promised. The problem is that nobody wrote down **what a read is allowed to return**. That promise is called a **consistency model**. This page names the common ones, from strongest to weakest, shows you how to test a real history against them, and puts CAP and PACELC in their place.
 
-## The idea: one whiteboard, or many photos of it
+## The idea: how close the system stays to one copy
 
-Picture an office with one whiteboard that holds the status of order `ord-1001`.
+Take one value: the status of order `ord-1001`. The models below differ in how closely the system behaves like a single copy of that value.
 
-- **Linearizable**: everyone looks at **the same whiteboard**. The moment someone writes "paid" and steps back, anyone who looks after that moment sees "paid". There is one copy, and time is real time.
-- **Sequential**: everyone sees the changes **in the same order**, but some people get the news later. Nobody sees "paid" and then "pending", but you might still see "pending" after the payer has walked away.
-- **Causal**: people pass around **photos** of the whiteboard. If you saw a photo of the question, you are guaranteed to also see the photo of it before the answer. Photos of unrelated changes may arrive in any order.
-- **Eventual**: photos arrive **someday**, in any order. If people stop writing, all photos eventually show the same thing. Until then, anything goes.
+- **Linearizable**: the system behaves like **one copy**. As soon as a write of `paid` returns, every read that starts after that moment returns `paid`. The order of operations follows real time.
+- **Sequential**: all clients see the changes **in the same order**, but some clients may see them later. Nobody sees `paid` and then `pending`, but a client may still read `pending` after the payment write has returned.
+- **Causal**: only operations that are **related** have a fixed order. If a client saw a question before writing an answer, every client that sees the answer also sees the question. Unrelated changes may appear in any order.
+- **Eventual**: changes reach every replica **at some point**, in any order. If writes stop, all replicas end up with the same value. Before that, a read may return any of the values.
 
-Real systems are almost never one whiteboard. They are a leader and replicas, and replication takes time. The question is which of these illusions the system keeps up.
+Real systems are almost never one copy. They are a leader and replicas, and replication takes time. The question is which of these models the system provides.
 
 ```mermaid
 sequenceDiagram
@@ -32,11 +32,11 @@ sequenceDiagram
     L-->>P: ok
     Note over L,R: replication takes 50 ms
     W->>R: read status
-    R-->>W: pending  (stale!)
+    R-->>W: pending (stale)
     L->>R: status = paid
 ```
 
-The write **finished** before the read **started**, and the read still returned the old value. On one whiteboard that's impossible. With an asynchronous replica, it is the normal case. [Replication and scaling](../databases/replication.md#replication-lag-and-read-your-writes) shows the same thing with a real PostgreSQL replica.
+The write **finished** before the read **started**, and the read still returned the old value. With one copy, that is impossible. With an asynchronous replica, it is the normal case. [Replication and scaling](../databases/replication.md#replication-lag-and-read-your-writes) shows the same thing with a real PostgreSQL replica.
 
 ## Under the hood: the models, strongest to weakest
 
@@ -83,13 +83,13 @@ Four smaller promises, about what **one client** sees. They are cheap, and they 
 | **Monotonic writes**    | My writes are applied in the order I made them                      | "Address change applied before create" |
 | **Writes follow reads** | If I write after reading X, my write is ordered after X, everywhere | "Reply without its comment"            |
 
-The usual tricks: send a user's reads to the primary for a few seconds after they wrote; remember the replication position of the last write (the LSN check in [Replication and scaling](../databases/replication.md#read-your-writes)) and only read from replicas that have reached it; or **stick** each user to one replica, which gives monotonic reads as long as that replica lives.
+The usual fixes: send a user's reads to the primary for a few seconds after they wrote; remember the replication position of the last write (the LSN check in [Replication and scaling](../databases/replication.md#read-your-writes)) and only read from replicas that have reached it; or **stick** each user to one replica, which gives monotonic reads as long as that replica lives.
 
 ### Eventual
 
 **Eventual consistency** promises only this: if writes stop, all replicas **eventually** return the same value. It says nothing about what you see **before** that, how long "eventually" is, or which of two concurrent writes wins. Replicas need a rule for conflicts, such as last-writer-wins by timestamp (which loses data when clocks are skewed, see [Time and ordering](time-and-ordering.md)) or data types that merge (counters, sets: CRDTs).
 
-Eventual is perfect for a product catalog, a view counter, a search index. It is dangerous for anything a customer reads right after changing it, unless you add session guarantees on top.
+Eventual consistency is a good fit for a product catalog, a view counter, a search index. It is dangerous for anything a customer reads right after changing it, unless you add session guarantees on top.
 
 ### Summary
 
@@ -263,7 +263,7 @@ porcupine says linearizable: true
 
 Same cluster, same lag. Reads that go to the copy that took the write are linearizable. That's why "read from the primary" is the first fix for every read-your-writes ticket. The cost is all the read load on one node.
 
-One honest warning: this only holds while the leader **really is** the leader. A leader that was cut off and replaced, but doesn't know it yet, will happily serve stale reads. Real systems close that gap with leases or by confirming leadership with a majority before answering ([Consensus and Raft](consensus-and-raft.md)).
+Note: this only holds while the leader **really is** the leader. A leader that was cut off and replaced, but doesn't know it yet, still serves stale reads. Real systems close that gap with leases or by confirming leadership with a majority before answering ([Consensus and Raft](consensus-and-raft.md)).
 
 ### Run 3: payments reads its own write back
 
@@ -390,9 +390,9 @@ Even with a perfect network, a linearizable write must wait for a majority or a 
 - A **consistency model** is a promise about which values a read may return. Check it on **histories**: operations with call and return times.
 - **Linearizable**: one copy, real time; no stale reads after a write returns. Needed for locks, leaders and uniqueness. Costs a round trip to a leader or majority, and stops during a partition.
 - **Sequential**: one agreed order that keeps each client's own order, but not real time. **Causal**: only related operations are ordered; it can stay available during partitions.
-- **Session guarantees** (read-your-writes, monotonic reads, monotonic writes, writes-follow-reads) are cheap and fix most user-visible weirdness. **Eventual** only promises convergence someday.
+- **Session guarantees** (read-your-writes, monotonic reads, monotonic writes, writes-follow-reads) are cheap and fix most anomalies that users notice. **Eventual** only promises convergence someday.
 - A brute-force checker is short: try every order that respects "must come before", replay on one register. Real time for linearizable, per-client order for sequential. Porcupine does it fast.
 - **Serializable** is about transactions and ignores real time; **strict serializable** adds it.
-- **CAP**: during a partition, choose linearizability or availability, per operation. **PACELC**: the rest of the time, choose latency or consistency. Most of your bill is the "else".
+- **CAP**: during a partition, choose linearizability or availability, per operation. **PACELC**: the rest of the time, choose latency or consistency. In practice, most of the cost comes from the "else" part.
 
 Next: what to do when a call times out and you don't know whether it happened. [Retries and idempotency](retries-and-idempotency.md).

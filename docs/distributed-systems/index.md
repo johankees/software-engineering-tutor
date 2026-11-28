@@ -1,6 +1,6 @@
 # Distributed systems
 
-What changes when your program is many programs on many machines, connected by a network that can lie.
+What changes when your program is many programs on many machines, connected by a network that can lose, delay or duplicate messages.
 
 ## Why go deeper?
 
@@ -24,7 +24,7 @@ flowchart LR
     R -->|event| MQ[[Message broker]]
     MQ --> P[payments]
     MQ --> S[shipping]
-    P -.->|timeout? retry!| O
+    P -.->|timeout, retry| O
 ```
 
 There are three hard truths:
@@ -50,4 +50,4 @@ Each page builds on the one before it. The examples ran on WSL2 (Ubuntu 24.04, k
 
 ## How each page works
 
-The same shape as the [Fundamentals](../fundamentals/index.md): **Why care?**, **The idea**, **Under the hood**, **Try it**, **Traps** and **Check yourself**. The examples break things on purpose: we kill processes, drop packets and skew clocks around the `orders` service, and watch what each pattern saves.
+The same shape as the [Fundamentals](../fundamentals/index.md): **Why care?**, **The idea**, **Under the hood**, **Try it**, **Traps** and **Check yourself**. The examples break things on purpose. They kill processes, drop packets and skew clocks around the `orders` service, and show what each pattern protects against.

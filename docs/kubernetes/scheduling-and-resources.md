@@ -2,7 +2,7 @@
 
 ## Why care?
 
-Six messages that every platform team gets, sooner or later:
+Six messages that most platform teams get at some point:
 
 - "The pod is `Pending` forever. The cluster has plenty of free CPU."
 - "Our service is throttled, and the dashboard says it uses only 30% of its CPU."
@@ -13,15 +13,13 @@ Six messages that every platform team gets, sooner or later:
 
 Each one comes from two numbers per container (**requests** and **limits**) and a handful of **rules** that the scheduler reads. On this page you see what those numbers become on the node (cgroup files, see [Namespaces and cgroups](../linux/namespaces-and-cgroups.md)), throttle a container and watch the counter go up, get a container OOM-killed, check what Go 1.27 does with a CPU limit, and make the scheduler say no in five different ways.
 
-## The idea: booking a table vs the fire code
+## The idea: requests decide placement, limits are enforced on the node
 
-Think of a restaurant again (the kitchen from [Architecture](architecture.md)), now from the **dining room**.
-
-- A **request** is a **reservation**. "Table for four at eight." The host (the **scheduler**) only seats you where four chairs are still unreserved. It does not look at who is actually sitting there right now. Booked is booked.
-- A **limit** is the **fire code**. However many chairs are free, this party may never have more than six people at the table. A seventh for CPU waits at the door (**throttling**). A seventh for memory is thrown out (**OOM kill**).
-- **Taints** are signs on tables: "staff only". **Tolerations** are the staff badge that lets you sit there anyway.
-- **Affinity** is a wish: "by the window", "next to our friends" (pod affinity), "**not** next to the other party from our company" (anti-affinity).
-- **Topology spread** is the manager's rule: "spread this group over all rooms, never more than one table difference".
+- A **request** is the amount of CPU or memory a container reserves. The **scheduler** only places a pod on a node where enough capacity is still unreserved. It does not look at how much the pods on that node really use.
+- A **limit** is a hard maximum that the kernel enforces, however much the node has free. A container that wants more CPU than its limit has to wait (**throttling**). A container that uses more memory than its limit is killed (**OOM kill**, out of memory).
+- A **taint** on a node keeps pods away. A **toleration** on a pod allows it on a tainted node anyway.
+- **Affinity** is a placement rule: on nodes with some label (node affinity), near other pods (pod affinity), or **not** near other pods (anti-affinity).
+- A **topology spread constraint** spreads a group of pods evenly over nodes or zones, with at most a given difference in count.
 
 ```mermaid
 flowchart LR
@@ -34,13 +32,13 @@ flowchart LR
     B --> KL["kubelet: create cgroups<br/>from requests and limits"]
 ```
 
-The scheduler never looks at **real** usage. It adds up the **requests** of the pods already on a node and compares them with the node's **allocatable**. That's the first message: a cluster can be 10% busy and 100% booked.
+The scheduler never looks at **real** usage. It adds up the **requests** of the pods already on a node and compares them with the node's **allocatable**. That explains the first message: a cluster can be 10% busy and 100% reserved.
 
 ## Under the hood: requests and limits
 
 ### What the node sees
 
-`kubectl describe node` shows both sides of the booking:
+`kubectl describe node` shows both what the node has and what is reserved:
 
 ```console
 $ kubectl describe node tutor-worker | sed -n '/Capacity:/,/System Info/p; /Allocated resources/,/Events/p'
@@ -75,7 +73,7 @@ Events:
 - **Allocatable** is capacity minus what the kubelet keeps for the system (`kube-reserved`, `system-reserved`, eviction threshold). On `kind` it's the same; on a real node expect a few hundred MiB and some CPU less.
 - **Allocated** is the sum of **requests** on the node. The scheduler uses this column, and only this column. Limits may add up to more than 100%: that's **overcommit**, and it is allowed.
 
-CPU is counted in **millicores**: `500m` is half a CPU, `2` is two. Memory in bytes, usually `Mi`/`Gi` (powers of two; `M` and `G` are powers of ten, a classic typo).
+CPU is counted in **millicores**: `500m` is half a CPU, `2` is two. Memory in bytes, usually `Mi`/`Gi` (powers of two; `M` and `G` are powers of ten, a common mistake).
 
 ### Three pods, three QoS classes
 
@@ -107,7 +105,7 @@ tutor-burstable    Burstable    833e21f6-7beb-415c-8745-712e3bd66659
 tutor-guaranteed   Guaranteed   b7950d0e-5605-45fc-9ecc-305a9893e31c
 ```
 
-Now find them on the node. The kubelet uses the systemd cgroup driver, so each pod is a `.slice`, inside a slice per QoS class. This host is **cgroup v1** (see [Namespaces and cgroups](../linux/namespaces-and-cgroups.md#this-machine-hybrid-and-honest-about-it)), so CPU and memory live in separate trees:
+Now find them on the node. The kubelet uses the systemd cgroup driver, so each pod is a `.slice`, inside a slice per QoS class. This host is **cgroup v1** (see [Namespaces and cgroups](../linux/namespaces-and-cgroups.md#this-machine-hybrid-mode)), so CPU and memory live in separate trees:
 
 ```console
 $ docker exec tutor-worker sh -c 'cd /sys/fs/cgroup/cpu/kubelet.slice/kubelet-kubepods.slice && ls -d */ ;
@@ -145,7 +143,7 @@ Two things to notice:
 - **A memory request does nothing on the node.** It is a number for the scheduler, and for choosing whom to evict when the node runs low.
 - **A CPU request is not a reservation** either, not in the kernel. It is a weight. On an idle node, the Burstable pod with `250m` may use all 16 CPUs. When the node is busy, CPU is shared in the ratio of the weights, so each pod gets **at least** its request.
 
-### Who dies first
+### Which pod is killed first
 
 The QoS class also sets the **OOM score adjustment** of the container's processes. When the **whole node** runs out of memory (not one cgroup), the kernel kills the process with the highest score:
 
@@ -160,7 +158,7 @@ tutor-guaranteed   -997
 - **Burstable: between**, here 996. The kubelet computes `1000 - 1000 × memory request / node memory`: 64 MiB of 16 GB is almost nothing, so almost 1000. A bigger request means a lower score.
 - **Guaranteed: -997**, killed last (only system daemons are safer).
 
-Before the kernel gets there, the **kubelet** tries to **evict** pods when the node goes below its eviction threshold (for example `memory.available<100Mi`). It picks pods that use more than they **requested** first, then by priority. That's the fourth message: the payments service with no requests (BestEffort) was the cheapest to kill; the batch job with big requests was safe. Give important services requests that match their real use.
+Before the kernel gets there, the **kubelet** tries to **evict** pods when the node goes below its eviction threshold (for example `memory.available<100Mi`). It picks pods that use more than they **requested** first, then by priority. That explains the fourth message: the payments service with no requests (BestEffort) was the cheapest to kill; the batch job with big requests was safe. Give important services requests that match their real use.
 
 ## Under the hood: CPU limits and throttling
 
@@ -207,7 +205,7 @@ throttled_time 19209106300
 - `cpuacct.usage` says 1.1 s of CPU in about 5.3 s: exactly 0.2 CPUs on average. A dashboard shows "200m, at the limit", or as a percentage of a bigger number, "low". It cannot show the 95 ms pauses.
 - `throttled_time` is 19.2 s, more than the wall time: it is counted per CPU that had runnable threads waiting.
 
-For a web service, each pause lands on whatever requests are in flight. A handler that needs 2 ms of CPU can take 90 ms if it arrives just after the budget ran out. That's the second message at the top: "30% CPU use" and throttled, because the average hides the bursts. The same experiment is described for plain cgroups in [Namespaces and cgroups](../linux/namespaces-and-cgroups.md#cpumax-a-budget-per-period); this is what it looks like with a Kubernetes limit.
+For a web service, each pause lands on whatever requests are in flight. A handler that needs 2 ms of CPU can take 90 ms if it arrives just after the budget ran out. That explains the second message at the top: "30% CPU use" and throttled, because the average hides the bursts. The same experiment is described for plain cgroups in [Namespaces and cgroups](../linux/namespaces-and-cgroups.md#cpumax-a-budget-per-period); this is what it looks like with a Kubernetes limit.
 
 What to do:
 
@@ -352,7 +350,7 @@ $ kubectl -n tutor-scheduling describe pod tutor-oom | sed -n '/State:/,/Ready:/
     Ready:          False
 ```
 
-**Exit code 137** is 128 + 9: the process died from signal 9, `SIGKILL` (see [Signals and processes](../linux/signals-and-processes.md)). Nobody sends `SIGKILL` politely, so there are no last log lines, no deferred functions, nothing. That's the third message at the top.
+**Exit code 137** is 128 + 9: the process died from signal 9, `SIGKILL` (see [Signals and processes](../linux/signals-and-processes.md)). A process cannot catch `SIGKILL`, so there are no last log lines and no deferred functions run. That explains the third message at the top.
 
 The kernel log says who did it:
 
@@ -374,7 +372,7 @@ So, a lesson for any cluster: **137 without `OOMKilled` can still be an OOM kill
 
 <!-- TODO(real-output): on a cgroup v2 node, run the tutor-oom pod and paste `kubectl describe pod` showing "Reason: OOMKilled" and "Exit Code: 137", and `kubectl get pod` showing STATUS OOMKilled. -->
 
-For Go services, OOM kills usually come from the heap target: with `GOGC=100` the heap grows to twice the live data before a GC. Live data of 150 MiB and a 256 MiB limit is already an OOM kill waiting to happen. `GOMEMLIMIT` at 90% of the limit fixes most of these; see [Namespaces and cgroups](../linux/namespaces-and-cgroups.md#gomemlimit-does-not-follow-the-memory-limit) for a measured example, and [Performance](../go/performance.md) for profiling the heap.
+For Go services, OOM kills usually come from the heap target: with `GOGC=100` the heap grows to twice the live data before a GC. Live data of 150 MiB and a 256 MiB limit will lead to an OOM kill. `GOMEMLIMIT` at 90% of the limit fixes most of these; see [Namespaces and cgroups](../linux/namespaces-and-cgroups.md#gomemlimit-does-not-follow-the-memory-limit) for a measured example, and [Performance](../go/performance.md) for profiling the heap.
 
 ## Under the hood: placing pods
 
@@ -395,7 +393,7 @@ Events:
 
 Read it as "2 nodes, and here is why each one said no": `tutor-worker` has **insufficient cpu** (unreserved requests, not idle CPU), and `tutor-control-plane` has a **taint**. The `preemption` part says the scheduler also checked whether evicting lower-**priority** pods would help (see `PriorityClass`); here it wouldn't. On a cloud cluster, the **cluster autoscaler** watches for exactly these pending pods and adds a node, if a node type exists where the pod would fit.
 
-### Node affinity: "only on these nodes"
+### Node affinity: choosing nodes by label
 
 Nodes carry labels (`kubernetes.io/hostname`, `kubernetes.io/arch`, `topology.kubernetes.io/zone` on clouds, and your own). A pod that needs a node with an SSD:
 
@@ -439,7 +437,7 @@ tutor-wants-ssd   1/1     Running   0          12s
 
 Still running. That's the **`IgnoredDuringExecution`** in the long name: the rule is checked only when the pod is placed. `preferredDuringSchedulingIgnoredDuringExecution` is the soft version: a score bonus, never a reason to stay `Pending`. `nodeSelector: {tutor-disk: ssd}` is the short, old form of the required rule.
 
-### Taints and tolerations: "keep out, unless..."
+### Taints and tolerations: keeping pods off nodes
 
 Affinity is the pod choosing nodes. A **taint** is the node pushing pods away. You saw one on every `FailedScheduling` message: the control plane has `node-role.kubernetes.io/control-plane:NoSchedule`. Taint the worker too (briefly; it's a shared cluster):
 
@@ -483,9 +481,9 @@ With the taint gone, the waiting pod was placed. Three effects:
 
 A toleration only **allows** a node; it doesn't **attract** the pod there. For dedicated nodes ("only orders pods here, and orders pods only here"), use a taint **and** a node affinity. And the kubelet itself uses `NoExecute` taints: `node.kubernetes.io/not-ready` and `unreachable`. Every pod gets tolerations for them with `tolerationSeconds: 300` by default (you can see `node.kubernetes.io/unreachable:NoExecute op=Exists for 300s` in any `kubectl describe pod`). That's why pods on a dead node are only replaced after about five minutes.
 
-### Pod anti-affinity: "not next to each other"
+### Pod anti-affinity: keeping replicas apart
 
-Three replicas on one node is the fifth message. Require that no two pods of `tutor-anti` share a hostname:
+Three replicas on one node is the fifth message at the top. Require that no two pods of `tutor-anti` share a hostname:
 
 ```yaml
 affinity:
@@ -678,7 +676,7 @@ TIME                   MSG
 2026-11-26T22:08:58Z   New size: 1; reason: All metrics below target
 ```
 
-Up within a minute of the load starting (4, then 5 fifteen seconds later), down **5 minutes and 11 seconds** after it stopped. That's on purpose, and it's the sixth message at the top:
+Up within a minute of the load starting (4, then 5 fifteen seconds later), down **5 minutes and 11 seconds** after it stopped. That is on purpose, and it explains the sixth message at the top:
 
 ```console
 $ kubectl explain hpa.spec.behavior.scaleDown.stabilizationWindowSeconds | sed -n '/DESCRIPTION/,$p'
@@ -691,7 +689,7 @@ DESCRIPTION:
     stabilization window is 300 seconds long).
 ```
 
-For scale-down, the HPA uses the **highest** recommendation of the last 300 seconds, so a short dip doesn't remove pods that are needed a minute later. Tune it in `spec.behavior` (with `policies` like "at most 2 pods per minute"), not by fighting the HPA.
+For scale-down, the HPA uses the **highest** recommendation of the last 300 seconds, so a short dip doesn't remove pods that are needed a minute later. Tune it in `spec.behavior` (with `policies` like "at most 2 pods per minute"), not by working around the HPA.
 
 Three things make an HPA work well:
 
@@ -729,7 +727,7 @@ For other signals (queue length, requests per second), use `type: Pods` or `type
 
     The scheduler compares the pod's **request** with the node's allocatable minus the
     **sum of requests** already on the node. It never looks at real use. The nodes are
-    fully **booked** by requests that are much higher than what the pods use. Fix the
+    fully **reserved** by requests that are much higher than what the pods use. Fix the
     requests (measure real use, or let the VPA recommend), not the node count.
 
 ??? question "2. A container has `requests.cpu: 1` and `limits.cpu: 2`. On v1 and on v2, which cgroup files get which values? Which one can slow it down when the node is idle?"

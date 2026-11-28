@@ -13,15 +13,15 @@ There are a few different ways to do that translation, and the choice explains a
 
 The key idea behind most of this is **bytecode**. On this page you will see it, read it, and build your own.
 
-## The idea: a translator, and when it works
+## The idea: when the translation happens
 
-Imagine you have a recipe in Dutch, and a cook who only reads Japanese. You have three options:
+Source code must be translated into instructions that a machine can run. There are three main options:
 
-1. **Interpreter:** a translator stands next to the cook and translates each line while the cook works. Easy to start, but slow, and the translator is needed every time.
-2. **Compiler:** you translate the full recipe into Japanese once, before cooking. More work up front, but the cook then works at full speed, alone.
-3. **Bytecode:** you translate the recipe into a simple, very strict "kitchen language" that is easy for any translator to read. A small, fast translator (a **virtual machine**) then runs that on any kitchen in the world.
+1. **Interpreter:** a program reads the source and runs each part while it reads it. It starts quickly, but it is slow, and it repeats the translation work every time the code runs.
+2. **Compiler:** a program translates the full source into machine code once, before the program runs. This takes more time up front, but the CPU then runs the result directly, at full speed.
+3. **Bytecode:** a compiler translates the source into a simple, strict instruction format that is not tied to one CPU. A small, fast program (a **virtual machine**) then runs that format on any machine where the virtual machine is installed.
 
-In computer terms:
+The table shows the main variants:
 
 | Approach                     | Translated when?                                          | Runs on                             | Examples                                   |
 | ---------------------------- | --------------------------------------------------------- | ----------------------------------- | ------------------------------------------ |
@@ -38,7 +38,7 @@ In computer terms:
     (`GOOS=linux GOARCH=arm64 go build`).
 
     But you will still meet bytecode as a Go developer, and the Go compiler works in the same
-    stages as every other compiler. So let's look at those stages first.
+    stages as every other compiler. The next section explains those stages first.
 
 ## The pipeline: from text to instructions
 
@@ -54,7 +54,7 @@ flowchart LR
     G --> M["Machine code<br/>(for a CPU)"]
 ```
 
-The great thing about Go: its standard library and toolchain let you **look at every step**. We will follow one tiny function all the way down:
+Go's standard library and toolchain let you **look at every step**. This page follows one small function through all of them:
 
 ```go
 //go:noinline
@@ -65,7 +65,7 @@ func area(w, h int) int {
 
 ### Step 1: lexing (text → tokens)
 
-To the computer, your source code is just bytes (see [Encodings](encodings.md)). The **lexer** (or scanner) groups those bytes into **tokens**: the "words" of the language. It also throws away spaces and comments.
+To the computer, your source code is only bytes (see [Encodings](encodings.md)). The **lexer** (or scanner) groups those bytes into **tokens**: the "words" of the language. It also throws away spaces and comments.
 
 ```go
 src := []byte("w*h + 1")
@@ -93,7 +93,7 @@ INT    "1"
 ;      "\n"
 ```
 
-Look at the last line. You never typed a `;`. Go's lexer **adds semicolons automatically** at the end of a line. That's why Go needs the `{` on the same line as `if`: otherwise the lexer would put a `;` after the `if` line.
+Look at the last line. The source has no `;`. Go's lexer **adds semicolons automatically** at the end of a line. That's why Go needs the `{` on the same line as `if`: otherwise the lexer would put a `;` after the `if` line.
 
 ### Step 2: parsing (tokens → tree)
 
@@ -131,7 +131,7 @@ flowchart TB
     mul --> h["h"]
 ```
 
-The `*` is **deeper** in the tree than the `+`. So it must be computed first. The brackets and priority rules from the text are now just the **shape** of the tree.
+The `*` is **deeper** in the tree than the `+`. So it must be computed first. The brackets and priority rules from the text are now only the **shape** of the tree.
 
 !!! tip "You use the AST more than you think"
 
@@ -147,7 +147,7 @@ Now the compiler knows the shape, but not the meaning. The **type checker** find
 
 Next, the Go compiler turns the tree into a simpler, flat form called **SSA** (_static single assignment_). In SSA, every value gets a name and is set **exactly once**. That makes optimizations much easier for the compiler.
 
-You can watch it. The environment variable `GOSSAFUNC` asks the compiler to show every step for one function:
+You can see this form. The environment variable `GOSSAFUNC` asks the compiler to show every step for one function:
 
 ```sh
 GOSSAFUNC='area+' go build .   # the '+' prints text; without it you get ssa.html
@@ -179,7 +179,7 @@ Notice `ADDQconst [1]`: the constant `1` is now **part of the instruction**. The
 
     Run `GOSSAFUNC=area go build .` (without `+`) and open the `ssa.html` file in a browser. It shows
     all ~50 passes side by side, with colors. Click a value to follow it through the passes. It is
-    one of the best ways to understand what an optimizing compiler really does.
+    a good way to understand what an optimizing compiler really does.
 
 ### Step 5: machine code
 
@@ -193,7 +193,7 @@ main.area STEXT nosplit size=8 args=0x10 locals=0x0
     0x0000 48 0f af c3 48 ff c0 c3
 ```
 
-Three instructions, 8 bytes. The optimizer even saw that "add 1" can be the special, shorter `INCQ` (increment) instruction. These 8 bytes are what the CPU runs. The **linker** then puts all functions, the Go runtime and your data together into one executable file.
+Three instructions, 8 bytes. The optimizer also found that "add 1" can be the special, shorter `INCQ` (increment) instruction. These 8 bytes are what the CPU runs. The **linker** then puts all functions, the Go runtime and your data together into one executable file.
 
 A **bytecode** compiler does the same steps 1 to 4. Only step 5 is different: instead of instructions for a real CPU, it writes instructions for an **imaginary** one.
 
@@ -213,12 +213,12 @@ The name comes from the format: each instruction starts with **one byte**, the *
 └──────┘
 ```
 
-Why not just use real machine code?
+Why not use real machine code?
 
-- **Portable.** The same bytecode runs on any CPU that has the VM. "Write once, run anywhere" was Java's big promise.
-- **Simple and compact.** A VM designer can pick a small, clean instruction set. No 40 years of x86 history.
+- **Portable.** The same bytecode runs on any CPU that has the VM. "Write once, run anywhere" was a main goal of Java.
+- **Simple and compact.** A VM designer can pick a small, clean instruction set. It does not carry 40 years of x86 history.
 - **Safe.** The VM can check every instruction before and while it runs. Code can't jump to random memory. That's why browsers (WebAssembly), databases and the Linux kernel (eBPF) use bytecode for code they don't fully trust.
-- **Fast to produce.** Making bytecode is much quicker than full optimized machine code. Python compiles your script every time you run it; you don't even notice.
+- **Fast to produce.** Making bytecode is much quicker than full optimized machine code. Python compiles your script every time you run it, and the delay is too small to notice.
 
 ### Stack machines vs register machines
 
@@ -241,15 +241,15 @@ MUL r2, r0, r1    ; r2 = w * h
 ADDK r2, r2, 1    ; r2 = r2 + 1
 ```
 
-Stack machines are the easiest to understand and to compile for. So let's build one.
+Stack machines are the easiest to understand and to compile for. The next section builds one.
 
 ## Build your own bytecode VM
 
-We will write a complete compiler and VM for expressions like `w*h + 1`, in about 150 lines of Go. We cheat a little on steps 1 and 2: Go's own `go/parser` does the lexing and parsing for us. We write steps 5 (bytecode generation) and the VM.
+We will write a complete compiler and VM for expressions like `w*h + 1`, in about 150 lines of Go. To keep it short, steps 1 and 2 use Go's own `go/parser` for lexing and parsing. We write steps 5 (bytecode generation) and the VM.
 
 ### The instruction set
 
-First, define our imaginary CPU. Each opcode is one byte:
+First, define the imaginary CPU. Each opcode is one byte:
 
 ```go
 const (
@@ -328,7 +328,7 @@ func (p *Program) emit(n ast.Expr) error {
 
 ### The virtual machine
 
-The VM is the heart of every bytecode language. It is surprisingly small: **a loop, a `switch`, and a stack.** It is the fetch–decode–execute loop from [CPU and registers](cpu-and-registers.md), written in Go. The variable `pc` (program counter) plays the role of the CPU's instruction pointer.
+The VM is the central part of every bytecode language. It is small: **a loop, a `switch`, and a stack.** It is the fetch–decode–execute loop from [CPU and registers](cpu-and-registers.md), written in Go. The variable `pc` (program counter) plays the role of the CPU's instruction pointer.
 
 ```go
 func (p *Program) Run(vars map[string]int64) (int64, error) {
@@ -426,7 +426,7 @@ bytecode: 01 00 01 01 04 00 00 02 06
 result: 13
 ```
 
-**That's real bytecode.** Nine bytes. Let's decode the first line by hand: `01 00` = opcode `01` (`LOAD`) with operand `00` (name #0 = `w`). Then `01 01` = `LOAD h`. Then `04` = `MUL`, no operand. And so on.
+**This is real bytecode**: nine bytes. Decode the first line by hand: `01 00` = opcode `01` (`LOAD`) with operand `00` (name #0 = `w`). Then `01 01` = `LOAD h`. Then `04` = `MUL`, no operand. And so on.
 
 Here is what the VM does with it, step by step, with `w=3, h=4`:
 
@@ -439,7 +439,7 @@ Here is what the VM does with it, step by step, with `w=3, h=4`:
 | 7   | `ADD`       | `[13]`      |
 | 8   | `RETURN`    | `[]` → 13   |
 
-!!! example "Make it yours"
+!!! example "Extend it"
 
     The full program is all the blocks above in one `main.go`, with these imports:
     `fmt`, `go/ast`, `go/parser`, `go/token`, `strconv`. Then try:
@@ -476,7 +476,7 @@ Output with Python 3.15:
 80 00 00 00 56 01 2a 05 00 00 00 00 00 00 00 00 00 00 5d 01 2a 00 00 00 00 00 00 00 00 00 00 00 21 00
 ```
 
-Compare it with ours. It is almost the same program! Load `w` and `h`, multiply, load `1`, add, return. Some differences:
+Compare it with ours. It is almost the same program. Load `w` and `h`, multiply, load `1`, add, return. Some differences:
 
 - Python's optimizer **joined** two loads into one "superinstruction" (`LOAD_FAST_BORROW_LOAD_FAST_BORROW`), so the VM loop runs one time less.
 - Every instruction is 2 bytes: opcode + operand (`56 01`, `2a 05`, ...).
@@ -520,13 +520,13 @@ flowchart LR
     N -->|assumption broken| I
 ```
 
-This is why Java services are slow for their first minutes ("warm-up"), and then fast. Go skips this whole dance: everything is native from the first instruction. The price: the Go compiler can't use runtime information. (Go's **profile-guided optimization**, `default.pgo`, brings some of that benefit back: you give the compiler a CPU profile from production, and it optimizes the hot paths at build time.)
+This is why Java services are slow for their first minutes ("warm-up"), and then fast. Go does not need this step: everything is native from the first instruction. The price: the Go compiler can't use runtime information. (Go's **profile-guided optimization**, `default.pgo`, brings some of that benefit back: you give the compiler a CPU profile from production, and it optimizes the hot paths at build time.)
 
 ## Bytecode you will meet as a Go developer
 
 Go itself has no VM, but bytecode-style "small programs" are everywhere in Go systems:
 
-**Regular expressions.** Go's `regexp` package compiles your pattern into a little program and runs it in a VM. You can see it:
+**Regular expressions.** Go's `regexp` package compiles your pattern into a small program and runs it in a VM. You can see it:
 
 ```go
 re, err := syntax.Parse(`go+d`, syntax.Perl) // package regexp/syntax

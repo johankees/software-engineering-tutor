@@ -4,18 +4,18 @@
 
 Your order service gets a new feature: before it saves an order, it must check the price of every item with a pricing service. Each call takes 20 ms. An order with 30 items now takes **600 ms**. Customers notice.
 
-A colleague says: "Just do the calls at the same time." Ten minutes later the code is 30× faster. It also has three new bugs: a counter that is sometimes wrong, a goroutine that never stops, and a crash that happens once a week in production.
+The obvious fix is to make the calls at the same time. A quick version of that change makes the code 30× faster. It can also add three new bugs: a counter that is sometimes wrong, a goroutine that never stops, and a crash that happens once a week in production.
 
-Go makes it very **easy** to start concurrent work. It does not make it **automatically correct**. This page gives you the mental model and the patterns that real teams use, so you get the speed without the weekly crash.
+Go makes it very **easy** to start concurrent work. It does not make it **automatically correct**. This page gives you the mental model and the patterns that real teams use, so you get the speed without those bugs.
 
-## The idea: many cooks, one kitchen
+## The idea: goroutines, channels and locks
 
-Think of a restaurant kitchen.
+Go gives you four main tools for concurrent work:
 
-- A **goroutine** is a cook. Hiring one is very cheap in Go.
-- A **channel** is the pass: the counter where one cook puts a plate and another picks it up.
-- A **mutex** is the key to the one shared fridge. Only the cook holding the key may open it.
-- **Context** (next page) is the manager shouting "stop, the customer left!"
+- A **goroutine** is a function that runs independently of the code that started it. Starting one is very cheap in Go.
+- A **channel** passes values from one goroutine to another.
+- A **mutex** (mutual-exclusion lock) lets only one goroutine at a time use a piece of shared data.
+- **Context** (next page) tells goroutines to stop, for example when the client has gone away.
 
 Two words people mix up:
 
@@ -101,11 +101,11 @@ for inv := range ch { ... }  // receive until closed
 
 ### Unbuffered: a handshake
 
-An unbuffered channel has no storage. A send **waits until a receiver takes the value**, and a receive waits until a sender gives one. The two goroutines meet, like handing a plate from hand to hand.
+An unbuffered channel has no storage. A send **waits until a receiver takes the value**, and a receive waits until a sender gives one. The two goroutines meet at the same moment.
 
 That makes an unbuffered channel a **synchronisation point**: after the send returns, you _know_ the other side has the value.
 
-### Buffered: a mailbox
+### Buffered: a fixed-size queue
 
 A buffered channel with capacity N can hold N values. A send only blocks when the buffer is full. It decouples the speed of sender and receiver for short bursts.
 
@@ -139,7 +139,7 @@ So a channel is a **queue with a lock** plus lists of sleeping goroutines. When 
 
 ### The channel rules table
 
-Learn this table by heart. Most channel bugs are one of its cells.
+Learn this table well. Most channel bugs match one of its cells.
 
 | Operation      | `nil` channel  | open channel                         | closed channel                                    |
 | -------------- | -------------- | ------------------------------------ | ------------------------------------------------- |
@@ -188,7 +188,7 @@ main.main()
 exit status 2
 ```
 
-The runtime can only detect this when **every** goroutine is stuck. In a server, other goroutines are always alive (the HTTP listener, timers), so a stuck goroutine just sits there quietly. That is a leak, not a crash.
+The runtime can only detect this when **every** goroutine is stuck. In a server, other goroutines are always alive (the HTTP listener, timers), so a stuck goroutine stays blocked and reports no error. That is a leak, not a crash.
 
 !!! abstract "Convention: only the sender closes, and only when receivers need to know"
 
@@ -224,7 +224,7 @@ case <-time.After(2 * time.Second):
 }
 ```
 
-Three useful tricks:
+Three useful techniques:
 
 - **A `default` case** makes `select` non-blocking: "send if you can, otherwise drop it". Useful for best-effort metrics, dangerous for real data.
 - **Always add `<-ctx.Done()`** to a `select` that might block. That is how a goroutine learns it should stop.
@@ -253,7 +253,7 @@ This proverb means: _prefer designs where data has one owner at a time and is pa
 
 ### Data races and the race detector
 
-A **data race** happens when two goroutines access the same memory at the same time, at least one of them writes, and nothing orders the accesses. Here is the classic one:
+A **data race** happens when two goroutines access the same memory at the same time, at least one of them writes, and nothing orders the accesses. Here is a common example:
 
 ```go
 package main
@@ -389,10 +389,10 @@ Things to notice, all of which are conventions in real code:
 
 - The mutex sits **next to the fields it protects**, and the type comment says "Safe for concurrent use". Readers know the rule without reading every method.
 - `Lock` is directly followed by `defer Unlock`. Every return path unlocks, even a panic.
-- `Snapshot` returns a **copy**. Returning the map itself would let callers read it without the lock: the race comes back through the back door.
+- `Snapshot` returns a **copy**. Returning the map itself would let callers read it without the lock, and the race would return.
 - The `Stats` value is used through a pointer. A `sync.Mutex` must **never be copied** after first use; a copy is a second, unrelated lock. `go vet` has a `copylocks` check for exactly this.
 
-### The `sync` toolbox
+### Tools in the `sync` package
 
 | Tool                                                                     | Use it for                                                                 | Watch out                                                             |
 | ------------------------------------------------------------------------ | -------------------------------------------------------------------------- | --------------------------------------------------------------------- |
@@ -747,7 +747,7 @@ goroutineleak profile: total 0
 How teams prevent leaks:
 
 1. **Every blocking send or receive has a way out**: a `case <-ctx.Done()`, or a buffer that guarantees the send can't block.
-2. **Every goroutine has an owner who waits for it** (`WaitGroup`, `errgroup`). If you can't name the owner, that's a design smell.
+2. **Every goroutine has an owner who waits for it** (`WaitGroup`, `errgroup`). If you can't name the owner, the design needs to change.
 3. **Tests check for leaks.** `testing/synctest` (see [Testing](testing.md)) runs concurrent code in a bubble with a fake clock. The test waits for every goroutine in the bubble to exit, and fails if they are deadlocked, so a leaked goroutine makes the test fail instead of hiding. Many teams also use `go.uber.org/goleak` in `TestMain`.
 4. **Production watches the numbers.** Export `runtime.NumGoroutine()` as a metric. A line that only goes up is a leak.
 
@@ -796,8 +796,8 @@ How teams prevent leaks:
 
 ## Recap
 
-- Goroutines are cheap to start but not free to forget. **Know how each one stops**, and have an owner wait for it.
-- Unbuffered channels are a handshake; buffered channels are a small mailbox. Default to 0 or 1.
+- Goroutines are cheap to start, but each one still costs memory until it ends. **Know how each one stops**, and have an owner wait for it.
+- Unbuffered channels are a handshake; buffered channels are a small fixed-size queue. Default to 0 or 1.
 - Only the sender closes. Use channel directions in signatures.
 - `select` + `ctx.Done()` gives every blocking operation a way out.
 - Use **mutexes for state**, **channels for coordination**. Never copy a mutex.

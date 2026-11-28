@@ -4,7 +4,7 @@
 
 Five messages from the team chat:
 
-- "The dashboard says average latency is 18 ms. Support says customers wait half a second. Who is lying?"
+- "The dashboard says average latency is 18 ms. Support says customers wait half a second. Which one is right?"
 - "Error rate jumped to 40% for one minute after the deploy, then went back. Was it real?"
 - "Our metrics bill tripled. Someone added a label."
 - "`histogram_quantile` returns nothing. The metric is there, I can see it."
@@ -14,15 +14,15 @@ None of these is a bug in Prometheus. Each one is a misunderstanding of what a m
 
 This page instruments `ordersd` with the Prometheus Go client, scrapes it with a real Prometheus, and answers each message above with a real query. [Signals and how they fit](signals.md) explained where metrics sit next to logs and traces; here we go deep.
 
-## The idea: the dashboard of a car
+## The idea: a few numbers, kept in memory
 
-Look at the dashboard of a car:
+A service keeps a small set of numbers in memory and updates them as work happens. There are three main kinds:
 
-- The **odometer** only goes up. It says nothing useful by itself ("123,456 km"). But read it twice, an hour apart, and you get your average speed. That's a **counter**, and "read it twice and divide" is `rate()`.
-- The **fuel gauge** goes up and down. Its current value is the interesting thing. That's a **gauge**.
-- Now imagine a box of coin jars at a toll gate, labelled "under 1 minute", "under 2 minutes", "under 5 minutes". Each car drops a coin in **every jar its waiting time fits in**. You never know any single car's time, but you can say "95% of cars waited under 2 minutes". That's a **histogram**.
+- A **counter** only goes up, like the distance counter in a car. Its value alone says little ("123,456 requests"). Read it twice, a minute apart, and the difference divided by the time is the rate per second. That is what `rate()` does.
+- A **gauge** goes up and down. Its current value is what matters: requests in flight, memory in use.
+- A **histogram** has a set of buckets, such as "under 10 ms", "under 25 ms", "under 100 ms". Each request adds 1 to **every bucket its duration fits in**. You never know a single request's time, but you can say "95% of requests took under 25 ms".
 
-The car doesn't film the trip (that would be a trace). It shows a few numbers, all the time, at almost no cost.
+Metrics do not record single requests (that is what traces do). They keep a few numbers, all the time, at almost no cost.
 
 ```mermaid
 flowchart LR
@@ -60,7 +60,7 @@ That one fact explains most of this page:
 
 - **Every distinct label combination is a new series**, with its own memory, disk and index cost.
 - A query works on **series**, not on requests. There is no "request" in a metric.
-- To answer a new question ("errors per customer?"), you need a label for it **before** the problem happens. And that label must have few values (more in [Cardinality](#cardinality-the-bill-nobody-saw-coming)).
+- To answer a new question ("errors per customer?"), you need a label for it **before** the problem happens. And that label must have few values (more in [Cardinality](#cardinality-the-cost-of-labels)).
 
 When Prometheus stores a scrape, it adds two labels of its own: `job` (which scrape config) and `instance` (which target). Our config also adds `env="laptop"`:
 
@@ -148,7 +148,7 @@ And never `rate()` a gauge. Prometheus will even warn you:
 
 That's one reason for the naming rule: **counters end in `_total`**, and every metric with a unit has the **base unit** in its name: `_seconds`, `_bytes`, never `_ms` or `_kb`.
 
-### Histograms: coins in jars
+### Histograms: counts per bucket
 
 A **classic histogram** is a set of counters, one per bucket, plus a sum and a count. Each bucket has an upper bound `le` ("less or equal"), and is **cumulative**: a 7 ms request counts in `le="0.01"`, `le="0.025"`, ... and `le="+Inf"`:
 
@@ -199,7 +199,7 @@ How much does it matter? Our demo store is slow on purpose: most calls take 2–
 | p99      | 0.4003                  | 0.3988              |
 | p99.9    | **0.4900**              | 0.4516              |
 
-The classic p95 is 25% too high: it falls in the 10–25 ms bucket and is interpolated. The classic p99.9 says 490 ms, slower than any request we served: it falls in the 300–500 ms bucket, and interpolation puts it near the top. Our fake database never sleeps longer than 449 ms. That was the fifth chat message. The native one is within a few percent everywhere.
+The classic p95 is 25% too high: it falls in the 10–25 ms bucket and is interpolated. The classic p99.9 says 490 ms, slower than any request we served: it falls in the 300–500 ms bucket, and interpolation puts it near the top. Our simulated database never sleeps longer than 449 ms. That was the fifth chat message. The native one is within a few percent everywhere.
 
 Still, classic buckets do one thing perfectly: **"what fraction was under exactly 300 ms?"**, if 300 ms is a bucket bound. Both give the same answer here:
 
@@ -219,7 +219,7 @@ sum by (route) (rate(..._sum[5m])) / sum by (route) (rate(..._count[5m]))
 {"route":"GET /v1/orders","avg":"0.01863855284125809"}
 ```
 
-18.6 ms. True, and useless for users: 2% of them wait 20 times longer. That was the first chat message. Show percentiles (or "fraction under X"), not averages.
+18.6 ms. This is correct, but it does not describe what users experience: 2% of them wait 20 times longer. That was the first chat message. Show percentiles (or "fraction under X"), not averages.
 
 ### Summaries: quantiles you can't add
 
@@ -395,7 +395,7 @@ Two different order IDs, one series. That's the route label doing its job.
 
 ## Try it: Prometheus scrapes `ordersd`
 
-To make the numbers interesting, our copy has a demo-only switch `ORDERS_DEMO_SLOW=1` that wraps the in-memory store in a fake "database": 2–20 ms per call, 2% of calls 350–450 ms, 1% fail with `database: connection reset` (a `500`). A small load generator sends 40 GET requests per second: 70% list orders, 25% get an unknown ID (`404`), 5% get the ID `42` (`400`).
+To produce realistic numbers, our copy has a demo-only switch `ORDERS_DEMO_SLOW=1` that wraps the in-memory store in a simulated "database": 2–20 ms per call, 2% of calls 350–450 ms, 1% fail with `database: connection reset` (a `500`). A small load generator sends 40 GET requests per second: 70% list orders, 25% get an unknown ID (`404`), 5% get the ID `42` (`400`).
 
 Start the service, on port 19080 with metrics on 19100:
 
@@ -443,7 +443,7 @@ $ curl -s localhost:19090/api/v1/targets | jq '.data.activeTargets[] | {scrapeUr
 
 Every scrape also writes a series `up`, `1` if the scrape worked and `0` if not. `up == 0` is the first alert every service needs.
 
-We'll query the HTTP API with a tiny shell function; the Prometheus UI at <http://localhost:19090> runs the same queries:
+We query the HTTP API with a small shell function; the Prometheus UI at <http://localhost:19090> runs the same queries:
 
 ```sh
 promq() { curl -s "localhost:19090/api/v1/query?query=$(jq -rn --arg q "$1" '$q|@uri')"; }
@@ -472,7 +472,7 @@ $ promq 'sum(rate(http_server_requests_total{code=~"5.."}[5m])) / sum(rate(http_
 [{"metric":{},"value":[1795761739.770,"0.010171259671390072"]}]
 ```
 
-1%, exactly what the fake database does. Note that `4xx` is not in it: a `404` for an unknown order is the client's problem, not an outage.
+1%, exactly what the simulated database does. Note that `4xx` is not in it: a `404` for an unknown order is the client's problem, not an outage.
 
 **Duration**, p99 per route, from the classic buckets:
 
@@ -494,7 +494,7 @@ $ promq 'histogram_quantile(0.99, sum by (route) (rate(http_server_request_durat
 
 **The window.** `[5m]` is smoothing: wider is calmer, narrower reacts faster. `rate` needs at least two samples in the window, so keep it at least **4× the scrape interval** (`[1m]` with 15 s scrapes). A one-minute spike to 40% errors (the second chat message) is real, but a `[1m]` rate during a deploy with few requests can swing wildly. For alerts, look at the rate over several windows (that's what burn-rate alerts do in [SLOs and alerting](slos-and-alerting.md)).
 
-## Cardinality: the bill nobody saw coming
+## Cardinality: the cost of labels
 
 **Cardinality** is the number of series. For one metric, it's the **product** of the number of values of each label:
 

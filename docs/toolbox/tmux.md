@@ -2,17 +2,17 @@
 
 ## Why care?
 
-You SSH into a build box and start a long migration. Twenty minutes later the train enters a tunnel, the connection drops, and the migration is killed with it. Or: you have six terminal tabs, and you can't remember which one has the logs.
+You SSH into a build box and start a long migration. Twenty minutes later the connection drops, and the migration is killed with it. Or: you have six terminal tabs, and you can't remember which one has the logs.
 
-tmux fixes both. It keeps programs running when the connection dies, and it gives you a layout you can name, script and reattach to from anywhere. But most people use maybe five tmux keys and copy the rest of their config from the internet. On this page we look at how tmux really works, so each line of config makes sense.
+tmux fixes both. It keeps programs running when the connection dies, and it gives you a layout you can name, script and reattach to from anywhere. But many people use only a few tmux keys and copy the rest of their config from the internet. This page explains how tmux really works, so each line of config makes sense.
 
-## The idea: a TV studio that never closes
+## The idea: a server that keeps running
 
-Think of tmux as a TV studio:
+tmux has a few parts:
 
-- The **server** is the studio. The shows (your programs) keep running there, even when nobody is watching.
-- A **client** is a TV set. You can switch it on (attach), switch it off (detach), or have two TVs showing the same show.
-- A **session** is a channel. A **window** is one show on the channel. A **pane** is one camera picture inside the show.
+- The **server** is a background process. Your programs run inside it, and keep running even when no one is connected.
+- A **client** is the view in your terminal. You can connect it (attach), disconnect it (detach), or connect two clients to the same session.
+- A **session** is a named group of windows. A **window** fills the client's screen. A **pane** is one part of a window, with one program in it.
 
 ```mermaid
 flowchart LR
@@ -28,7 +28,7 @@ flowchart LR
     end
 ```
 
-The magic: **the server owns the PTYs**. Your programs are attached to the server's PTYs, not to your terminal. When the SSH connection drops, only the client dies. The server and every program in it keep running. You SSH in again, run `tmux attach`, and you're back.
+The key point: **the server owns the PTYs**. Your programs are attached to the server's PTYs, not to your terminal. When the SSH connection drops, only the client dies. The server and every program in it keep running. You SSH in again, run `tmux attach`, and you're back.
 
 ## Under the hood: one server, one socket
 
@@ -75,7 +75,7 @@ TMUX=/tmp/tmux-1000/sandbox,133789,1
 
 ### tmux is a terminal emulator
 
-Here's the part most people miss. Programs in a pane write escape sequences to their PTY. **tmux reads them**, updates its own model of that pane's screen, and then redraws your real terminal, using the capabilities of your real terminal. That's why:
+Many people miss this part. Programs in a pane write escape sequences to their PTY. **tmux reads them**, updates its own model of that pane's screen, and then redraws your real terminal, using the capabilities of your real terminal. That's why:
 
 - Programs inside see `TERM=tmux-256color`: they talk to tmux, not to Ghostty.
 - Features must be supported _twice_: by tmux toward the program, and by your terminal toward tmux. True colour, OSC 52 and extended keys all have tmux options for this reason.
@@ -89,7 +89,7 @@ tmux must share your keyboard with the programs inside. Its solution is a **pref
 - `prefix`: keys after the prefix (`c` new window, `d` detach, ...).
 - `copy-mode` and `copy-mode-vi`: keys inside copy mode.
 
-Pressing the prefix just switches the client to the `prefix` table for the next key. In a sandbox with no config:
+Pressing the prefix only switches the client to the `prefix` table for the next key. In a sandbox with no config:
 
 ```text
 $ tmux -L sandbox list-keys | awk '{print $3}' | sort | uniq -c
@@ -103,7 +103,7 @@ $ tmux -L sandbox list-keys | awk '{print $3}' | sort | uniq -c
 
 (The 17 `-T` lines are bindings with the `-r` flag, which moves the table name one column to the right. All 17 are `prefix` keys, so the `prefix` table has 93 bindings.)
 
-`bind -r` marks a key as **repeatable**: after the prefix, you can press it again and again within `repeat-time` (500 ms by default) without the prefix. That's perfect for resizing panes.
+`bind -r` marks a key as **repeatable**: after the prefix, you can press it again and again within `repeat-time` (500 ms by default) without the prefix. This is useful for resizing panes.
 
 ## Options and their scopes
 
@@ -132,7 +132,7 @@ Nothing is set on the window itself, but it inherits `vi` from the global value.
     The default is `emacs`, unless `VISUAL` or `EDITOR` contains `vi` (from the man page). This setup
     exports `EDITOR=nvim`, so even the sandbox with no config used vi keys in copy mode.
 
-Options whose name starts with `@` are **user options**. tmux stores them and does nothing else. They're perfect for state you want to show in the status bar. This setup uses `@agent_status` on a window to flag a coding agent that needs you.
+Options whose name starts with `@` are **user options**. tmux stores them and does nothing else. They are useful for state you want to show in the status bar. This setup uses `@agent_status` on a window to flag a coding agent that needs you.
 
 ## Formats: tmux's template language
 
@@ -164,7 +164,7 @@ In the real setup, the agents' hooks call a small `agent-tmux-status` command th
 
 ### `escape-time`: the hidden delay
 
-When you press `Esc`, your terminal sends byte `0x1b`. But `Alt+x` is sent as `0x1b` followed by `x`, and arrow keys start with `0x1b [`. So when tmux sees `0x1b`, it doesn't know yet: a lonely `Esc`, or the start of something longer? It **waits** `escape-time` milliseconds for more bytes.
+When you press `Esc`, your terminal sends byte `0x1b`. But `Alt+x` is sent as `0x1b` followed by `x`, and arrow keys start with `0x1b [`. So when tmux sees `0x1b`, it doesn't know yet whether it is a single `Esc` or the start of a longer sequence. It **waits** `escape-time` milliseconds for more bytes.
 
 In Neovim you press `Esc` hundreds of times an hour to leave insert mode. Any wait feels like lag. The default in tmux 3.8 is 10 ms (it used to be 500). This setup sets `set -s escape-time 0`: no waiting at all. The small risk: over a very slow connection, `Alt+x` could arrive in two packets and be seen as `Esc` then `x`.
 
@@ -195,7 +195,7 @@ bind-key  -T root S-Enter send-keys C-j
 - `external` (the default): tmux sets the terminal clipboard when _you_ copy in copy mode, but ignores programs that try.
 - `off`: neither.
 
-With `on`, Neovim on a remote server can set your local clipboard through two layers (see [Terminal and shell](terminal-and-shell.md#osc-52-the-clipboard-over-a-wire)). `allow-passthrough on` lets programs wrap other escape sequences in `ESC P tmux; ... ESC \` to send them straight to the real terminal. Image previews (Snacks image in Neovim, yazi) use this.
+With `on`, Neovim on a remote server can set your local clipboard through two layers (see [Terminal and shell](terminal-and-shell.md#osc-52-the-clipboard-through-the-terminal)). `allow-passthrough on` lets programs wrap other escape sequences in `ESC P tmux; ... ESC \` to send them straight to the real terminal. Image previews (Snacks image in Neovim, yazi) use this.
 
 ## Try it: script a session like `tmux-session start`
 
@@ -233,7 +233,7 @@ The flags that make scripting reliable:
 - **`-P -F '#{pane_id}'`**: print the new pane's ID. IDs (`%1`, `@1`, `$1`) never change, while indexes and names can. Always target by ID in scripts.
 - **`-x - -y -`** (in the Go code): take the size from the current terminal, so the 10% split is correct before you attach.
 - **`new-window -a -d -t @1`**: insert after window `@1`, in the background.
-- **`has-session`**: exit code 0 or 1. The Go code only builds a session if it doesn't exist yet, then attaches. So `sts` twice on the same repo just reattaches.
+- **`has-session`**: exit code 0 or 1. The Go code only builds a session if it doesn't exist yet, then attaches. So `sts` twice on the same repo only reattaches.
 
 You can also drive programs inside panes with `send-keys`, and read the screen with `capture-pane -p`:
 
@@ -280,9 +280,9 @@ If Vim runs in the pane, tmux passes `Ctrl+h` to it. If not, tmux moves to the l
 
 **The Neovim half** maps `Ctrl+h` to `:TmuxNavigateLeft`. It runs `wincmd h`. If the window number didn't change (you're already at the left edge) and `$TMUX` is set, it runs `tmux select-pane -L` itself. So the key crosses the border in both directions.
 
-## TPM: plugins are just scripts
+## TPM: plugins are shell scripts
 
-`plugins.conf` lists plugins with `set -g @plugin 'owner/repo'`. That's just a user option. **TPM** (the Tmux Plugin Manager) reads those options, clones each repository into `TMUX_PLUGIN_MANAGER_PATH` (here `~/.local/share/tmux/plugins`), and runs each plugin's `*.tmux` file. Those files are shell scripts that call `tmux bind-key` and `tmux set`, like the navigator above. `tmux.conf` in this setup clones TPM itself on first start, so a new machine needs no manual step.
+`plugins.conf` lists plugins with `set -g @plugin 'owner/repo'`. That is a normal user option. **TPM** (the Tmux Plugin Manager) reads those options, clones each repository into `TMUX_PLUGIN_MANAGER_PATH` (here `~/.local/share/tmux/plugins`), and runs each plugin's `*.tmux` file. Those files are shell scripts that call `tmux bind-key` and `tmux set`, like the navigator above. `tmux.conf` in this setup clones TPM itself on first start, so a new machine needs no manual step.
 
 The plugins here:
 
@@ -323,7 +323,7 @@ The options file adds: `mouse on`, status bar on top, `base-index 1` and `pane-b
 ## Traps
 
 - **Overriding useful defaults.** The setup's bindings replace some default keys. In a sandbox with no config: `l` is `last-window`, `m` is `select-pane -m` (mark a pane), and `f` is `find-window`. After this config, `prefix l` resizes, so "jump to the last window" is gone. Know what you replace.
-- **A comment that lies.** `keymaps.conf` says `# use control+space for prefix`, but the code sets `C-a`. Also, `unbind C-a` at the top does nothing (`C-a` is not bound by default); the old prefix's binding (`prefix C-b → send-prefix`) is still there. Comments drift. Trust `tmux show-options -g prefix`, not the comment.
+- **A wrong comment.** `keymaps.conf` says `# use control+space for prefix`, but the code sets `C-a`. Also, `unbind C-a` at the top does nothing (`C-a` is not bound by default); the old prefix's binding (`prefix C-b → send-prefix`) is still there. Comments drift. Trust `tmux show-options -g prefix`, not the comment.
 - **Login shells or not.** With no `default-command`, tmux starts each pane as a **login** shell. You can see it above: the first pane (created before the config was loaded) is `-zsh`; the leading dash is how a login shell is marked. This setup sets `default-command $SHELL`, so later panes run a plain interactive `zsh`, which skips `.zprofile`. Fine here (there is no `.zprofile`), but a surprise if you add one later.
 - **Killing the wrong server.** `kts` is an alias for `tmux kill-server`: it ends **every** session on the default socket, with all unsaved work in them. For experiments always use `-L <name>`.
 - **Stale environment.** A pane inherits the environment of the _server_, from when the server started. If you change `SSH_AUTH_SOCK` or `DISPLAY` and reattach, old panes still have the old value. `update-environment` lists variables tmux copies from the client on attach (this setup adds `TERM` and `TERM_PROGRAM`), but only into _new_ panes.

@@ -11,12 +11,12 @@ Four tickets from teams that "just put a queue in between":
 
 A message broker is not a pipe. Each broker makes promises about **who gets a message**, **how long it is kept**, **in what order** it arrives, and **what happens when a consumer dies**. Those promises differ a lot between brokers and between modes of one broker. This page shows them with real runs against NATS (core and JetStream) and Kafka, so you can pick the right one and know what your code must still do itself.
 
-## The idea: a to-do tray and a diary
+## The idea: queues and logs
 
-Two ways to pass work around an office.
+There are two basic ways to pass messages between services.
 
-- A **to-do tray** (a **queue**). Someone puts a letter in. One clerk takes it, does the work and throws the letter away. If two clerks share the tray, each letter goes to one of them. Once the work is done, the letter is gone.
-- A **diary** (a **log**). Someone writes a line at the end. Nobody tears out pages. Every reader keeps their **own bookmark** (an **offset**) and reads at their own speed. A new reader can start at page 1. A reader who spilled coffee on their notes can move their bookmark back and read again.
+- A **queue**. A producer adds a message. One consumer takes it, does the work and acknowledges it. The broker then deletes the message. If two consumers share the queue, each message goes to only one of them.
+- A **log**. A producer appends a message at the end. The broker does not delete messages when they are read. Every reader keeps its **own position** in the log (an **offset**) and reads at its own speed. A new reader can start at the beginning. A reader that processed messages wrongly can move its offset back and read them again.
 
 Queues are about **work**: do this job once. Logs are about **facts**: this happened, and anyone who cares can read about it, now or next month.
 
@@ -24,11 +24,11 @@ Queues are about **work**: do this job once. Logs are about **facts**: this happ
 flowchart LR
     subgraph Q ["Queue: each message to one worker, then deleted"]
         direction LR
-        P1[orders] --> T[["tray: m3 m2 m1"]]
+        P1[orders] --> T[["queue: m3 m2 m1"]]
         T -->|m1| W1[worker 1]
         T -->|m2| W2[worker 2]
     end
-    subgraph L ["Log: messages stay, each reader has a bookmark"]
+    subgraph L ["Log: messages stay, each reader has an offset"]
         direction LR
         P2[orders] --> D[["0 1 2 3 4 5 ..."]]
         D -.->|offset 5| R1[payments]
@@ -48,7 +48,7 @@ Most real brokers can do a bit of both. What matters is which behavior you confi
 
 ### Delivery guarantees
 
-There are only three, and one of them is a lie:
+There are three. The third one does not exist end to end:
 
 - **At-most-once.** Send it and forget it. If anything fails, the message is lost. Never a duplicate.
 - **At-least-once.** Keep it until the consumer says "done" (an **ack**, or an **offset commit**). If the consumer dies before that, deliver it again. Never lost, but **duplicates are normal**.
@@ -141,7 +141,7 @@ mkdir ~/ds-messaging && cd ~/ds-messaging && go mod init example.com/messaging
 go get github.com/nats-io/nats.go@v1.56.0 github.com/twmb/franz-go@v1.22.3
 ```
 
-### Core NATS: nobody listening, nobody gets it
+### Core NATS: no subscriber, no message
 
 ```go
 // Command natscore shows core NATS: fire-and-forget and queue groups.
@@ -571,7 +571,7 @@ $ cat c2.log
 Read it slowly:
 
 - c1 joined alone and got all 3 partitions. When c2 joined, the group **rebalanced**: c1 gave up partition 2 (`revoked [2]`) and c2 got it. `franz-go` uses the **cooperative-sticky** balancer by default: members keep what they have and only move what must move, so c1 kept working on 0 and 1.
-- **Per key, the order is perfect**: o-1 is always created, paid, shipped. **Across partitions there is no order**: c1 handled `o-3 created` before `o-1 paid`, and c2 handled o-5 on its own schedule. If you need "paid before shipped" for one order, give both events the same key.
+- **Per key, the order holds**: o-1 is always created, paid, shipped. **Across partitions there is no order**: c1 handled `o-3 created` before `o-1 paid`, and c2 handled o-5 on its own schedule. If you need "paid before shipped" for one order, give both events the same key.
 - The split is by **partition, not by record**: c1 did 15 records, c2 only 3.
 
 Both consumers left. The group's committed offsets stay in Kafka:
@@ -631,7 +631,7 @@ $ ./bin/kconsume -name c4 -idle 60s
 
 Two things happened:
 
-1. **`o-2 delivered` was handled twice**, once by c3 and once by c4. At-least-once, for real. If "delivered" sends the customer an e-mail, they get two.
+1. **`o-2 delivered` was handled twice**, once by c3 and once by c4. This is at-least-once delivery in practice. If "delivered" sends the customer an e-mail, they get two.
 2. c4 waited **43 seconds** before it got anything. The group waits for the dead member's **session timeout** (45 s by default in `franz-go`, `kgo.SessionTimeout`), minus the time since its last heartbeat. During that time, those partitions are not processed at all. A clean shutdown (`cl.Close()` leaves the group) avoids this wait. A `SIGKILL` or OOM kill does not.
 
 ### Kafka: a log can be read again
@@ -658,7 +658,7 @@ $ grep -h ' o-2 ' a*.log
 - The `shipping` group already read everything, and it did not matter: `analytics` has its own offsets and read all 24 records again. That is a log.
 - **a3 got nothing.** 3 partitions, 4 members: one member is idle. That's ticket 3. The partition count is the upper limit of parallelism in a group, and you choose it when you create the topic. (You can add partitions later, but then `hash(key) % partitions` changes and new events for a key go to a different partition than old ones.)
 
-You can move a group's bookmark yourself. `--dry-run` shows what would happen; `--execute` does it (the group must have no active members):
+You can move a group's offsets yourself. `--dry-run` shows what would happen; `--execute` does it (the group must have no active members):
 
 ```console
 $ kafka consumer-groups --group shipping --reset-offsets --topic order-events --to-earliest --dry-run
@@ -706,7 +706,7 @@ docker rm -f tutor-nats tutor-kafka
 - **More consumers than partitions.** The extra ones are idle. Plan partitions for the peak parallelism you will need.
 - **Changing the partition count of a keyed topic.** Keys move to other partitions; per-key order breaks across the change.
 - **No key, or a random key, for events about one entity.** Then `paid` and `shipped` can be in different partitions and arrive in any order.
-- **A handler slower than the broker's patience.** JetStream redelivers work that is still running after `AckWait`. Kafka's Java client leaves the group when you don't poll within `max.poll.interval.ms`; in `franz-go`, a member that doesn't finish and rejoin within the rebalance timeout (60 s default) is kicked out. Either way, another consumer redoes the work.
+- **A handler slower than the broker's timeout.** JetStream redelivers work that is still running after `AckWait`. Kafka's Java client leaves the group when you don't poll within `max.poll.interval.ms`; in `franz-go`, a member that doesn't finish and rejoin within the rebalance timeout (60 s default) is kicked out. Either way, another consumer redoes the work.
 - **Poison messages with no limit.** One bad record crashes the consumer, it restarts, reads the same record, crashes. Set `MaxDeliver` (JetStream) or catch the error, park the record in a **dead-letter** topic, commit, and move on (Kafka).
 - **No lag alert.** A stuck consumer group looks healthy: no errors, no CPU. Only lag grows.
 

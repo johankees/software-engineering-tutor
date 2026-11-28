@@ -5,7 +5,7 @@
 Your metrics and traces got you this far:
 
 - The [burn-rate alert](slos-and-alerting.md) fired, and the trace shows the time goes into `ordersd`, in one handler. But **which line**?
-- Memory of `ordersd` grows 1.6 MB per second. It is restarted by the OOM killer every few hours, so "it's fine after a restart". Until the next deploy doubles the traffic.
+- Memory of `ordersd` grows 1.6 MB per second. It is restarted by the OOM killer every few hours, so "it's fine after a restart", until the next deploy doubles the traffic.
 - Latency went up 20% after Tuesday's release. Nobody can reproduce it on a laptop.
 - At 14:03 yesterday p99 latency jumped for five minutes. Today everything is fine. What was the CPU doing at 14:03?
 - Someone wants to "just add `import _ "net/http/pprof"`" to the public API server to debug this.
@@ -14,13 +14,13 @@ Logs, metrics and traces tell you **that** and **where in the system**. A profil
 
 The basics of `pprof` (benchmarks, `go tool pprof`, reading `flat` and `cum`, which profile answers which question) are in [Performance](../go/performance.md#profiling-in-production); the Linux side (`perf`, eBPF, `/proc`) is in [Debugging a Linux box](../linux/debugging.md). We build on both.
 
-## The idea: a dashcam, not a crash investigator
+## The idea: record profiles all the time
 
-When a car crashes, investigators can only guess from the wreck. A **dashcam** records all the time, cheaply, in a loop. After the crash you just look at the last minutes.
+There are two ways to profile a live service:
 
-- **On-demand profiling** is the investigator: someone notices a problem, opens a port-forward, and takes a 30-second profile, **if** the problem is still happening.
-- **Continuous profiling** is the dashcam: an agent takes a short profile every 15 seconds, all day, and sends it to a store. "What was the CPU doing at 14:03 yesterday?" becomes a query.
-- The dashcam must be cheap. Sampling profilers cost about 1–5% CPU while they run (a guideline; measure your own service), and Go's heap profile is almost free because the runtime samples allocations anyway.
+- **On-demand profiling**: someone notices a problem, opens a port-forward, and takes a 30-second profile. This only works **if** the problem is still happening.
+- **Continuous profiling**: an agent takes a short profile every 15 seconds, all day, and sends it to a store. "What was the CPU doing at 14:03 yesterday?" becomes a query.
+- Continuous profiling must be cheap. Sampling profilers cost about 1–5% CPU while they run (a guideline; measure your own service), and Go's heap profile is almost free because the runtime samples allocations anyway.
 
 ```mermaid
 flowchart LR
@@ -37,7 +37,7 @@ flowchart LR
 
 ## Under the hood: profiles over HTTP, safely
 
-`net/http/pprof` turns the runtime's profiles into HTTP endpoints. [Performance](../go/performance.md#profiling-in-production) already shows the rule: an **explicit mux on a separate, private port**, never `http.DefaultServeMux`, never the public server. Why so strict? What an open pprof endpoint gives an attacker:
+`net/http/pprof` turns the runtime's profiles into HTTP endpoints. [Performance](../go/performance.md#profiling-in-production) already shows the rule: an **explicit mux on a separate, private port**, never `http.DefaultServeMux`, never the public server. The reason is what an open pprof endpoint gives an attacker:
 
 | Endpoint                         | Risk                                                                                       |
 | -------------------------------- | ------------------------------------------------------------------------------------------ |
@@ -164,7 +164,7 @@ func (l *responseLog) middleware(next http.Handler) http.Handler {
 }
 ```
 
-`teeWriter` copies everything written into `buf`. The bug is visible here because we know it's there. In a real code base it's one of 200 middlewares and caches. Let's find it the way you would in production, from the outside.
+`teeWriter` copies everything written into `buf`. The bug is easy to see here because we know where it is. In a real code base it is one of 200 middlewares and caches. Now find it the way you would in production, from the outside.
 
 ### 1. Start the stack
 
@@ -179,7 +179,7 @@ ORDERS_ADMIN_ADDR=127.0.0.1:20062 ORDERS_ADMIN_TOKEN=s3cret-lab-token \
 ./bin/loadgen -url http://127.0.0.1:20081 -rps 100 &
 ```
 
-`-segment-writer.min-ready-duration=0` stops Pyroscope 2.x from waiting 30 s before `/ready` turns green; its own log says this is safe for a single local instance. `loadgen` is the GET load generator from [SLOs and alerting](slos-and-alerting.md#4-run-it-for-real).
+`-segment-writer.min-ready-duration=0` stops Pyroscope 2.x from waiting 30 s before `/ready` turns green; its own log says this is safe for a single local instance. `loadgen` is the GET load generator from [SLOs and alerting](slos-and-alerting.md#4-run-the-alert-rules).
 
 The token works:
 
@@ -228,7 +228,7 @@ Flat at 3–4 MB. (That run also had no `ORDERS_ADMIN_TOKEN`, and the debug endp
 
 ### 3. Continuous profiling: when did it start, and where?
 
-Pyroscope already has the answer; nobody had to be awake when it started. The UI is at `http://localhost:20040`. The same data comes from its HTTP API: `/pyroscope/render` returns a flame graph as JSON, for a **profile type** and a label selector. The in-use heap of `ordersd` over the four minutes of the run:
+Pyroscope already has the data; nobody had to be watching when the leak started. The UI is at `http://localhost:20040`. The same data comes from its HTTP API: `/pyroscope/render` returns a flame graph as JSON, for a **profile type** and a label selector. The in-use heap of `ordersd` over the four minutes of the run:
 
 ```console
 $ Q=$(jq -rn '"memory:inuse_space:bytes:space:bytes{service_name=\"ordersd\"}"|@uri')
@@ -360,15 +360,14 @@ Clean up: stop `loadgen` and `ordersd`, then `docker rm -f tutor-obs-c-pyroscope
 - **Expecting mutex and block profiles without enabling them.** They are off until you call `runtime.SetMutexProfileFraction` and `runtime.SetBlockProfileRate`.
 - **Forgetting the side effects of the profiler.** `pyroscope-go` forces a `runtime.GC()` before a heap snapshot if no GC ran since the last one (see `DisableGCRuns`). Usually harmless, but it is a GC you didn't ask for.
 - **High-cardinality profile tags.** Tagging profiles with `user_id` or `request_id` has the same cost problem as metric labels. Tag with version, region, endpoint.
-- **"We'll add profiling when we need it."** The interesting minute is always in the past. Run continuous profiling before the incident.
+- **"We'll add profiling when we need it."** The minute you need to see is always in the past. Run continuous profiling before the incident.
 
 ## Check yourself
 
 ??? question "1. A colleague wants to add `import _ \"net/http/pprof\"` to `ordersd` \"just for today\". The public server uses its own `ServeMux`, not the default one. Is it safe?"
 
     The import only registers on `http.DefaultServeMux`, so the public server does not serve
-    the routes, as long as nothing serves the default mux. But it is a trap waiting to
-    happen: any later `http.ListenAndServe(addr, nil)` (a quick metrics server, a test
+    the routes, as long as nothing serves the default mux. But it is a risk: any later `http.ListenAndServe(addr, nil)` (a quick metrics server, a test
     helper) exposes everything. Register the handlers explicitly on the admin mux, behind a
     token, on a private port.
 
@@ -416,6 +415,6 @@ Clean up: stop `loadgen` and `ordersd`, then `docker rm -f tutor-obs-c-pyroscope
 
 ## You finished Observability
 
-You can now make `ordersd` answer questions you didn't plan for: structured logs with request and trace IDs, metrics you can aggregate cheaply, traces that cross services, SLOs that turn "is it bad?" into a number with an error budget, alerts that page only when users are hurt, and profiles that point to the line of code, even for a problem that happened yesterday.
+You can now make `ordersd` answer questions you didn't plan for: structured logs with request and trace IDs, metrics you can aggregate cheaply, traces that cross services, SLOs that turn "is it bad?" into a number with an error budget, alerts that page only when users are affected, and profiles that point to the line of code, even for a problem that happened yesterday.
 
 Next, [CI/CD and delivery](../delivery/index.md): how a commit becomes running code, and how the SLOs and burn rates from this chapter decide automatically whether a canary is promoted or rolled back.

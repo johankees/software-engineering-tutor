@@ -4,7 +4,7 @@ How systems get attacked, and the small set of ideas that stop most attacks.
 
 ## Why go deeper?
 
-Security problems rarely look like a movie hacker. They look like this:
+Most security problems are simple mistakes, not clever attacks. They look like this:
 
 - An API returns another customer's order, because the handler checked the login but not the owner.
 - A JWT is accepted with `"alg": "none"`.

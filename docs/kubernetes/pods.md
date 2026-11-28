@@ -2,7 +2,7 @@
 
 ## Why care?
 
-Five things you will see in `kubectl get pods`, sooner or later:
+Five things you will see in `kubectl get pods` at some point:
 
 - `READY 0/2`, `STATUS Running`. Running, but not ready? And why 2, when you wrote one container?
 - `CrashLoopBackOff`, with `RESTARTS 4`, while the code "works on my machine".
@@ -14,14 +14,14 @@ A pod is the smallest thing Kubernetes runs. It is not a container. It is a smal
 
 On this page you deploy `ordersd` as a bare pod, find the hidden `pause` container on the node, add an init container and a sidecar, wire the probes to `/healthz` and `/readyz`, and then stop the pod and watch the shutdown, second by second.
 
-## The idea: a shared flat
+## The idea: containers that share one network
 
-In [Namespaces and cgroups](../linux/namespaces-and-cgroups.md) a container was a flat with frosted windows. A **pod is a shared flat with roommates**.
+In [Namespaces and cgroups](../linux/namespaces-and-cgroups.md) a container was a process with its own set of Linux namespaces. A **pod** is a group of containers that share some of those namespaces.
 
-- The roommates share **one front door and one address**: one network namespace, one IP, one `localhost`. They can talk to each other through the hall (`localhost:8080`), and they must not both want the same port.
-- Each roommate has **their own room**: their own filesystem (mount namespace), their own image, their own processes.
-- There is a **landlord's helper** who holds the lease and never leaves: the `pause` container. As long as the helper is there, the flat (the namespaces) exists, even when a roommate moves out and a new one moves in.
-- They move in and out **together**: the pod is scheduled to one node, starts as one, stops as one.
+- The containers share **one network**: one network namespace, one IP, one `localhost`. They can reach each other on `localhost` (for example `localhost:8080`), and two of them cannot listen on the same port.
+- Each container keeps **its own filesystem** (mount namespace), its own image and its own processes.
+- A small extra container, **`pause`**, holds the shared namespaces open. As long as `pause` runs, the namespaces exist, even when an app container exits and is replaced.
+- The containers are scheduled, started and stopped **together**: the whole pod runs on one node.
 
 ```mermaid
 flowchart TB
@@ -264,7 +264,7 @@ $ kubectl -n tutor-pods logs tutor-orders-full -c poller | head -2
 ```
 
 - `Init:0/2` for about 4 seconds: `migrate` is sleeping. Nothing else runs.
-- `Init:1/2`, then at once `1/2`: the sidecar started and counts in `READY`. That's the "2 when you wrote one" from the top of the page. Sidecars count; classic init containers don't.
+- `Init:1/2`, then at once `1/2`: the sidecar started and counts in `READY`. This is why the message at the top of the page shows 2 containers when you wrote one. Sidecars count; classic init containers don't.
 - The poller's first request failed with `Connection refused`: it started **before** `ordersd`. A sidecar that the app depends on (a proxy, say) can get a `startupProbe`, and then the next container waits until that probe passes.
 - `localhost:8080` from the busybox container reached `ordersd`: one network namespace.
 
@@ -333,7 +333,7 @@ LAST SEEN            TYPE      REASON      OBJECT               MESSAGE
 17s (x4 over 33s)    Warning   BackOff     Pod/tutor-badprobe   Back-off restarting failed container ordersd in pod tutor-badprobe_tutor-pods(838a4e55-bed7-48df-8421-bf535bf32740)
 ```
 
-A perfectly healthy server, killed every 6 seconds (3 failures × 2 s) because of a 404. The events tell you: `Liveness probe failed ... 404`, then `Killing`. The same typo in a **readiness** probe (`/ready` instead of `/readyz`) does no killing at all. The pod just never gets traffic:
+A healthy server, killed every 6 seconds (3 failures × 2 s) because of a 404. The events tell you: `Liveness probe failed ... 404`, then `Killing`. The same typo in a **readiness** probe (`/ready` instead of `/readyz`) does no killing at all. The pod just never gets traffic:
 
 ```console
 $ kubectl -n tutor-pods get pod tutor-notready
@@ -395,7 +395,7 @@ ordersd  running     ready=true  started=true
 
 In time order: scheduled at :49, sandbox and network ready at :50, init done at :54 (the 3-second `migrate`), ready at :55. When a pod is slow to start, these timestamps tell you which step was slow. `Ready` is the condition Services look at.
 
-### Termination: the 30 seconds that decide your 502s
+### Termination: the grace period and 502 errors
 
 This is the most important part of the page. When a pod is deleted (by you, by a rollout, by a node drain), this happens:
 
@@ -543,7 +543,7 @@ time=2026-11-26T21:53:21.089Z level=INFO msg="shutdown complete" service=ordersd
 
 Delete at :16.9, `SIGTERM` at :21.1: four seconds of `preStop` sleep (plus the kubelet noticing), during which the app served normally. The time of the `preStop` hook **counts against** the grace period. A `preStop` of 25 seconds with the default grace of 30 leaves 5 for the real shutdown.
 
-Use one or the other: a delay in the app (it can turn `/readyz` red at once, which is better) or a `preStop` sleep (for apps you can't change). `exec` hooks (`command: [sleep, "5"]`) need the binary in the image; distroless has none.
+Use one or the other: a delay in the app (it can make `/readyz` fail at once, which is better) or a `preStop` sleep (for apps you can't change). `exec` hooks (`command: [sleep, "5"]`) need the binary in the image; distroless has none.
 
 ### When the grace period runs out
 
@@ -594,7 +594,7 @@ No `shutdown complete`. After 5 seconds the kubelet sent `SIGKILL`, and in-fligh
 
 ## Try it: break a pod three ways
 
-Two classic failures, next to the bad probe from above. A typo in configuration, and a tag that doesn't exist:
+Here are two common failures, next to the bad probe from above. A typo in configuration, and a tag that doesn't exist:
 
 ```yaml
 # tutor-crash.yaml
@@ -636,7 +636,7 @@ tutor-noimage    0/1     ImagePullBackOff   0             44s
 tutor-ordersd    1/1     Running            0             4m28s
 ```
 
-**The crash.** The container starts, exits with code 1, and the kubelet restarts it, waiting longer each time (10 s, 20 s, 40 s... up to 5 minutes). Between tries, the status shows the last exit (`Error`) or the wait (`CrashLoopBackOff`). Watch it flip:
+**The crash.** The container starts, exits with code 1, and the kubelet restarts it, waiting longer each time (10 s, 20 s, 40 s... up to 5 minutes). Between tries, the status shows the last exit (`Error`) or the wait (`CrashLoopBackOff`). Watch the status change:
 
 ```console
 $ kubectl -n tutor-pods get pod tutor-crash -w --output-watch-events

@@ -2,7 +2,7 @@
 
 ## Why care?
 
-You will never design a cipher. You will make crypto decisions every month anyway:
+You will probably never design a cipher. But you will make decisions about cryptography often:
 
 - "Hash the API key before we store it. SHA-256 is fine, right?"
 - "Sign the webhook body: `sha256(secret + body)`."
@@ -13,18 +13,18 @@ Two of those four are broken, and on this page you break them on your own machin
 
 This page gives you the toolbox (hashes, MACs, authenticated encryption, public-key crypto, key derivation, password hashing, randomness, post-quantum) with Go's standard library, real outputs and real timings. It's the base for the fixes in the [threat model](threat-modeling.md): TLS, tokens, signed images and stored secrets are all built from these parts.
 
-## The idea: a toolbox, not a magic box
+## The idea: one tool per job
 
-Think of a locksmith's workshop. Each tool does one job:
+Cryptography is a set of tools. Each tool solves one problem:
 
-- A **hash** is a **fingerprint**. Anyone can take one, it's always the same for the same finger, and you can't rebuild the finger from it.
-- A **MAC** is a **wax seal with a stamp only you and your partner own**. It proves the letter came from one of you and was not opened.
-- **Authenticated encryption** (AEAD) is a **locked box with a seal on it**: nobody can read it, and nobody can change it without breaking the seal.
-- A **signature** is a **handwritten signature that anyone can check**, but only you can make.
-- A **key exchange** is **two people mixing paint** to agree on a colour in public ([TLS](../networking/tls.md#the-idea-a-padlock-a-signature-and-a-password) explains this one).
-- A **password hash** is a **fingerprint that takes deliberately long to take**, so a thief with a million guesses gets tired.
+- A **hash** turns any input into a short, fixed-size value. Anyone can compute it, the same input always gives the same value, and you cannot get the input back from it.
+- A **MAC** (message authentication code) is a tag computed with a secret key that two parties share. It proves that the message came from someone with the key and was not changed.
+- **Authenticated encryption** (AEAD) keeps data secret and detects any change to it.
+- A **signature** is made with a private key and checked with a public key. Anyone can check it, but only the key owner can make it.
+- A **key exchange** lets two parties agree on a shared secret over a public network ([TLS](../networking/tls.md#the-idea-encryption-key-exchange-and-signatures) explains this one).
+- A **password hash** is a hash that is slow on purpose, so an attacker who tries millions of guesses needs a very long time.
 
-The mistakes on this page all come from using one tool for another tool's job: a fingerprint as a seal, a seal as a lock.
+The mistakes on this page all come from using one tool for another tool's job: a hash as a MAC, or a MAC as encryption.
 
 ```mermaid
 flowchart TD
@@ -290,7 +290,7 @@ subtle.ConstantTimeCompare       1044.2 ns      1023.8 ns
 
 Read it carefully:
 
-- The **naive loop** leaks loudly: 2 ns when the first byte is wrong, 35 ns when only the last one is. Each correct byte adds about half a nanosecond.
+- The **naive loop** leaks clearly: 2 ns when the first byte is wrong, 35 ns when only the last one is. Each correct byte adds about half a nanosecond.
 - **`==`** looks safe at 64 bytes, because Go compares 32 bytes at a time with vector instructions. At 4096 bytes it leaks (4 ns vs 51 ns). "Safe on this CPU, at this length, with this Go version" is not a property you want to depend on.
 - **`subtle.ConstantTimeCompare`** takes the same time either way. It is slower, and that's fine. (It returns early only when the **lengths** differ, and lengths are not secret.)
 
@@ -432,15 +432,15 @@ p1 xor p2: 000000000000000000000000000003000000000000000000000000000000080000000
 recovered: "refund order 42 to customer c-9, amount 999.0"
 ```
 
-The two lines are identical: the ciphertexts leak exactly the XOR of the plaintexts, without the key. The zeros even show where the messages are the same. With one known plaintext, the other one is free.
+The two lines are identical: the ciphertexts leak exactly the XOR of the plaintexts, without the key. The zeros even show where the messages are the same. If the attacker knows one plaintext, they can recover the other.
 
-It gets worse. With two messages under one nonce, an attacker can also solve for GCM's internal authentication key and then **forge** tags for new messages under that nonce. So a reused nonce costs you both secrecy and integrity. A 256-bit key does not help at all.
+There is a second problem. With two messages under one nonce, an attacker can also solve for GCM's internal authentication key and then **forge** tags for new messages under that nonce. So a reused nonce costs you both secrecy and integrity. A 256-bit key does not help at all.
 
 ## Under the hood: public-key crypto
 
 Symmetric crypto needs both sides to share a key. Public-key crypto splits a key into two halves: a **private** key you keep, and a **public** key you hand out. Two jobs:
 
-- **Key exchange** (X25519, ECDH on P-256, ML-KEM): two sides agree on a shared secret over an open line. Then they switch to an AEAD. [TLS](../networking/tls.md#the-idea-a-padlock-a-signature-and-a-password) shows X25519 and ML-KEM-768 in Go, with real sizes.
+- **Key exchange** (X25519, ECDH on P-256, ML-KEM): two sides agree on a shared secret over an open line. Then they switch to an AEAD. [TLS](../networking/tls.md#the-idea-encryption-key-exchange-and-signatures) shows X25519 and ML-KEM-768 in Go, with real sizes.
 - **Signatures** (Ed25519, ECDSA, RSA-PSS, ML-DSA): the private key signs, anyone with the public key verifies. Use them when the verifier must not be able to sign: release artifacts, container images, JWTs checked by many services, Git commits.
 
 RSA can do both jobs, but today you mostly meet it in certificates and old JWTs (RS256). Don't use it for new designs unless something forces you.
@@ -494,7 +494,7 @@ HKDF is for secrets that are already random (key exchange output, a master key).
 
 ## Under the hood: passwords
 
-A password database will leak one day. When it does, the attacker guesses passwords offline, as fast as their hardware allows. A plain hash, even salted, is a gift: it's designed to be fast. A **password hash** is designed to be slow and, ideally, to need a lot of memory, so GPUs and custom chips don't help much.
+A password database will leak one day. When it does, the attacker guesses passwords offline, as fast as their hardware allows. A plain hash, even salted, helps the attacker: it is designed to be fast. A **password hash** is designed to be slow and, ideally, to need a lot of memory, so GPUs and custom chips don't help much.
 
 Always use a random **salt** per user (so equal passwords get different hashes, and one guess can't test every user at once). The functions below take care of that, or take the salt as an argument.
 
@@ -568,7 +568,7 @@ NIST standardised two replacements, and Go ships both:
 - **ML-KEM** (FIPS 203, `crypto/mlkem`): a key encapsulation mechanism, the post-quantum replacement for ECDH.
 - **ML-DSA** (FIPS 204, `crypto/mldsa`): signatures. You saw its size above.
 
-Nobody wants to bet everything on new maths either. So TLS uses a **hybrid**: run X25519 _and_ ML-KEM-768, and feed both secrets into the key schedule. An attacker must break both. Go turned this on by default in Go 1.24 (`X25519MLKEM768`) and added `SecP256r1MLKEM768` and `SecP384r1MLKEM1024` in Go 1.26 (`go doc crypto/tls.Config`). Check it with an in-memory handshake (code in `pqtls/`: a self-signed certificate, `net.Pipe`, and `tls.Client`/`tls.Server` with **no** `CurvePreferences`):
+ML-KEM is new and less studied, so TLS does not rely on it alone. It uses a **hybrid**: run X25519 _and_ ML-KEM-768, and feed both secrets into the key schedule. An attacker must break both. Go turned this on by default in Go 1.24 (`X25519MLKEM768`) and added `SecP256r1MLKEM768` and `SecP384r1MLKEM1024` in Go 1.26 (`go doc crypto/tls.Config`). Check it with an in-memory handshake (code in `pqtls/`: a self-signed certificate, `net.Pipe`, and `tls.Client`/`tls.Server` with **no** `CurvePreferences`):
 
 ```go
 	st := client.ConnectionState()
@@ -650,7 +650,7 @@ Every broken demo on this page used a correct algorithm from Go's standard libra
 
 ## Recap
 
-- **Hash** (SHA-256): fingerprint, no key. Fine for checksums and digests. `sha256(secret || msg)` is **not** a MAC: length extension forges it.
+- **Hash** (SHA-256): a fixed-size digest, no key. Fine for checksums and digests. `sha256(secret || msg)` is **not** a MAC: length extension forges it.
 - **HMAC**: the MAC to use. Compare with **`hmac.Equal`**: a naive loop leaked 2 ns vs 35 ns, and `==` leaked at 4 KiB.
 - **AEAD** (AES-GCM, XChaCha20-Poly1305): encrypt and authenticate, with associated data for context. **Never reuse a nonce**: one repeat leaked the XOR of two plaintexts.
 - **Signatures**: Ed25519 by default (32-byte keys, 64-byte signatures, fast). RSA only when forced. **Key exchange** happens inside TLS.

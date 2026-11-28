@@ -2,7 +2,7 @@
 
 ## Why care?
 
-Three conversations that happen in every company, usually too late:
+Teams often ask questions like these, usually too late:
 
 - "We added login last sprint. Why can a logged-in customer still read every order?"
 - "The pentest found 40 issues. Which ones do we fix first?"
@@ -12,13 +12,11 @@ Each one is a design question that nobody asked at design time. A **threat model
 
 On this page you threat-model the `orders` service from the [Go chapter](../go/services.md). You collect real evidence from the running service, draw where the trust changes, walk through every part with STRIDE, and end with a table of threats. Each threat links to the page in this chapter that fixes it.
 
-## The idea: a burglar's walk around the house
+## The idea: four questions about your design
 
-Before you buy locks, walk around your house like a burglar would. Where are the valuables? (The laptop, the passports.) Who might come? (A passing thief, a neighbour's kid, the cleaner with a key.) Where are the doors and windows? (Those are the places where "outside" becomes "inside".) What could each of them do at each door?
+A threat model looks at a system from the attacker's side. You list what is valuable, who might attack it, and the places where data or requests enter from a less trusted area. For each entry point you ask what an attacker could do there. Then you protect the entry points that matter most, and you accept the remaining risk on purpose.
 
-Then you buy locks for the doors that matter, and you decide to live with the rest. A cat flap is a hole in the door, but you accept it.
-
-That is a threat model. Adam Shostack, who wrote the standard book on it, puts it in four questions:
+Adam Shostack, who wrote the standard book on threat modeling, puts it in four questions:
 
 1. **What are we working on?** Draw the system: the parts and the data that moves between them.
 2. **What can go wrong?** Walk every part with a checklist (STRIDE, below).
@@ -40,9 +38,9 @@ flowchart LR
     P -- "SQL (boundary 2)" --> DB
 ```
 
-The boxes with labels are **trust boundaries**. Every arrow that crosses one is a door. Most attacks happen at a door.
+The boxes with labels are **trust boundaries**. Every arrow that crosses one is an entry point. Most attacks happen at an entry point.
 
-## Under the hood: the four words
+## Under the hood: the building blocks
 
 ### Assets: what is worth stealing or breaking?
 
@@ -54,11 +52,11 @@ An **asset** is something an attacker wants, or something you can't afford to lo
 - **Credentials**: database passwords, signing keys, CI tokens. They are assets because they unlock the other assets.
 - **The build pipeline and the image**: whoever controls them controls what runs in production.
 
-The last two are easy to forget. Attackers love them because one stolen CI token is worth more than a thousand stolen orders.
+The last two are easy to forget. Attackers target them, because one stolen CI token can give access to everything else, including all the orders.
 
 ### Attackers: who, and what can they do?
 
-You don't need a full list of villains. You need a few **attacker profiles**, each with what they can already reach:
+You do not need a full list of possible attackers. You need a few **attacker profiles**, each with what they can already reach:
 
 | Attacker                 | What they already have                       | Typical goal                       |
 | ------------------------ | -------------------------------------------- | ---------------------------------- |
@@ -144,7 +142,7 @@ quadrantChart
     Missing audit log: [0.6, 0.3]
 ```
 
-Don't argue for an hour about whether something is a 2 or a 3. The point is the order, not the number.
+Do not spend a long time on whether something is a 2 or a 3. The point is the order, not the number.
 
 ### Four answers to "what do we do?"
 
@@ -333,7 +331,7 @@ Here is the output: the table you put in the design document or the ticket.
 
 \* Accepted until #1 is done, because before that there is no "who" to log. Owner and date go in the ticket.
 
-Notice what the table gives you: the order to read the rest of this chapter in, for this service. Threats 1 and 2 together are the classic API breach, and they are two different fixes.
+Notice what the table gives you: the order to read the rest of this chapter in, for this service. Threats 1 and 2 together are the most common API breach, and they are two different fixes.
 
 ## Traps
 
@@ -393,7 +391,7 @@ Notice what the table gives you: the order to read the rest of this chapter in, 
 
 - A threat model is four questions: **what are we working on, what can go wrong, what will we do, did we do a good job.** Thirty minutes is enough to start.
 - List the **assets** (data, money, availability, credentials, the build) and a few **attacker profiles** with what they already have.
-- **Trust boundaries** are the doors. The trusted side checks everything that comes through.
+- **Trust boundaries** are the entry points. The trusted side checks everything that comes through.
 - Draw a **data-flow diagram** with five shapes, then walk it with **STRIDE per element**: Spoofing, Tampering, Repudiation, Information disclosure, Denial of service, Elevation of privilege.
 - Rank by **likelihood x impact**, then **mitigate, eliminate, transfer or accept**, in writing.
 - Use **evidence**: `ss`, `curl`, `grep` and `docker image inspect` showed that `ordersd` listens on all interfaces, accepts every request, and logs no caller.

@@ -2,7 +2,7 @@
 
 ## Why care?
 
-Pods come and go. Every new Pod gets a new IP. Yet `orderctl` must reach `ordersd`, and `ordersd` must reach its database, with an address that never changes. That address is a **Service**. Most network mysteries in Kubernetes live here:
+Pods come and go. Every new Pod gets a new IP. Yet `orderctl` must reach `ordersd`, and `ordersd` must reach its database, with an address that never changes. That address is a **Service**. Most network problems in Kubernetes start here:
 
 - "I can `curl` the Service, but `ping` says nothing answers." (That is normal.)
 - "One of three Pods gets almost no traffic, and another gets all of it." (Long-lived connections.)
@@ -11,14 +11,14 @@ Pods come and go. Every new Pod gets a new IP. Yet `orderctl` must reach `orders
 
 On this page you look inside a Service: the API objects, the actual kernel rules that kube-proxy writes on a node, and the DNS packets a Go program sends. It builds on [Container networking](../containers/networking.md), [DNS](../networking/dns.md) and [Load balancers and proxies](../networking/load-balancers.md).
 
-## The idea: a company phone number
+## The idea: a stable virtual IP in front of changing Pods
 
-A company prints one phone number on its website. Nobody sits at that number. When you dial it, the phone system picks one of the people on duty and connects you. When people come and go, the list of people on duty changes, but the number stays.
+A Service gives a group of Pods one stable address. Clients connect to that address, and each connection is sent to one of the ready Pods. When Pods are replaced, the list of Pods changes, but the address stays the same. Four parts make this work:
 
-- The **Service** is the published number: a **ClusterIP** like `10.96.7.22`. No machine has this address.
-- The **EndpointSlice** is the duty list: which Pod IPs are ready right now.
-- **kube-proxy** is the phone system. It runs on every node, and turns "call the number" into "call this person" by rewriting packets in the kernel.
-- **CoreDNS** is the company directory. You look up `tutor-ordersd`, and it tells you the number.
+- The **Service** has a **ClusterIP**, a virtual IP such as `10.96.7.22`. No machine has this address.
+- The **EndpointSlice** lists which Pod IPs are ready right now.
+- **kube-proxy** runs on every node. It writes kernel rules that rewrite packets sent to the ClusterIP so they go to one of the Pod IPs.
+- **CoreDNS** is the cluster's DNS server. A lookup of `tutor-ordersd` returns the ClusterIP.
 
 ```mermaid
 flowchart LR
@@ -67,7 +67,7 @@ tutor-ordersd-5d867f797c-wb78l   1/1     Running   0          3s    10.244.1.127
 tutor-ordersd-5d867f797c-xmbnp   1/1     Running   0          3s    10.244.1.126   tutor-worker   <none>           <none>
 ```
 
-Two client Pods help with the tests: `tutor-shell` with `busybox`, and `tutor-netshoot` with the `nicolaka/netshoot` image, a toolbox with `dig`, `tcpdump`, `curl` and friends:
+Two client Pods help with the tests: `tutor-shell` with `busybox`, and `tutor-netshoot` with the `nicolaka/netshoot` image, a toolbox with `dig`, `tcpdump`, `curl` and other network tools:
 
 ```console
 $ kubectl -n tutor-services run tutor-shell --image=busybox:1.37 --restart=Never -- sleep 3600
@@ -91,7 +91,7 @@ NAME            PARENTREF
 10.96.7.22      services/tutor-services/tutor-ordersd
 ```
 
-That's all. The API server writes the number down. It does not configure any network card. On the node, no interface has this address, and the routing table sends it to the default gateway, like any internet address:
+That is all. The API server records the address. It does not configure any network card. On the node, no interface has this address, and the routing table sends it to the default gateway, like any internet address:
 
 ```console
 $ docker exec tutor-worker sh -c 'ip -o addr | grep -c 10.96.7.22; ip route get 10.96.7.22'
@@ -113,7 +113,7 @@ From <a router outside the laptop> icmp_seq=1 Packet filtered
 
 (The router's public address is removed here.) Never debug a Service with `ping`. Use `curl`, `nc -vz`, or `wget`.
 
-### Part 2: the EndpointSlice, the duty list
+### Part 2: the EndpointSlice, the list of ready Pods
 
 The **EndpointSlice controller** (in the controller manager) watches Services and Pods. For every Service with a selector, it writes **EndpointSlice** objects with the matching Pods' IPs:
 
@@ -301,17 +301,17 @@ $ kubectl -n tutor-services logs tutor-kp-help | grep -- --proxy-mode
       --proxy-mode ProxyMode                         Which proxy mode to use: on Linux this can be 'iptables' (default), 'ipvs', or 'nftables'. On Windows the only supported value is 'kernelspace'. This parameter is ignored if a config file is specified by --config.
 ```
 
-| Mode       | How it works                                                                                       | Good                                           | Bad                                                                                         |
-| ---------- | -------------------------------------------------------------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `iptables` | Chains as above. Picking a backend walks the list rule by rule.                                    | Default, everywhere, well understood           | Cost grows with the number of Services and endpoints; big rule rewrites on every change     |
-| `ipvs`     | The kernel's L4 load balancer (IP Virtual Server). One virtual server per ClusterIP, a hash lookup | Fast lookup, more algorithms (`rr`, `lc`, ...) | Still needs iptables for some parts; a separate kernel subsystem to learn; being phased out |
-| `nftables` | Native nftables, with **maps**: one lookup from (IP, port) to a chain, no list walking             | Fast, incremental updates, the future          | Newer; needs a recent kernel (5.13+); some tools still expect iptables rules                |
+| Mode       | How it works                                                                                       | Good                                            | Bad                                                                                         |
+| ---------- | -------------------------------------------------------------------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `iptables` | Chains as above. Picking a backend walks the list rule by rule.                                    | Default, everywhere, well understood            | Cost grows with the number of Services and endpoints; big rule rewrites on every change     |
+| `ipvs`     | The kernel's L4 load balancer (IP Virtual Server). One virtual server per ClusterIP, a hash lookup | Fast lookup, more algorithms (`rr`, `lc`, ...)  | Still needs iptables for some parts; a separate kernel subsystem to learn; being phased out |
+| `nftables` | Native nftables, with **maps**: one lookup from (IP, port) to a chain, no list walking             | Fast, incremental updates; the recommended mode | Newer; needs a recent kernel (5.13+); some tools still expect iptables rules                |
 
 In `nftables` mode you would see one table, `table ip kube-proxy`, with a `service-ips` map instead of one `KUBE-SERVICES` rule per Service. For new clusters on a recent kernel, the Kubernetes documentation recommends `nftables` over `ipvs`.
 
 <!-- TODO(real-output): show `nft list table ip kube-proxy` from a kind cluster created with `networking.kubeProxyMode: nftables`. This shared cluster runs iptables mode, and changing kube-proxy in kube-system is not allowed. -->
 
-Some clusters have **no kube-proxy at all**. Cilium, for example, does the same job with eBPF programs. The Service API is the same; only the "phone system" is different, and `iptables-save` shows nothing.
+Some clusters have **no kube-proxy at all**. Cilium, for example, does the same job with eBPF programs. The Service API is the same; only the component that programs the kernel is different, and `iptables-save` shows nothing.
 
 ### NodePort and LoadBalancer: from outside the cluster
 
@@ -356,7 +356,7 @@ The masquerade means the Pod sees the **node's** IP as the client, not the real 
 
 `type: LoadBalancer` is NodePort plus a request to the cloud: "give me an external load balancer that sends to these node ports". On `kind` nothing answers that request, and `EXTERNAL-IP` stays `<pending>` (tools like `cloud-provider-kind` or MetalLB fill the gap). A load balancer per Service gets expensive. That is one reason for [Ingress and Gateway API](ingress-and-gateway-api.md): one load balancer, and an L7 proxy behind it for many Services.
 
-Other knobs on a Service:
+Other fields on a Service:
 
 | Field                   | Default   | Does                                                                              |
 | ----------------------- | --------- | --------------------------------------------------------------------------------- |
@@ -365,7 +365,7 @@ Other knobs on a Service:
 | `externalTrafficPolicy` | `Cluster` | `Local`: keep the client IP, only use Pods on the receiving node                  |
 | `trafficDistribution`   | unset     | `PreferClose`: prefer endpoints in the same zone (saves cross-zone traffic costs) |
 
-### Headless Services: no number, just the list
+### Headless Services: Pod IPs instead of a ClusterIP
 
 Sometimes the client wants to choose the Pod itself: a database client that must talk to the primary, a gRPC client that balances requests across all Pods, a StatefulSet member that must find its peers. A **headless** Service (`clusterIP: None`) gets no ClusterIP and no kube-proxy rules. DNS returns the Pod IPs directly:
 
@@ -403,7 +403,7 @@ $ kubectl -n tutor-services exec tutor-netshoot -- dig +short tutor-db-1.tutor-d
 10.244.1.88
 ```
 
-The catch: the client now does the balancing, and it must **re-resolve**. DNS answers are cached (CoreDNS here: 30 s), and a Go program that resolves once at startup keeps the old IPs forever. gRPC-Go's `dns:///` resolver re-resolves; most HTTP clients do not.
+The cost: the client now does the balancing, and it must **re-resolve**. DNS answers are cached (CoreDNS here: 30 s), and a Go program that resolves once at startup keeps the old IPs forever. gRPC-Go's `dns:///` resolver re-resolves; most HTTP clients do not.
 
 ## Under the hood: cluster DNS
 
@@ -449,7 +449,7 @@ Read it as a list of plugins, tried in order for each query:
 - `kubernetes cluster.local ...`: answer names under `cluster.local` (and reverse lookups) from the API. CoreDNS **watches** Services and EndpointSlices like any controller, so the answers are in memory. `ttl 30` is the TTL clients get.
 - `forward . /etc/resolv.conf`: everything else goes to the resolver of the node (here, Docker's, then the laptop's).
 - `cache 30`: cache forwarded answers for up to 30 s, but not `cluster.local` (those are fresh from memory anyway).
-- `health` with `lameduck 5s`: when CoreDNS stops, it keeps answering for 5 s while it reports unhealthy. The same trick as `ORDERS_SHUTDOWN_DELAY`.
+- `health` with `lameduck 5s`: when CoreDNS stops, it keeps answering for 5 s while it reports unhealthy. The same technique as `ORDERS_SHUTDOWN_DELAY`.
 - `loadbalance`: shuffle the order of A records in each answer.
 
 ### `/etc/resolv.conf` in a Pod
@@ -479,7 +479,7 @@ The full names:
 
 ### `ndots:5`: one lookup, ten queries
 
-[DNS](../networking/dns.md#search-domains-and-ndots-one-lookup-eight-queries) explains `ndots` and search domains in a lab. Here is the real thing, in a Pod. A tiny Go program resolves names with Go's own resolver (static binary, `CGO_ENABLED=0`):
+[DNS](../networking/dns.md#search-domains-and-ndots-one-lookup-eight-queries) explains `ndots` and search domains in a lab. Here is the same effect in a real Pod. A small Go program resolves names with Go's own resolver (static binary, `CGO_ENABLED=0`):
 
 ```go
 // Command resolve looks up each argument with Go's resolver and prints the addresses.
@@ -593,7 +593,7 @@ tutor-ordersd.tutor-workloads -> [10.96.223.34] <nil> (20ms)
 10.96.0.10.53: 55596+ [1au] A? tutor-ordersd.tutor-workloads.svc.cluster.local. (76)
 ```
 
-`tutor-ordersd.tutor-workloads` has one dot, so it is now tried as a complete name first. That query leaves the cluster, to a real DNS server on the internet, and fails: 20 ms instead of 1 ms, and your internal names leak to the outside. There is no free lunch: either use full names (`tutor-ordersd.tutor-workloads.svc.cluster.local.`) for internal calls too, or keep `ndots:5` and use a trailing dot for external ones. Many clusters add **NodeLocal DNSCache** (a DNS cache on every node) to make all these queries cheap.
+`tutor-ordersd.tutor-workloads` has one dot, so it is now tried as a complete name first. That query leaves the cluster, to a real DNS server on the internet, and fails: 20 ms instead of 1 ms, and your internal names leak to the outside. Each option has a cost: either use full names (`tutor-ordersd.tutor-workloads.svc.cluster.local.`) for internal calls too, or keep `ndots:5` and use a trailing dot for external ones. Many clusters add **NodeLocal DNSCache** (a DNS cache on every node) to make all these queries cheap.
 
 ## Try it: `kubectl port-forward`
 
@@ -678,7 +678,7 @@ More things to try:
 
 - A **Service** is three things: a **ClusterIP** written down by the API server (`ServiceCIDR`, `IPAddress`), **EndpointSlices** written by a controller (`ready`, `serving`, `terminating`), and **kernel rules** written by kube-proxy on every node.
 - In **iptables mode**, `KUBE-SERVICES` → `KUBE-SVC-...` (random pick) → `KUBE-SEP-...` (DNAT to a Pod). Only the first packet walks the rules; **conntrack** handles the rest. So balancing is **per connection**.
-- **IPVS** uses the kernel's L4 balancer; **nftables** uses maps and is the future. Some CNIs (Cilium) replace kube-proxy completely.
+- **IPVS** uses the kernel's L4 balancer; **nftables** uses maps and is the recommended mode for new clusters on a recent kernel. Some CNIs (Cilium) replace kube-proxy completely.
 - **NodePort** is a DNAT rule on every node for a port in 30000–32767, with SNAT unless `externalTrafficPolicy: Local`. **LoadBalancer** adds a cloud load balancer in front.
 - A **headless** Service has no IP: DNS returns Pod IPs, and the client must balance and re-resolve. StatefulSet Pods get stable names through it.
 - **CoreDNS** answers `cluster.local` from a watch, and forwards the rest. Pods get `search <ns>.svc.cluster.local svc.cluster.local cluster.local` and **`ndots:5`**: one external lookup can send 10 queries. A trailing dot makes a name absolute.

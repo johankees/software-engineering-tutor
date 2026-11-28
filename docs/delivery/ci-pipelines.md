@@ -2,7 +2,7 @@
 
 ## Why care?
 
-Four messages from a team chat. You have probably sent one of them:
+These four complaints are common in teams that use CI:
 
 - "CI is red again. Just press re-run, it's that flaky test."
 - "My PR has waited 40 minutes for CI. I'll start another branch meanwhile."
@@ -13,17 +13,17 @@ Continuous integration (CI) is one promise: **every change is checked, the same 
 
 On this page you look inside a GitHub Actions run, read this site's own two workflows line by line, lint a broken workflow with `actionlint`, measure what a cache is worth, and make a flaky test fail on purpose. The [Tooling and quality](../go/tooling-and-quality.md#the-ci-pipeline) page already showed a full CI file for a Go service. This page is about how the machine runs it, and how to keep it fast and honest.
 
-## The idea: a test kitchen with a strict head chef
+## The idea: a clean, repeatable check for every change
 
-Think of a restaurant. Every cook may change a recipe. Before the new recipe goes on the menu, it goes to the **test kitchen**:
+A CI system runs the same checks on every change before the change reaches main. Five properties make it work:
 
-- The test kitchen is **clean every time**. No leftovers from yesterday's dish. (A fresh virtual machine per job.)
-- It has a **written procedure**: same oven, same steps, same order. (The workflow file.)
-- Several test cooks can work **in parallel**: one tastes, one checks allergens, one measures cost. (Jobs.)
-- The head chef only accepts a recipe when **every** check passes. (Required status checks.)
-- The test kitchen keeps a **pantry of prepared ingredients**, so nobody chops onions from scratch each time. (The cache.)
+- **A clean machine for every job.** Nothing is left over from the previous run. (A fresh virtual machine per job.)
+- **A written procedure.** The same tools, the same steps, in the same order. (The workflow file.)
+- **Parallel work.** Independent checks, such as lint and tests, run at the same time. (Jobs.)
+- **A hard gate.** A change may merge only when **every** required check passes. (Required status checks.)
+- **Reuse of earlier work.** Results that do not depend on the change are restored, not rebuilt. (The cache.)
 
-If one test cook says "bad" at random, nobody listens to that cook any more. That's a flaky test. If the procedure says "use any oven", results change from day to day. That's an unpinned tool.
+Two things break this. A check that fails at random on the same code is a **flaky test**: people learn to ignore it. A procedure that says "use whatever version is installed" gives different results on different days: that is an **unpinned tool**.
 
 ```mermaid
 flowchart LR
@@ -58,7 +58,7 @@ The rules that surprise people:
 - **Each `run:` step is a new shell process.** An `export FOO=1` in one step is gone in the next. To pass values on, a step writes `NAME=value` lines to the file in `$GITHUB_ENV` (environment for later steps) or `$GITHUB_OUTPUT` (outputs others can read with `${{ steps.<id>.outputs.NAME }}`).
 - **`${{ ... }}` is not shell.** GitHub replaces these expressions **before** the shell sees the script. That is the root of script injection, as you will see with `actionlint` below.
 
-### The runner: who actually does the work
+### The runner: the program that runs the job
 
 A **runner** is a small agent program on a machine. It asks GitHub "any job for me?", gets one, runs the steps, and streams the log back. It always connects **out** to GitHub, so a self-hosted runner behind a company firewall needs no inbound port.
 
@@ -205,7 +205,7 @@ That's four jobs, in parallel, each with `${{ matrix.go }}` and `${{ matrix.os }
 
 `fail-fast: false` matters. The default (`true`) cancels the other jobs as soon as one fails. Then you learn "1.26 on macOS failed" but not whether 1.27 on Linux passes too.
 
-### Caching: the pantry
+### Caching
 
 A fresh VM has an empty Go build cache and an empty module cache. Everything compiles from zero. How much is that worth? Run this repo's Go checks with empty caches, then again:
 
@@ -258,7 +258,7 @@ concurrency:
 
 And give every job a `timeout-minutes`. The default job timeout is hours. A test that hangs on a network call blocks a runner and your PR until then. This repo's `ci.yml` doesn't set one yet; for a 30-second job, `timeout-minutes: 10` is generous.
 
-## Try it: `actionlint` catches what YAML can't
+## Try it: lint a workflow with `actionlint`
 
 A workflow file is valid YAML long before it is a valid workflow. GitHub only tells you about mistakes after you push, and some mistakes it never tells you about: they just behave wrong. `actionlint` knows the workflow schema, the types of every `${{ }}` context, and which inputs are dangerous. This repo pins it in `mise.toml` and runs it in `mise run lint`:
 
@@ -272,7 +272,7 @@ $ echo $?
 0
 ```
 
-No output means no findings. Now a workflow with five mistakes. Read it first, and try to find them yourself:
+No output means no findings. The next workflow has five mistakes. Read it first and try to find them:
 
 ```yaml
 name: CI
@@ -341,7 +341,7 @@ What each one would have done on GitHub:
 | `"ten"`                       | The workflow is rejected after the push                                                           |
 | `needs: tests`                | The workflow is rejected after the push                                                           |
 
-The injection deserves a second look. GitHub pastes the title into the script text **before** bash runs. The fix is to pass untrusted data through an environment variable, so bash sees a variable, never code. Fixed, with a few more good habits added:
+The injection needs a closer look. GitHub pastes the title into the script text **before** bash runs. The fix is to pass untrusted data through an environment variable, so bash sees a variable, never code. Fixed, with a few more good habits added:
 
 ```yaml
 name: CI
@@ -394,9 +394,9 @@ $ actionlint
    |         ^~~~
 ```
 
-One more: when `shellcheck` is on the `PATH`, `actionlint` runs it on every `run:` script. Quote the variable (`> "test-$GITHUB_RUN_ID.log"`) and the output is empty again.
+There is one more finding. When `shellcheck` is on the `PATH`, `actionlint` runs it on every `run:` script. Quote the variable (`> "test-$GITHUB_RUN_ID.log"`) and the output is empty again.
 
-Notice what `actionlint` did **not** complain about: `actions/setup-go@v6` is still a tag, not a commit. That's a policy choice, not a syntax error. It is the next section.
+Notice what `actionlint` did **not** complain about: `actions/setup-go@v6` is still a tag, not a commit. That's a policy choice, not a syntax error. The next section covers it.
 
 ## Keeping CI trustworthy
 
@@ -427,7 +427,7 @@ The comment keeps it readable. Dependabot or Renovate update the SHA **and** the
 - OIDC (`id-token: write`) to get short-lived cloud credentials, instead of storing cloud keys as secrets.
 - Treat everything in `github.event.*` that a user can type (titles, branch names, commit messages, comments) as untrusted input. `actionlint` flags the common ones.
 
-### Flaky tests: the boy who cried wolf
+### Flaky tests
 
 A **flaky** test passes and fails on the same code. The cost is not the re-run. The cost is that people learn to ignore red. Then a real failure gets re-run until it turns green by luck, and ships.
 
@@ -495,7 +495,7 @@ FAIL	example.com/flaky	0.003s
 FAIL
 ```
 
-The seed turns a random failure into a reproducible one. The fixes are boring and permanent: no shared mutable state between tests (build it in each test, see [Testing](../go/testing.md)), and no wall-clock deadlines in tests (use a fake clock, or `testing/synctest`).
+The seed turns a random failure into a reproducible one. The fixes are simple and permanent: no shared mutable state between tests (build it in each test, see [Testing](../go/testing.md)), and no wall-clock deadlines in tests (use a fake clock, or `testing/synctest`).
 
 A team rule that works: **a flaky test is a bug with an owner and a deadline**. Quarantine it (skip with a link to the ticket) the day it is found, so main stays trustworthy. Never add automatic retries to the whole suite: that hides new flakes too.
 
@@ -512,7 +512,7 @@ gh run rerun --failed                           # re-run only the failed jobs
 
 <!-- TODO(real-output): run these against a repository with a GitHub remote and paste the output. This worktree has no remote, and the session must not call GitHub. Expect a table with STATUS, TITLE, WORKFLOW, BRANCH, EVENT, ID, ELAPSED, AGE for `gh run list`, and a live list of jobs and steps with check marks for `gh run watch`. -->
 
-`gh run view --log-failed` is the big time saver: a red run of `mise run check` produces thousands of lines, and you want the 20 around the failure. Use `gh run rerun --failed` for a **real** infrastructure hiccup (a runner lost its network), never as the cure for a flaky test.
+`gh run view --log-failed` saves the most time: a red run of `mise run check` produces thousands of lines, and you want the 20 around the failure. Use `gh run rerun --failed` for a **real** infrastructure hiccup (a runner lost its network), never as the cure for a flaky test.
 
 !!! note "Running workflows locally"
 

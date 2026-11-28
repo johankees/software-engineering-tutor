@@ -10,17 +10,17 @@ Five tickets, from teams that "just added Redis":
 - "Redis restarted. The database fell over two seconds later. Then the API."
 - "We delete the cache key on every update, like the docs say. Once a week, a key is wrong anyway."
 
-A cache is **a copy of data, kept closer to the reader**, so reads are fast and the database does less work. That's the whole idea, and it's why caches are everywhere: CPU caches ([Memory](../fundamentals/memory.md)), the Linux page cache, DNS resolvers, CDNs, Redis in front of Postgres. But a copy is a **replica**, and everything you learned about replicas in this chapter applies: it can be stale, it can be lost, and two copies can disagree. Phil Karlton's joke says there are only two hard things in computer science: cache invalidation and naming things. This page is about the first one.
+A cache is **a copy of data, kept closer to the reader**, so reads are fast and the database does less work. That is the whole idea, and it is why caches are everywhere: CPU caches ([Memory](../fundamentals/memory.md)), the Linux page cache, DNS resolvers, CDNs, Redis in front of Postgres. But a copy is a **replica**, and everything you learned about replicas in this chapter applies: it can be stale, it can be lost, and two copies can disagree. A well-known saying by Phil Karlton says there are only two hard things in computer science: cache invalidation and naming things. This page is about the first one.
 
-## The idea: the menu board in the café
+## The idea: a copy with an expiry time
 
-A café has a kitchen (the **database**) and a big menu board on the wall (the **cache**).
+A cache sits between the service and the **database** (the source of truth). The basic flow has four parts:
 
-- Customers read the prices **from the board**. That's fast; nobody walks into the kitchen.
-- If a dish isn't on the board, someone asks the kitchen, and **writes the answer on the board** for the next customer. That's **cache-aside**.
-- Every board entry has a small note: "check again after 10 minutes." That's the **TTL** (time to live).
-- When the kitchen changes a price, someone must **wipe the old price off the board**. If they forget, or wipe it at the wrong moment, customers pay the old price. That's **invalidation**.
-- If the whole board falls off the wall at lunch time, **every** customer walks into the kitchen at once. That's a **cold cache** and a **thundering herd**.
+- The service reads **from the cache** first. A **hit** means the value is there, and no database query is needed.
+- On a **miss**, the service reads the database and **writes the answer into the cache** for the next reader. This pattern is called **cache-aside**.
+- Every cache entry has an expiry time. After it, the next read is a miss again. This is the **TTL** (time to live).
+- When the data changes in the database, the old cache entry must be removed or replaced. This is **invalidation**. If it is skipped, or done at the wrong moment, readers get the old value.
+- If the cache is empty (a **cold cache**, for example after a restart), every request goes to the database at once. Many simultaneous misses for the same data are called a **thundering herd**.
 
 ```mermaid
 flowchart LR
@@ -597,14 +597,14 @@ $ ./cachedemo race
  0.111s  cache says "paid" for the next hour
 ```
 
-Four runs, four stories:
+The four runs show four results:
 
 1. **Delete first, then update.** The writer deletes the key at 0 ms. The reader misses at 10 ms and queries the database, which still has `paid` (the write commits at 100 ms). The reader puts `paid` into the cache at 111 ms, **after** the write. The cache now says `paid` until the TTL ends. Here, that's an hour. This is the easy race to hit: any read during the write refills the old value.
-2. **Update first, then delete.** Better, but not safe. The reader's query started at 10 ms, before the commit at 100 ms, so it saw `paid`. The writer deletes the key at 100 ms (nothing to delete yet). The reader fills `paid` at 111 ms. Same wrong result. It needs a cache miss and a slow read that **overlaps** the write, so it's rare. Rare means "once a week" at scale: the fifth ticket.
+2. **Update first, then delete.** Better, but not safe. The reader's query started at 10 ms, before the commit at 100 ms, so it saw `paid`. The writer deletes the key at 100 ms (nothing to delete yet). The reader fills `paid` at 111 ms. Same wrong result. It needs a cache miss and a slow read that **overlaps** the write, so it is rare. At scale, rare means "once a week": the fifth ticket.
 3. **Update first, then delete, and fill with compare-and-set.** Every `Delete` bumps a version number for the key. The reader remembers the version at the miss, and only fills the cache if the version hasn't changed. The writer's delete happened in between, so the fill is **rejected**: `cache says ""`. The next read loads `shipped`. (The reader's own request still got `paid`. That's fine: its query started before the write committed.)
-4. **Delete first, then update, with compare-and-set.** Still wrong! The delete happened **before** the reader's miss, so the version didn't change during its read. Compare-and-set only helps if the delete comes **after** the commit.
+4. **Delete first, then update, with compare-and-set.** Still wrong. The delete happened **before** the reader's miss, so the version didn't change during its read. Compare-and-set only helps if the delete comes **after** the commit.
 
-So the rule is: **commit to the database first, delete the cache key after, and protect the fill**. In Redis you can protect the fill with `WATCH`/`MULTI` or a small Lua script on a version key. Facebook's memcache paper (2013) describes the same idea as **leases**. If you don't do that, at least keep the TTL short, so the damage has an end.
+So the rule is: **commit to the database first, delete the cache key after, and protect the fill**. In Redis you can protect the fill with `WATCH`/`MULTI` or a small Lua script on a version key. Facebook's memcache paper (2013) describes the same idea as **leases**. If you do not do that, at least keep the TTL short, so the stale value has a time limit.
 
 !!! tip "Who deletes the key when the writer crashes?"
 
@@ -731,9 +731,9 @@ pods=10 singleflight=true  100 requests ->  10 DB reads in 50ms
 - **With `singleflight`**: **1** query. The other 99 goroutines waited for it and shared its answer, in the same 50 ms.
 - **10 pods, each with its own `singleflight.Group`**: **10** queries. `singleflight` is a **per-process** lock. Across pods, the herd is as big as the number of pods. For most services that's fine (10 is not 10,000). If it isn't, use a short lock in Redis (`SET key value NX PX 5000`) so only one pod loads, and the others wait or serve the stale value.
 
-`Do` returns `shared bool`: true when the result was given to more than one caller. Count it in a metric, and you'll see your herds.
+`Do` returns `shared bool`: true when the result was given to more than one caller. Count it in a metric to see how often herds happen.
 
-### Other ways to tame a herd
+### Other ways to limit a herd
 
 - **Serve stale while refreshing.** Keep the old value a bit after the TTL. The first request after expiry triggers one background reload; everyone else gets the old value at once. Good for data where a few seconds of staleness are fine.
 - **Refresh early.** Reload a key a little before its TTL ends, with a probability that grows as the end gets near (the "XFetch" idea from the paper "Optimal Probabilistic Cache Stampede Prevention").
@@ -801,6 +801,6 @@ pods=10 singleflight=true  100 requests ->  10 DB reads in 50ms
 
 ## You finished Distributed systems
 
-You now know what changes when your program is many programs: failures that look like slowness, clocks that disagree, consistency models that say what a read may return, retries that need idempotency keys, logs and queues that deliver at least once, outboxes and sagas instead of distributed transactions, Raft keeping one log on several machines, and caches that are fast because they're allowed to be a little wrong.
+You now know what changes when your program is many programs: failures that look like slowness, clocks that disagree, consistency models that say what a read may return, retries that need idempotency keys, logs and queues that deliver at least once, outboxes and sagas instead of distributed transactions, Raft keeping one log on several machines, and caches that are fast because they are allowed to be slightly out of date.
 
-All of these patterns share one weakness: when they go wrong, they go wrong **quietly**. A stale cache, a retry storm, a saga stuck halfway, a leader election every few seconds. Nothing crashes; numbers just drift. To see that, you need metrics, logs and traces that follow one request across all these services. Next chapter: [Observability](../observability/index.md).
+All of these patterns share one weakness: when they go wrong, they go wrong **quietly**. A stale cache, a retry storm, a saga stuck halfway, a leader election every few seconds. Nothing crashes, but the numbers slowly drift. To see that, you need metrics, logs and traces that follow one request across all these services. Next chapter: [Observability](../observability/index.md).

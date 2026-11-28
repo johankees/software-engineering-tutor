@@ -8,13 +8,13 @@
 
 All three are about **refs**: the names that point into the object graph. Objects never change. Refs are the part of Git that moves, so this is where things get "lost" and found again.
 
-## The idea: sticky notes on a family tree
+## The idea: movable names for commits
 
-Picture the commit graph as a big family tree on a wall. The tree itself is permanent ink. Refs are **sticky notes** with a name on them, stuck to one commit each.
+The commit graph never changes: commits are only added. **Refs** are names that point to one commit each, and they can move.
 
-- A **branch** is a sticky note that you move forward every time you commit.
-- A **tag** is a sticky note that you don't move.
-- **`HEAD`** is a special note that says "you are here". Usually it does not point at a commit. It points at **another note** (a branch). That is why committing moves the branch.
+- A **branch** is a ref that moves forward every time you commit.
+- A **tag** is a ref that does not move.
+- **`HEAD`** is a special ref that marks your current position. Usually it does not point at a commit. It points at **another ref** (a branch). That is why committing moves the branch.
 
 ```mermaid
 flowchart RL
@@ -45,7 +45,7 @@ $ git log --graph --oneline --all
 * f5dd7b2 A: init
 ```
 
-## Under the hood: refs are tiny files
+## Under the hood: refs are small files
 
 With the default `files` backend, a ref is a text file with a hash in it:
 
@@ -93,7 +93,7 @@ Now `HEAD` holds a hash directly. If you commit, the new commit's only "name" is
 
 ### packed-refs
 
-Thousands of tiny files are slow. So Git can pack them into one file:
+Thousands of small files are slow. So Git can pack them into one file:
 
 ```console
 $ find .git/refs -type f | sort
@@ -139,7 +139,7 @@ ref: refs/heads/.invalid
 this repository uses the reftable format
 ```
 
-Look closely. `.git/HEAD` and `.git/refs/heads` still exist, but only as **stubs** for old tools: `HEAD` points at an invalid branch, and `refs/heads` is a file, not a directory. The real refs are in the tables. Git commands work normally:
+Look closely: `.git/HEAD` and `.git/refs/heads` still exist, but only as **stubs** for old tools: `HEAD` points at an invalid branch, and `refs/heads` is a file, not a directory. The real refs are in the tables. Git commands work normally:
 
 ```console
 $ git for-each-ref
@@ -182,11 +182,11 @@ Four facts about the reflog:
 3. **It keeps objects alive.** While a reflog entry points at a commit, `gc` will not delete it.
 4. **It is per ref.** `main@{2}` is "where main was two moves ago". `HEAD@{2}` is "where HEAD was two moves ago". Those are often different commits.
 
-The reflog is your safety net. See [Recovery and history](recovery-and-history.md).
+The reflog lets you find commits again after a ref moved. See [Recovery and history](recovery-and-history.md).
 
 ## Under the hood: the revision syntax
 
-Almost every Git command takes **revisions**. The parser is the same everywhere (`git rev-parse` is its front door), so learn it once.
+Almost every Git command takes **revisions**. The parser is the same everywhere (`git rev-parse` exposes it directly), so you only need to learn it once.
 
 ### `~` and `^`: walking parents
 
@@ -260,7 +260,7 @@ $ git log --oneline ':/typo' -1
 095922a E: fix typo
 ```
 
-`:/typo` is the youngest reachable commit whose message matches `typo` (a regular expression). Handy in a hurry: `git show :/hotfix`.
+`:/typo` is the youngest reachable commit whose message matches `typo` (a regular expression). This is useful for a quick lookup: `git show :/hotfix`.
 
 ### `A..B` and `A...B`: ranges
 
@@ -287,7 +287,7 @@ $ git merge-base 095922a feature
 04cc199c0f1333fdea75db7a6c1cb57fa6987069
 ```
 
-`--left-right` marks which side each commit is on. And now look at today's main:
+`--left-right` marks which side each commit is on. Now look at the current main:
 
 ```console
 $ git log --oneline main..feature
@@ -301,7 +301,7 @@ ea1dfaf M: merge feature
 
 !!! warning "`git diff` uses dots differently"
 
-    For `git log`, `A..B` is a set of commits. For `git diff`, `A..B` just means "diff A and B",
+    For `git log`, `A..B` is a set of commits. For `git diff`, `A..B` only means "diff A and B",
     the same as `git diff A B`. And `git diff A...B` means "diff the **merge base** of A and B
     with B": only the changes made on B. That is what a pull request shows you. So `diff A...B`
     is usually what you want for review, and `log A..B` for "what will this PR bring in".
@@ -361,7 +361,7 @@ Then make a commit in detached HEAD, switch back to `main`, and find your commit
 - A ref is a name for a hash. Branches move, tags don't. `HEAD` is usually a symbolic ref to a branch.
 - Detached HEAD means `HEAD` holds a hash. New commits there have no branch.
 - Refs live as loose files, in `packed-refs`, or (new) in a **reftable**. Always go through `rev-parse`/`for-each-ref`.
-- The reflog records every move of every ref. It is local, it expires (90/30 days by default), and it saves you.
+- The reflog records every move of every ref. It is local, it expires (90/30 days by default), and it lets you recover lost commits.
 - `~n` walks first parents. `^n` picks the n-th parent. `rev:path` reaches into a tree.
 - `A..B` = in B, not in A. `A...B` = in one, not both. `git diff` reads the dots differently.
 

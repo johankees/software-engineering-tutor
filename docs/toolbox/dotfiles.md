@@ -4,11 +4,11 @@
 
 Your laptop dies on a Monday. The new one arrives on Wednesday. How long until you can work again: one hour, or two days of "where was that setting"? And when you change your tmux config on one machine, how does the other machine get it?
 
-The answer is a **dotfiles repository**: all config files in git, plus a script that installs the tools and links the files into place. This page shows how the setup in this chapter does it, how the linking really works, and where it can bite. Then we tour the small CLI tools that make the rest of the day faster.
+The answer is a **dotfiles repository**: all config files in git, plus a script that installs the tools and links the files into place. This page shows how the setup in this chapter does it, how the linking really works, and where it can fail. Then it covers the small CLI tools that make the rest of the day faster.
 
-## The idea: a library with a catalogue
+## The idea: one repository, linked into place
 
-Think of the dotfiles repository as a library. The books (config files) live in the library, on shelves. Your home folder doesn't hold copies; it holds **catalogue cards** (symlinks) that point to the shelf. Change the book in the library, and every card points to the new version. Want the library on a new machine? Clone it and print the cards.
+The config files live in the dotfiles repository. Your home folder doesn't hold copies; it holds **symlinks** (symbolic links: small files that point to another path) to the files in the repository. When you change a file in the repository, every link shows the new version. To set up a new machine, clone the repository and create the links.
 
 ```mermaid
 flowchart LR
@@ -30,7 +30,7 @@ The setup's `install.sh` runs stages in order: create the XDG folders, install r
 
 ## Under the hood: stow is a symlink farm manager
 
-**GNU stow** takes a folder (a "package") and creates symlinks in a target folder, so that the target looks like it contains the package's files. It never copies. Let's try it in a scratch folder:
+**GNU stow** takes a folder (a "package") and creates symlinks in a target folder, so that the target looks like it contains the package's files. It never copies. Here it is in a scratch folder:
 
 ```text
 $ stow --dir=dotfiles/stow/.config --target=home/.config -v .
@@ -76,7 +76,7 @@ $ cat dotfiles/stow/.config/tmux/tmux.conf
 set -g prefix C-b   # old local file
 ```
 
-`--adopt` **moves the local file into your repository**, over the version in git, and then links it. Your carefully written `set -g prefix C-a` is gone from the working tree, replaced by the machine's old file. It's only safe if you run `git diff` right after and restore what you want (`git restore`). This setup avoids the question: `make backup` moves conflicting files out of `$HOME` into `./backups` before stowing, and `make restore` brings one back.
+`--adopt` **moves the local file into your repository**, over the version in git, and then links it. Your own `set -g prefix C-a` is gone from the working tree, replaced by the machine's old file. It's only safe if you run `git diff` right after and restore what you want (`git restore`). This setup avoids the question: `make backup` moves conflicting files out of `$HOME` into `./backups` before stowing, and `make restore` brings one back.
 
 ## Homebrew Brewfiles: the tool list as code
 
@@ -113,11 +113,11 @@ Warning: Calling HOMEBREW_REQUIRE_TAP_TRUST is deprecated! Use the default behav
 The Brewfile's dependencies are satisfied.
 ```
 
-Everything is installed. And Homebrew tells us two variables in `.zshenv` are now deprecated. Config rots, even when nothing breaks.
+Everything is installed. Homebrew also reports that two variables in `.zshenv` are now deprecated. Config becomes outdated, even when nothing breaks.
 
 ## Private overlays and secrets
 
-A public dotfiles repository can't hold your name, email, work hosts or keys. This setup keeps a **private overlay**: a second (private) repository, stowed to `~/.config/private/`. The public git config just includes it:
+A public dotfiles repository can't hold your name, email, work hosts or keys. This setup keeps a **private overlay**: a second (private) repository, stowed to `~/.config/private/`. The public git config includes it:
 
 ```ini
 # we recommend setting user and email in a private repository
@@ -126,7 +126,7 @@ A public dotfiles repository can't hold your name, email, work hosts or keys. Th
 	path = ~/.config/private/git/config
 ```
 
-The same trick holds the SSH `allowed_signers` file for commit signing. If the include target doesn't exist, git silently skips it, so the public repo works alone too.
+The same method holds the SSH `allowed_signers` file for commit signing. If the include target doesn't exist, git silently skips it, so the public repo works alone too.
 
 The rules for secrets:
 
@@ -134,7 +134,7 @@ The rules for secrets:
 - Put secrets in a password manager, a hardware key, or the OS keychain. This setup uses `gh auth git-credential` for HTTPS and FIDO2 security keys for SSH, so there is no secret file to leak.
 - Machine-specific values go in generated, uncommitted files (like `platform.gitconfig`) or `*.local` files that `.gitignore` excludes.
 
-## Tour: the everyday CLI tools
+## The everyday CLI tools
 
 All of these are in this setup's `Brewfile.requirements`. For each: the problem it solves, and one thing most people don't know.
 
@@ -158,11 +158,11 @@ node_modules/lib/x.js:TODO: vendored
 src/main.go:func TODO() {}
 ```
 
-**The trick:** each `-u` removes one filter. `-u` = also ignored files, `-uu` = also hidden, `-uuu` = also binary. When `rg` "can't find" something you know is there, it's usually ignored. Add `-uu` before you doubt yourself.
+**Tip:** each `-u` removes one filter. `-u` = also ignored files, `-uu` = also hidden, `-uuu` = also binary. When `rg` "can't find" something you know is there, it's usually ignored. Add `-uu` before you look further.
 
-### fd: `find` with sane defaults
+### fd: `find` with better defaults
 
-`fd -e go` finds Go files, respects `.gitignore` like `rg`, and uses smart case. **The trick:** `fd` is fast enough to feed other tools: `fd -e go -x gofumpt -l {}` runs a command per result, in parallel.
+`fd -e go` finds Go files, respects `.gitignore` like `rg`, and uses smart case. **Tip:** `fd` is fast enough to feed other tools: `fd -e go -x gofumpt -l {}` runs a command per result, in parallel.
 
 ### fzf: a generic filter
 
@@ -175,15 +175,15 @@ $ printf 'cmd/ordersd/main.go\ninternal/order/service.go\ninternal/storage/memor
 internal/storage/memory/memory.go
 ```
 
-**The trick:** the query is a small language. Spaces mean AND; `'word` means exact match; `^` and `$` anchor; `!` negates. `--filter` makes fzf usable in scripts and tests.
+**Tip:** the query is a small language. Spaces mean AND; `'word` means exact match; `^` and `$` anchor; `!` negates. `--filter` makes fzf usable in scripts and tests.
 
 ### bat: `cat` with syntax highlighting
 
-`bat file.go` shows line numbers, colours and git changes. **The trick:** when its output is piped, bat behaves like plain `cat`, so `bat` in scripts is safe. It's also the preview engine of many fzf setups.
+`bat file.go` shows line numbers, colours and git changes. **Tip:** when its output is piped, bat behaves like plain `cat`, so `bat` in scripts is safe. It's also the preview engine of many fzf setups.
 
 ### delta: a better diff pager
 
-delta renders git diffs with syntax highlighting, line numbers and side-by-side mode. In this setup it is **lazygit's** pager only (`delta --dark --paging=never --line-numbers ...` in `lazygit/config.yml`); `git config core.pager` is not set, so plain `git diff` uses `less`. **The trick:** to use it for git too, set `core.pager = delta` and `interactive.diffFilter = delta --color-only` (the second one makes `git add -p` pretty).
+delta renders git diffs with syntax highlighting, line numbers and side-by-side mode. In this setup it is **lazygit's** pager only (`delta --dark --paging=never --line-numbers ...` in `lazygit/config.yml`); `git config core.pager` is not set, so plain `git diff` uses `less`. **Tip:** to use it for git too, set `core.pager = delta` and `interactive.diffFilter = delta --color-only` (the second one adds colour to `git add -p`).
 
 ### lazygit: git in a TUI
 
@@ -204,11 +204,11 @@ $ zoxide query ord cli
 /tmp/claude-1000/demo/Repos/orders-client
 ```
 
-**The trick:** several words must match in order, and the last word must match the last path part. `cd ord cli` finds `orders-client` even though `orders-service` has a higher score. A normal path (`cd ./x`, `cd ..`) still works like the builtin.
+**Tip:** several words must match in order, and the last word must match the last path part. `cd ord cli` finds `orders-client` even though `orders-service` has a higher score. A normal path (`cd ./x`, `cd ..`) still works like the builtin.
 
 ### direnv: env vars per folder
 
-direnv loads an `.envrc` when you enter a folder and unloads it when you leave, through a shell hook (the same `precmd` idea as `mise activate`). **The trick:** it refuses to load a changed `.envrc` until you run `direnv allow`, the same trust idea as `mise trust`. In this setup it overlaps with mise's `[env]` (see [mise](mise.md#mise-next-to-homebrew-fnm-direnv-and-asdf)).
+direnv loads an `.envrc` when you enter a folder and unloads it when you leave, through a shell hook (the same `precmd` idea as `mise activate`). **Tip:** it refuses to load a changed `.envrc` until you run `direnv allow`, the same trust idea as `mise trust`. In this setup it overlaps with mise's `[env]` (see [mise](mise.md#mise-next-to-homebrew-fnm-direnv-and-asdf)).
 
 ### yazi and gh
 
@@ -220,7 +220,7 @@ direnv loads an `.envrc` when you enter a folder and unloads it when you leave, 
 - **Tree folding into the repo.** If stow folds a folder that programs write into, their files land in git. Create real folders first (as `setup/stow.sh` does), and add generated files to `.gitignore`.
 - **`--adopt` overwrites your repo.** It moves local files into the repository. Run `git diff` immediately after, every time.
 - **Paths that disagree.** The git config includes `agent.gitconfig` (which turns signing off for agent worktrees) for `~/.cache/agent/worktrees/**`. `tmux-session end` and the Neovim session picker use the same folder. But the agent rules file said `~/.cache/agents/worktrees` (plural), so agents created worktrees where none of those tools looked. One letter, and three features silently did nothing. The fix was to make `~/.cache/agent/worktrees` the single rule. When you write a path in several places, put it in one variable, or at least grep for every copy. (The include had a second bug, `gitdir:` instead of `worktree:`; see [Config, hooks and signing](../git/config-hooks-signing.md).)
-- **Deprecated settings.** Homebrew deprecated `HOMEBREW_REQUIRE_TAP_TRUST` (tap trust is now the default) and `HOMEBREW_BUNDLE_FORCE_INSTALL_CLEANUP` (use `brew bundle cleanup --force` after `brew bundle install`). The first one could simply be deleted. The second one changes what `install` uninstalls, so replacing it is a decision, not a search-and-replace. Read warnings after updates; they're cheap to fix now and confusing later.
+- **Deprecated settings.** Homebrew deprecated `HOMEBREW_REQUIRE_TAP_TRUST` (tap trust is now the default) and `HOMEBREW_BUNDLE_FORCE_INSTALL_CLEANUP` (use `brew bundle cleanup --force` after `brew bundle install`). The first one could be deleted. The second one changes what `install` uninstalls, so replacing it is a decision, not a search-and-replace. Read warnings after updates; they're cheap to fix now and confusing later.
 - **Platform differences.** The terminfo folder layout (`78/` on macOS, `x/` on Linux; see [Terminal and shell](terminal-and-shell.md#traps)) is one example. A dotfiles repo used on two OSes needs a test on both.
 
 ## Check yourself
@@ -257,10 +257,10 @@ direnv loads an `.envrc` when you enter a folder and unloads it when you leave, 
 - `--adopt` moves local files into your repo. Check `git diff` after.
 - Keep personal and secret data in a private overlay or a keychain, included at run time, never committed.
 - Small tools add up: `rg` and `fd` respect `.gitignore`, fzf filters any list, zoxide learns your folders, delta and lazygit make git readable.
-- Config rots quietly: deprecated variables, mismatched paths, platform differences. Run the checks (`brew bundle check`, `mise doctor`, `:checkhealth`) now and then.
+- Config becomes outdated without warning: deprecated variables, mismatched paths, platform differences. Run the checks (`brew bundle check`, `mise doctor`, `:checkhealth`) now and then.
 
 ## You finished the Toolbox
 
 You now know what sits between your keyboard and your code: the terminal and its PTY, zsh and its start-up files, tmux as a server, Neovim as a language and a platform, mise for per-project tools, and the dotfiles repository that ties it together.
 
-One tool is missing, and it is the most important one: the one that holds your code's history. Continue with the [Git chapter](../git/index.md), where we open up `.git` and look at the objects inside.
+One tool is missing, and it is the most important one: the one that holds your code's history. Continue with the [Git chapter](../git/index.md), which opens up `.git` and shows the objects inside.

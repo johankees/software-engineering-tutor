@@ -2,7 +2,7 @@
 
 ## Why care?
 
-Three sentences you hear after a bad deploy:
+After a bad deploy, teams often say one of these three things:
 
 - "It worked in staging." Then 100% of production users got the bug at the same moment.
 - "Rolling back takes 20 minutes." Revert, wait for CI, wait for the rollout, while the error rate is at 30%.
@@ -12,14 +12,14 @@ A **deployment strategy** answers three questions: how many users see the new ve
 
 On this page you run all three on the `kind` cluster with two builds of `ordersd`, `v1` and `v2`, and count which version served each request.
 
-## The idea: changing the menu in a busy restaurant
+## The idea: control who gets the new version, and when
 
-You run a restaurant and you have a new menu.
+Each strategy moves traffic from the old version to the new one in a different way:
 
-- **Rolling update**: you replace the menu card on one table at a time. For a while, some tables have the old menu and some the new one. The kitchen must cook both.
-- **Blue/green**: you open a second dining room next door with the new menu, fully staffed. When it is ready, you change the sign at the entrance. If guests hate it, you change the sign back.
-- **Canary**: you give the new menu to one table in ten. You watch their faces. If they are happy, two tables in ten, then half, then all.
-- **Progressive delivery**: a manager does the canary for you. They watch the complaints per table, and they stop and go back on their own.
+- **Rolling update**: replace the old Pods with new ones a few at a time. For a while, some Pods run the old version and some the new one, so both must work together.
+- **Blue/green**: run a complete second copy with the new version. When it is ready, point the Service at it in one step. To roll back, point the Service back.
+- **Canary**: send a small share of traffic, for example 10%, to the new version. Compare its errors and latency with the old version. If they are good, raise the share step by step to 100%.
+- **Progressive delivery**: a controller runs the canary steps for you. It reads the metrics, and it stops and rolls back on its own when they are bad.
 
 ```mermaid
 flowchart LR
@@ -74,7 +74,7 @@ All Deployments on this page set `ORDERS_SHUTDOWN_DELAY=5s` and a readiness prob
 
 [Workloads](../kubernetes/workloads.md#a-rolling-update-step-by-step) takes the rolling update apart step by step. Here is the short version, and the one fact that matters most for this page: **during a rolling update, both versions serve real traffic**.
 
-The two knobs:
+The two settings:
 
 | `maxSurge` / `maxUnavailable` | With 4 replicas                        | Good for                                          |
 | ----------------------------- | -------------------------------------- | ------------------------------------------------- |
@@ -119,7 +119,7 @@ $ cat roll-load.txt
 ok=24551 fail=0
 ```
 
-Read it slowly:
+Points to note:
 
 - For about 40 seconds, `v1` and `v2` both answer requests. Here that's harmless. In real life it means **every change must work next to the version before it**: API responses, message formats, cache entries, and the database schema.
 - At 12 s there are 6 ready Pods, with `maxSurge: 1`. One `v1` Pod is already being deleted, but it still reports ready until its readiness probe fails (the 5 s shutdown delay, probe every 2 s). The EndpointSlice already marks it as terminating, so it gets no new connections. This is the "terminating Pods don't count" effect from Workloads.
@@ -148,7 +148,7 @@ Progressing	Unknown	DeploymentPaused
 
 One Pod of five (20%) runs the new template, and it stays that way until `kubectl rollout resume`. That is a canary, but a fragile one: the share depends on when you pressed pause, any `kubectl apply` of a new template starts over, and the paused Deployment counts against `progressDeadlineSeconds` as `Unknown`. Good for a quick look by hand, not for a process.
 
-## Blue/green: switch the sign
+## Blue/green: switch the Service selector
 
 Two Deployments, one per "colour", and one Service that points at one colour:
 
@@ -227,7 +227,7 @@ wget: can't connect to remote host (10.96.150.10): No route to host
 command terminated with exit code 1
 ```
 
-Not a bug in green. The Service was one second old. Its EndpointSlice and kube-proxy's rules were not there yet, and kube-proxy rejects connections to a Service with no endpoints (`No route to host` is that reject). A few seconds later:
+This is not a bug in green. The Service was one second old. Its EndpointSlice and kube-proxy's rules were not there yet, and kube-proxy rejects connections to a Service with no endpoints (`No route to host` is that reject). A few seconds later:
 
 ```console
 $ kubectl get endpointslices -l kubernetes.io/service-name=tutor-orders-preview
@@ -281,14 +281,14 @@ tutor-orders-v7g5n   IPv4          8080    10.244.1.19,10.244.1.20   62s
 
 What happened under the hood is plain [Services and cluster DNS](../kubernetes/services-and-dns.md): the EndpointSlice controller saw a new selector, rewrote the slice, and kube-proxy on every node rewrote its iptables rules. Nothing restarted.
 
-The price of blue/green:
+The costs of blue/green:
 
 - **Double capacity** while both colours run. For a service with 200 Pods, that is 200 more Pods, or a cluster that can autoscale fast.
 - **All users switch at once.** A bug that only shows under real traffic hits 100% of users. You find out quickly and switch back quickly, but everyone saw it.
 - **Only new connections switch.** kube-proxy's rules decide the backend when a connection **opens**. A client with a long-lived keep-alive connection, or a gRPC stream, keeps talking to blue until that connection closes. Keep blue running until its connections drain, and give clients a maximum connection age.
 - **State is shared.** Blue and green use the same database, the same queues. The colours switch, the data does not (see [Database changes](#database-changes-during-a-deploy) below).
 
-## Canary: one table in four
+## Canary: one Pod in four
 
 A canary is two Deployments with **different** labels for the version, and one Service that selects **only** the label they share:
 
@@ -325,7 +325,7 @@ canary  1593
 
 1593 of 6309 is 25.2%. kube-proxy picks a backend at random for each new connection, with equal chances per ready Pod. One Pod in four gets about a quarter of the connections.
 
-Now the important part, the reason you run a canary: **compare the canary with stable**, on the numbers your users feel. Errors and latency, per track:
+The reason to run a canary is to **compare the canary with stable**, on the numbers your users notice: errors and latency, per track:
 
 ```console
 $ kubectl logs -l app=tutor-canary,track=canary --tail=-1 | jq -r 'select(.msg=="http request") | "\(.status) \(.route)"' | sort | uniq -c
@@ -348,7 +348,7 @@ To send 1% of traffic to the canary, you need 100 Pods. And the share is per **c
 
 ## Progressive delivery: let the metrics decide
 
-Doing a canary by hand means a human watches dashboards at 2 a.m. and decides "go" or "back". **Progressive delivery** automates that loop:
+A canary done by hand needs a person who watches dashboards, at any hour, and decides "go" or "back". **Progressive delivery** automates that loop:
 
 ```mermaid
 flowchart LR
@@ -395,7 +395,7 @@ Without a traffic router, Argo Rollouts reaches `setWeight` the same way you did
 
 Both need two things you already have from earlier chapters: good **metrics per version** (see [Metrics](../observability/metrics.md)) and a clear idea of "good" (see [SLOs and alerting](../observability/slos-and-alerting.md)). A progressive delivery tool with bad metrics is a very fast way to promote a broken release.
 
-Feature flags are the other half of this story. A canary decides which **Pods** get traffic; a flag decides which **users** get a feature, inside the same Pod. See [Feature flags](feature-flags.md).
+Feature flags complement deployment strategies. A canary decides which **Pods** get traffic; a flag decides which **users** get a feature, inside the same Pod. See [Feature flags](feature-flags.md).
 
 ## Database changes during a deploy
 
@@ -423,7 +423,7 @@ The last row is the subtle one. A schema can be compatible while the **data** is
 ## Traps
 
 - **No readiness probe, no strategy.** Every strategy here moves traffic when Pods are **ready**. Without a probe, a Pod is ready when its process starts, and a broken version gets traffic at once.
-- **`kubectl logs -l` shows 10 lines per Pod.** With a selector, `--tail` defaults to 10. Counting requests with it gives nonsense. Use `--tail=-1`, and know that logs of deleted Pods are gone (another reason to ship logs and metrics off the node).
+- **`kubectl logs -l` shows 10 lines per Pod.** With a selector, `--tail` defaults to 10. Counting requests with it gives wrong totals. Use `--tail=-1`, and know that logs of deleted Pods are gone (another reason to ship logs and metrics off the node).
 - **A new Service is not ready the moment it exists.** Until the EndpointSlice and kube-proxy catch up, connections are rejected. Wait for endpoints before smoke tests.
 - **Blue/green switches connections, not requests.** Long-lived connections stay on the old colour. Don't delete blue the second you switch.
 - **Canary by Pod count is coarse.** 1 canary Pod in 4 is 25%, not 5%. For small percentages, use weighted routing.

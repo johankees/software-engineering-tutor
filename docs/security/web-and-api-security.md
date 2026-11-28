@@ -12,15 +12,15 @@ Five findings from one penetration test report. Every one is in a Go service tha
 
 None of these is a bug in Go, TLS or the database. Each one is the same mistake: **something from the request was treated as part of the program**, or the service did something on the request's behalf that it should not do for strangers. This page shows each attack working against a small Go server on your machine, then the fix, and the standard library feature that makes the fix easy.
 
-## The idea: a shop counter with notes from strangers
+## The idea: request data must stay data
 
-You work at a counter. Customers hand you notes. You read each note and do what it asks.
+Every request comes from someone you do not trust. The attacks on this page are different ways to make the server treat that input as more than data:
 
-- A note says "Look up the orders of c-42". Fine. Another says "Look up the orders of c-42, **and also everyone else's**". If you copy the note word for word into your instructions for the back office, the back office does it. That's **injection**: data became an instruction. The fix is a form with a box: whatever is written in the box is a customer ID, never an instruction.
-- A note says "Fetch me the paper from the cabinet in the manager's office". You have a key; the customer does not. If you fetch it, you lent them your key. That's **SSRF**: your server's network position, used by a stranger.
-- A note says "Give this message to the next customer". The message is a trick. That's **XSS**: you passed a stranger's words to another person's browser, and the browser obeyed them.
-- A note arrives in a regular customer's handwriting, but someone else slipped it under the door. That's **CSRF**: the browser adds the user's cookie to a request the user did not make.
-- One person hands you a thousand notes a second, or one note very, very slowly. That's **denial of service**: rate limits, size limits, timeouts.
+- **Injection**: the server copies input into a command for another interpreter, such as SQL or a shell. Input like `c-42' OR '1'='1` then changes the command itself. The fix is to send the input as a separate value that can never become part of the command.
+- **SSRF** (server-side request forgery): the server fetches a URL that the client chose. The server can reach internal addresses that the client cannot, so the client uses the server's network access.
+- **XSS** (cross-site scripting): the server puts one user's input into a page that another user's browser shows. The browser runs it as script.
+- **CSRF** (cross-site request forgery): another site makes the user's browser send a request to your server. The browser adds the user's cookie, so the request looks like the user's own.
+- **Denial of service**: a client sends too many requests, very large requests, or very slow requests. Rate limits, size limits and timeouts stop this.
 
 ```mermaid
 flowchart LR
@@ -116,7 +116,7 @@ placeholder query: ... WHERE customer_id = $1
 
 The app connects as a superuser, so the attacker now is one too. (That's a second bug: give the app a role that can only touch its own tables.)
 
-The classic `'; DROP TABLE orders; --` did **not** work here:
+The well-known `'; DROP TABLE orders; --` did **not** work here:
 
 ```console
 $ go run ./cmd/sqli "x'; DROP TABLE orders; --"
@@ -415,7 +415,7 @@ $ go run ./cmd/xss
 2. In an `href`, it refused the `javascript:` URL and wrote `#ZgotmplZ`, a marker that means "an unsafe value was removed here". If you see `ZgotmplZ` in your HTML, a value was rejected.
 3. Inside `<script>`, it wrote a JavaScript string literal with quotes escaped. (A value inside `<script>` is still a risky design; prefer `data-` attributes.)
 
-The escaping is turned off by the types `template.HTML`, `template.JS`, `template.URL` and friends. The docs: "the encapsulated content should come from a trusted source, as it will be included verbatim". `template.HTML(userInput)` is XSS with extra steps. Search for those conversions in review.
+The escaping is turned off by the types `template.HTML`, `template.JS`, `template.URL` and similar types. The docs: "the encapsulated content should come from a trusted source, as it will be included verbatim". `template.HTML(userInput)` is still XSS. Search for those conversions in review.
 
 For a **JSON API** like `ordersd`, XSS risk is smaller but real: a browser that guesses ("sniffs") that a JSON response is HTML would render it. `ordersd` sets `Content-Type: application/json` and `X-Content-Type-Options: nosniff` on every JSON response (see the headers below). Escaping on output is the fix. "Sanitising" input on the way in is not: you don't know yet whether the value goes into HTML, SQL or a shell.
 
@@ -662,7 +662,7 @@ So 10,000 levels are fine and deeper is refused. Together with the 1 MiB body ca
 
 1. **SQL.** Start `postgres:18` as `tutor-pg-websec`, run `cmd/sqli` with `c-42' OR '1'='1`, then change the bad query to use `$1` and run it again. Add a `sort` parameter with an allowlist map.
 2. **Paths.** Add a `GET /download/{name}` route to a copy of `ordersd` that serves files from a directory with `os.Root`. Write a table test with `../x`, `/etc/passwd`, a symlink out, and `.env`.
-3. **SSRF.** Add `10.0.0.0/8` to the internal service's address with `ip addr` in a network namespace (see [Network namespaces](../linux/namespaces-and-cgroups.md#network-namespaces-one-cable-unplugged)), and confirm `safeClient` refuses it. Then make the "is this address public?" function a table test.
+3. **SSRF.** Add `10.0.0.0/8` to the internal service's address with `ip addr` in a network namespace (see [Network namespaces](../linux/namespaces-and-cgroups.md#network-namespaces-a-separate-network-stack)), and confirm `safeClient` refuses it. Then make the "is this address public?" function a table test.
 4. **CSRF.** Wrap `ordersd`'s handler in `http.NewCrossOriginProtection().Handler(...)` in your copy, and write an `httptest` case with `Sec-Fetch-Site: cross-site` on `POST /v1/orders`.
 5. **Rate limits.** Make the limiter evict clients not seen for 3 minutes, and test it with a fake clock.
 6. **Scanners.** `gosec ./...` flags `fmt.Sprintf` SQL, `exec.Command` with variables, and missing `ReadHeaderTimeout` (the `//nolint:gosec` comments in `ordersd` are for it). It is not installed here. <!-- TODO(real-output): gosec is not installed on this machine; run `gosec ./...` in a copy with the bugs above and show its findings. -->
@@ -732,7 +732,7 @@ So 10,000 levels are fine and deeper is refused. Together with the 1 MiB body ca
 - **Programs:** no shell; `--` before user values; better, do it in Go.
 - **Files:** `os.Root` (Go 1.24) and `http.FileServerFS(root.FS())` refuse `..` and symlinks out. Nothing hides dotfiles for you.
 - **SSRF:** check the address in `net.Dialer.Control`, after DNS, on every connection, with `Proxy: nil` and a list beyond `IsPrivate`. Block the metadata IP in the network too.
-- **XSS:** `html/template` escapes per context; `template.HTML` and friends switch that off. JSON APIs send an exact `Content-Type` and `nosniff`.
+- **XSS:** `html/template` escapes per context; `template.HTML` and similar types switch that off. JSON APIs send an exact `Content-Type` and `nosniff`.
 - **CSRF:** `http.CrossOriginProtection` (Go 1.25) refuses cross-origin unsafe methods using `Sec-Fetch-Site` and `Origin`. Never change state on `GET`.
 - **CORS** relaxes the browser's read rule for a fixed list of origins. It does nothing against scripts.
 - **Limits:** per-client token buckets (`x/time/rate`), body and header size limits, and timeouts on every server and client.

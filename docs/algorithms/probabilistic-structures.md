@@ -2,7 +2,7 @@
 
 ## Why care?
 
-Four problems that look like they need a lot of memory, or a lot of disk reads:
+Four problems that seem to need a lot of memory, or a lot of disk reads:
 
 - "Most order lookups are for IDs that don't exist (typos, bots, old links), and every one of them goes to the database."
 - "How many **distinct** customers ordered today? The `map` for that uses 2 GB per day, per region."
@@ -11,15 +11,15 @@ Four problems that look like they need a lot of memory, or a lot of disk reads:
 
 All four have the same kind of answer: **give up a little certainty, and save almost all the memory**. A Bloom filter answers "have I seen this?" with "no" or "probably". HyperLogLog counts distinct things in 16 KiB, whatever the count. A count-min sketch counts how often, and is never too low. Consistent hashing moves only the keys that must move. None of them is exact, and each one tells you **exactly how inexact** it is.
 
-## The idea: a wall of light switches
+## The idea: a bit array set by several hashes
 
-Picture a long wall with a million light switches, all off. A doorman has to remember which order IDs have come in, but he has no paper.
+Take an array of a million bits, all 0. The goal is to remember which order IDs were added, without storing the IDs.
 
-- When an ID comes in, he runs it through 7 different "hash machines". Each machine gives a switch number. He turns those 7 switches **on**. (If one is already on, it stays on.)
-- Someone asks "did order X come in?". He computes X's 7 switch numbers. If **any** of them is off, the answer is a sure **no**: had X come in, he would have turned that switch on.
-- If all 7 are on, the answer is **probably yes**. Maybe X came in. Or maybe other IDs turned those 7 switches on, one by one, by bad luck.
+- To add an ID, compute 7 different hashes of it. Each hash gives a bit position. Set those 7 bits to **1**. (A bit that is already 1 stays 1.)
+- To ask "was order X added?", compute X's 7 bit positions. If **any** of them is 0, the answer is a certain **no**: if X had been added, that bit would be 1.
+- If all 7 are 1, the answer is **probably yes**. X may have been added. Or other IDs may have set those 7 bits, one by one, by chance.
 
-That's a **Bloom filter** (Burton Bloom, 1970). "No" is always right. "Yes" is sometimes wrong. And you control how often it is wrong by choosing the length of the wall.
+This is a **Bloom filter** (Burton Bloom, 1970). "No" is always right. "Yes" is sometimes wrong. You control how often it is wrong by choosing the size of the bit array.
 
 ```mermaid
 flowchart LR
@@ -31,10 +31,10 @@ flowchart LR
     G1 --> B5
     G2 --> B0["bit 0 = 0"]
     G3 --> B9
-    B0 --> N["a zero bit: surely never added"]
+    B0 --> N["a zero bit: never added"]
 ```
 
-The other structures on this page use the same trick with different questions:
+The other structures on this page use the same approach for different questions:
 
 | Structure          | Answers                         | Error                                | Memory                  |
 | ------------------ | ------------------------------- | ------------------------------------ | ----------------------- |
@@ -205,12 +205,12 @@ target   0.1%  bits/ID 14.4  k 10  size  1755 KiB  measured  0.097%  formula  0.
 map[uuid.UUID]struct{} with 1000000 IDs: 21316 KiB
 ```
 
-Read it slowly, it is the whole page in miniature:
+This output shows the main properties of the structure:
 
 - The **measured** rate matches the **formula** to two digits. The math is not a rough guide; it is what happens.
-- **No panic**: not one false negative in three million checks. There cannot be one: bits only ever go from 0 to 1.
+- **No false negatives**: the program did not panic, so not one of three million checks failed. There cannot be one: bits only ever go from 0 to 1.
 - At 1%, the filter is **1.1 MiB**. The exact set of the same IDs, in a `map`, is **21 MiB**: 18 times more. And the map grows with the size of the key; the filter does not.
-- Going from 1% to 0.1% costs only 50% more memory. Accuracy is cheap.
+- Going from 1% to 0.1% costs only 50% more memory. Higher accuracy costs little memory.
 - A second run gave 1.007% at the 1% target: `maphash.MakeSeed` picks a new random hash function each time.
 
 Is it fast? A lookup for an ID that is not there usually stops at the first or second zero bit:
@@ -245,7 +245,7 @@ Both look up one million random IDs that are not in the set. The Bloom filter is
 - **LSM-tree databases** (RocksDB, Cassandra, ScyllaDB, Pebble in CockroachDB) keep one Bloom filter per file on disk. A read for a key that is not in a file skips that file without reading it. See [Storage engines](../databases/storage.md).
 - **Git** keeps a Bloom filter of **changed paths** per commit in the commit-graph file. `git log -- <path>` asks each commit's filter "did you change this path?", and only opens commits that say "maybe".
 
-That last one you can watch. A scratch repo with 300 commits, each changing one of three files:
+You can see the Git filter at work. A scratch repo with 300 commits, each changing one of three files:
 
 ```console
 $ git rev-list --count HEAD
@@ -257,24 +257,24 @@ $ grep -o '"category":"bloom"[^}]*}[^}]*}' ../t2.json
 "category":"bloom","key":"statistics","value":{"filter_not_present":0,"maybe":100,"definitely_not":200,"false_positive":0}}
 ```
 
-200 commits were skipped on the filter's word ("definitely not"). 100 said "maybe", and Git checked each one by comparing trees: all 100 really changed the file, so `false_positive` is 0. On a big repository this is the difference between 30 seconds and one second for `git log -- path` (see [Storage](../git/storage.md)).
+200 commits were skipped because their filter said "definitely not". 100 said "maybe", and Git checked each one by comparing trees: all 100 really changed the file, so `false_positive` is 0. On a big repository this is the difference between 30 seconds and one second for `git log -- path` (see [Storage](../git/storage.md)).
 
 ## Under the hood: HyperLogLog
 
-### The idea: long runs of heads are rare
+### The idea: rare hash patterns estimate the count
 
-Flip a coin until it shows tails. A run of 1 head is common. A run of 10 heads in a row happens about once in 1,024 tries. So if someone tells you "the longest run of heads I saw was 10", you can guess they tried about a thousand times.
+A run of 10 heads in a row from a fair coin happens about once in 1,024 tries, so the longest run seen tells you roughly how many tries there were.
 
-Hash each item to 64 random-looking bits and look at how many **leading zeros** it has. A hash with 10 leading zeros turns up about once per 1,024 **distinct** items. The same item always gives the same hash, so duplicates change nothing. That's the trick: **remember only the longest run of zeros you have seen, and you have a guess of how many distinct items there were.** One number, a few bits.
+Hash each item to 64 random-looking bits and look at how many **leading zeros** it has. A hash with 10 leading zeros turns up about once per 1,024 **distinct** items. The same item always gives the same hash, so duplicates change nothing. This is the core idea: **remember only the longest run of zeros you have seen, and you have a guess of how many distinct items there were.** One number, a few bits.
 
-One guess is very noisy (one lucky item ruins it). **HyperLogLog** (Flajolet and others, 2007) fixes that:
+One guess is very noisy (one unusual hash can spoil it). **HyperLogLog** (Flajolet and others, 2007) fixes that:
 
 1. Use the first p bits of the hash to pick one of m = 2^p **registers**.
 2. In that register, keep the longest run of zeros (plus one) seen in the **rest** of the hash.
-3. Combine all m registers with a **harmonic mean**, which ignores the few lucky outliers.
+3. Combine all m registers with a **harmonic mean**, which reduces the effect of the few outliers.
 4. When many registers are still 0 (few items), count the empty registers instead ("linear counting").
 
-The standard error is **1.04 / √m**. With p = 14, that's 16,384 registers of one byte, 16 KiB, and about 0.81% error. For 1,000 customers or a billion.
+The standard error is **1.04 / √m**. With p = 14, that is 16,384 registers of one byte, 16 KiB, and about 0.81% error. For 1,000 customers or a billion.
 
 ```go
 package prob
@@ -403,11 +403,11 @@ monday or tuesday 1002762 (exact 1000000)
 ```
 
 - **The same 16 KiB** counts a thousand and ten million. Compare the 21 MiB `map` of a million UUIDs above.
-- The errors bounce around ±1%, as promised. "0.81%" is a standard deviation, so about one run in three is further off than that, and +1.53% (two standard deviations) happens.
-- **Merge is exact.** Monday ∪ Tuesday gives the same answer (1,003,043 in the first run) as counting the million customers directly. You can count per hour on each server, ship the 16 KiB sketches, and merge them into per-day and per-region counts. You can't do that with averages, and you can't do it with exact counts without the full sets.
+- The errors vary around ±1%, as expected. "0.81%" is a standard deviation, so about one run in three is further off than that, and +1.53% (two standard deviations) happens.
+- **Merge is exact.** Monday ∪ Tuesday gives the same answer (1,003,043 in the first run) as counting the million customers directly. You can count per hour on each server, ship the 16 KiB sketches, and merge them into per-day and per-region counts. You cannot do that with averages, and you cannot do it with exact counts without the full sets.
 - **Merge needs the same seed** (the same hash function). Two sketches with different seeds put the same customer in different registers.
 
-Redis has HyperLogLog built in (`PFADD`, `PFCOUNT`, `PFMERGE`), and many analytics databases have an `approx_count_distinct`. Now you know what they do inside.
+Redis has HyperLogLog built in (`PFADD`, `PFCOUNT`, `PFMERGE`), and many analytics databases have an `approx_count_distinct`. They work as described here.
 
 ## Under the hood: count-min sketch
 
@@ -530,10 +530,10 @@ over-count: average 1289, worst 22730, bound 13272, above bound 1 of 561499 (0.0
 over-count: average 1286, worst 12243, bound 13272, above bound 0 of 561499 (0.00%)
 ```
 
-- The `over` column is never negative. Never too low, as promised.
-- For the **popular** SKUs the error is tiny: 1,242,115 instead of 1,241,131 is 0.08% off. That's what a count-min sketch is for: finding **heavy hitters** (top products, top IPs, noisy tenants).
-- For **rare** SKUs it is useless: SKU 100,000 sold 5 times, the sketch says 824. The noise is the same absolute size for everyone, about N/w spread over the rows, so small counts drown in it.
-- The bound (ε·N = 13,272) holds for all but one SKU out of 561,499, which is far better than the promised 1 − δ = 98.2%. The bound is a worst case; real data is kinder.
+- The `over` column is never negative. The estimate is never too low, as the guarantee says.
+- For the **popular** SKUs the error is tiny: 1,242,115 instead of 1,241,131 is 0.08% off. That is what a count-min sketch is for: finding **heavy hitters** (top products, top IPs, noisy tenants).
+- For **rare** SKUs it is useless: SKU 100,000 sold 5 times, the sketch says 824. The noise is the same absolute size for everyone, about N/w spread over the rows, so it hides small counts.
+- The bound (ε·N = 13,272) holds for all but one SKU out of 561,499, which is far better than the promised 1 − δ = 98.2%. The bound is a worst case; real data usually does better.
 - The exact map needed one entry per distinct SKU. The sketch is 32 KiB whether there are 500 thousand SKUs or 500 million.
 
 To get a "top 10 SKUs" list from a stream, combine the sketch with a small **min-heap** of the 10 best candidates (see [Heaps and queues](heaps-and-queues.md)): after each `Add`, check the estimate against the smallest in the heap. A common refinement, **conservative update**, only increments the counters that are equal to the current minimum, which cuts the over-count a lot.
@@ -542,9 +542,9 @@ To get a "top 10 SKUs" list from a stream, combine the sketch with a small **min
 
 ### The problem: `hash mod N`
 
-You have 4 cache nodes and many order IDs. The obvious way to pick a node: `hash(id) % 4`. Now add a fifth node: `hash(id) % 5`. How many IDs end up on a **different** node?
+You have 4 cache nodes and many order IDs. The direct way to pick a node: `hash(id) % 4`. Now add a fifth node: `hash(id) % 5`. How many IDs end up on a **different** node?
 
-A key stays only if `h % 4 == h % 5`. That's true when `h % 20` is 0, 1, 2 or 3: 4 cases out of 20. So **80% of keys move**, and the measurement below agrees exactly. For a cache, that means 80% misses and a stampede on the database behind it (see [Caching](../distributed-systems/caching.md)). That's the "hit rate fell to 20%" message at the top of the page.
+A key stays only if `h % 4 == h % 5`. That is true when `h % 20` is 0, 1, 2 or 3: 4 cases out of 20. So **80% of keys move**, and the measurement below agrees exactly. For a cache, that means 80% misses and a sudden flood of requests to the database behind it (see [Caching](../distributed-systems/caching.md)). That explains the "hit rate fell to 20%" message at the top of the page.
 
 ### The ring
 
@@ -697,13 +697,13 @@ vnodes 1000 4 -> 5 nodes:  19.9% of keys moved (0 not to cache-4), shares before
 The ideal is 20%: the new node should take one fifth of the keys, and nothing else should move.
 
 - **mod N** moves 80%, as computed.
-- **One point per node**: only 3.7% moved. That sounds good, and it is bad: `cache-4` landed on a tiny arc and does almost no work. Worse, before the change one node held **57.8%** of all keys and another 10.2%. Your "4-node cluster" is really one hot node.
+- **One point per node**: only 3.7% moved. That sounds good, but it is bad: `cache-4` landed on a tiny arc and does almost no work. Worse, before the change one node held **57.8%** of all keys and another 10.2%. Your "4-node cluster" is really one hot node.
 - **100 to 1,000 virtual nodes**: close to 20% moved, and each node holds close to 25%. The cost is a bigger sorted list (4,000 points is nothing) and a binary search of about 12 steps.
-- `0 not to cache-4` in every line: on a ring, a key never moves between two **old** nodes. That's the property that keeps the other caches warm.
+- `0 not to cache-4` in every line: on a ring, a key never moves between two **old** nodes. That is the property that keeps the other caches warm (full of useful entries).
 
 Where you meet it: memcached and Redis client libraries (the "ketama" ring), Envoy's `RING_HASH` and `MAGLEV` load-balancing policies, Cassandra and DynamoDB partitioning (`num_tokens` is the virtual-node count), and sharding schemes in general (see [Load balancers](../networking/load-balancers.md) and [Replication and sharding](../databases/replication.md)). Two newer alternatives are worth knowing by name: **rendezvous hashing** (for each key, pick the node with the highest `hash(key, node)`; no ring, O(N) per lookup) and **jump consistent hash** (no memory at all, but nodes can only be added or removed at the end).
 
-### The seed trap
+### Random seeds and shared hashes
 
 Everything on this page before the ring used `hash/maphash`. The ring did not, on purpose:
 
@@ -728,7 +728,7 @@ $ ./seed
 e05dd6c8883fabf1
 ```
 
-Same input, different hash in every process. That's a **feature**: an attacker cannot guess your hash function, so they cannot send you a million keys that all land in the same bucket (hash flooding). But it means:
+Same input, different hash in every process. This is intended: an attacker cannot guess your hash function, so they cannot send you a million keys that all land in the same bucket (hash flooding). But it means:
 
 - **In-memory, one process** (a Bloom filter in front of a database call, a sketch for a metrics window): `maphash` is perfect.
 - **Shared between processes or saved to disk** (a ring every client must agree on, a Bloom filter shipped with an SSTable, HLL sketches merged across servers): you need a hash that is the **same everywhere**. Use a fixed, documented hash function, and write its name into the file format.
@@ -738,7 +738,7 @@ Same input, different hash in every process. That's a **feature**: an attacker c
 - **Treating "maybe" as "yes".** A Bloom filter's "yes" must be checked against the real data. Only its "no" can be trusted alone. If a false "yes" means "show this user someone else's order", you have a security bug.
 - **Overfilling a Bloom filter.** It does not fail, it silently gets worse. Twice the planned items turns 1% into about 15%. Track the item count and rebuild.
 - **Deleting from a plain Bloom filter.** Clearing bits creates false negatives, the one error a Bloom filter promises never to make. Use a counting Bloom filter or a cuckoo filter.
-- **Merging sketches with different seeds or sizes.** HyperLogLog and count-min merges only work with the same hash functions and the same dimensions. The result of a wrong merge looks plausible and is garbage.
+- **Merging sketches with different seeds or sizes.** HyperLogLog and count-min merges only work with the same hash functions and the same dimensions. The result of a wrong merge looks plausible and is wrong.
 - **Count-min on rare items.** The over-count is about the same for every item. For items with small counts the error is bigger than the count. Use it for heavy hitters.
 - **HyperLogLog error is a standard deviation.** "0.81%" means about a third of runs are further off. If a dashboard shows two HLL counts that differ by 1%, that might be noise.
 - **`hash mod N` for anything that scales.** Adding one node moves almost every key. Use a ring with virtual nodes, rendezvous hashing, or a fixed number of small shards mapped onto nodes.
@@ -800,6 +800,6 @@ Same input, different hash in every process. That's a **feature**: an attacker c
 
 ## You finished Algorithms
 
-You now know the structures inside your everyday tools: how cost grows with input ([Big-O](big-o.md)), how Go's `map` and slices really work, the trees inside databases and HTTP routers, the heaps inside timers and schedulers, the graphs inside Git, Go modules and Kubernetes, the sort inside `slices.Sort`, and the clever approximations on this page. When something is slow, you can now ask the right question: which structure is this, and is it the wrong one for this access pattern?
+You now know the structures inside your everyday tools: how cost grows with input ([Big-O](big-o.md)), how Go's `map` and slices really work, the trees inside databases and HTTP routers, the heaps inside timers and schedulers, the graphs inside Git, Go modules and Kubernetes, the sort inside `slices.Sort`, and the approximations on this page. When something is slow, you can now ask the right question: which structure is this, and is it the wrong one for this access pattern?
 
 Next chapter: [AI engineering](../ai-engineering/index.md), where a model turns text into tokens and embeddings: numbers and vectors, with the same trade-off between exact and fast that you met on this page.

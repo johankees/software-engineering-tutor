@@ -11,15 +11,15 @@ Four log problems that every enterprise team meets sooner or later:
 
 You already know the basics of `log/slog` from [Standard library essentials](../go/stdlib-essentials.md#structured-logging-logslog): constant messages, attributes, `With`, `LogValuer` for secrets, and why `ordersd` passes its logger in ([Building a service](../go/services.md#logging-with-slog)). This page goes under the hood: how `slog` processes a record, what it costs, how to write your own handler, how to connect logs to traces, and what must never be in a log.
 
-## The idea: a form, not a diary
+## The idea: named fields, not free text
 
-A diary entry says "Today Ana ordered two books, it was slow, around 4 seconds I think". Nice to read, impossible to search. A form has boxes: `customer`, `items`, `duration_ms`. Everybody fills in the same boxes, so a machine can sort, count and filter.
+A free-text line says "Ana ordered two books, it was slow, about 4 seconds". A person can read it, but a machine cannot search it reliably. A **structured** log line has named fields: `customer`, `items`, `duration_ms`. Every line uses the same field names, so a machine can sort, count and filter.
 
-`slog` is a form-filling machine with three parts:
+`slog` has three parts:
 
-- The **`Logger`** is the pen. Your code calls `logger.InfoContext(ctx, "order placed", ...)`.
-- The **`Record`** is one filled-in form: time, level, message, attributes.
-- The **`Handler`** is the office that receives the form. It decides whether to keep it (`Enabled`), adds stamps (`WithAttrs`), and files it somewhere (`Handle`): as JSON on stdout, to OpenTelemetry, or both.
+- The **`Logger`** is the API your code calls: `logger.InfoContext(ctx, "order placed", ...)`.
+- The **`Record`** is one log entry: time, level, message, attributes.
+- The **`Handler`** receives the record. It decides whether to keep it (`Enabled`), adds fixed attributes (`WithAttrs`), and writes it somewhere (`Handle`): as JSON on stdout, to OpenTelemetry, or both.
 
 ```mermaid
 flowchart LR
@@ -32,7 +32,7 @@ flowchart LR
     MH --> ML["MinLevel"] --> OB["otelslog bridge<br/>OTLP"]
 ```
 
-The important design idea: **the `Logger` does almost nothing**. All decisions live in handlers, and handlers can wrap other handlers, like HTTP middleware. Once you see that, every advanced feature on this page is "one more handler in the chain".
+The important design idea: **the `Logger` does almost nothing**. All decisions live in handlers, and handlers can wrap other handlers, like HTTP middleware. So every advanced feature on this page is "one more handler in the chain".
 
 ## Under the hood: what happens in one log call
 
@@ -118,7 +118,7 @@ logger.Info("order placed", "order_id", orderID, total) // forgot the key "total
 {"level":"INFO","msg":"order placed","order_id":"ord-42","!BADKEY":4148}
 ```
 
-No compile error, no runtime error, just a field called `!BADKEY` that no dashboard will ever find. `go vet` catches the simple cases:
+There is no compile error and no runtime error, only a field called `!BADKEY` that no dashboard will ever find. `go vet` catches the simple cases:
 
 ```console
 $ go vet ./badkey
@@ -164,13 +164,13 @@ logger.Info("order loaded", slog.String("id", "ord-42"))
 
 That is legal JSON according to the spec, but each parser decides on its own which `id` wins. Go's `encoding/json` takes the last one; some platforms take the first; some reject the line. The built-in handlers never remove duplicates.
 
-The collision with **built-in keys** is the sneaky one. While writing this chapter, our "change the log level" code logged `slog.String("level", "DEBUG")`:
+The collision with **built-in keys** is the hardest one to notice. While writing this chapter, our "change the log level" code logged `slog.String("level", "DEBUG")`:
 
 ```text
 {"time":"2026-11-27T07:39:12.705232284+01:00","level":"WARN","msg":"log level changed","service":"ordersd","level":"DEBUG"}
 ```
 
-Is this line `WARN` or `DEBUG`? Depends on the parser. Never use `time`, `level`, `msg` or `source` as attribute keys. We renamed it to `new_level`.
+Whether this line is `WARN` or `DEBUG` depends on the parser. Never use `time`, `level`, `msg` or `source` as attribute keys. We renamed it to `new_level`.
 
 ### `LogValuer`: lazy, and safe
 
@@ -411,7 +411,7 @@ It only works if the context reaches the handler. That is why every log call in 
 
 ### Test your handler with `testing/slogtest`
 
-The `Handler` interface has a list of rules in its docs: ignore a zero time, inline a group with an empty key, drop empty groups, resolve `LogValuer`s... The standard library has a test suite for exactly those rules. Give it a function that makes a handler, and a function that parses what the handler wrote:
+The `Handler` interface has a list of rules in its docs: ignore a zero time, inline a group with an empty key, drop empty groups, resolve `LogValuer`s, and more. The standard library has a test suite for exactly those rules. Give it a function that makes a handler, and a function that parses what the handler wrote:
 
 ```go
 func TestTraceHandlerFollowsTheRules(t *testing.T) {
@@ -517,7 +517,7 @@ kill -USR1 %1
 curl -s -o /dev/null http://127.0.0.1:18080/healthz
 ```
 
-**Step 3: send a request that is part of a bigger trace.** Pretend an upstream gateway already started a trace and sends the W3C `traceparent` header (version `00`, trace ID, parent span ID, flags `01` = sampled):
+**Step 3: send a request that is part of a bigger trace.** Simulate an upstream gateway that already started a trace and sends the W3C `traceparent` header (version `00`, trace ID, parent span ID, flags `01` = sampled):
 
 ```sh
 curl -s -o /dev/null -H 'traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01' \
@@ -548,7 +548,7 @@ Logs are copied to many systems, kept for months, read by many people, and rarel
 **Never log:**
 
 - **Credentials:** passwords, API keys, tokens, session cookies, `Authorization` headers, private keys, connection strings with passwords.
-- **Payment data:** card numbers, CVV. PCI DSS does not allow it, full stop.
+- **Payment data:** card numbers, CVV. PCI DSS does not allow it, without exceptions.
 - **Personal data you don't need:** email, phone, address, name, birth date, IP addresses in some jurisdictions. Under GDPR each one needs a reason and a retention limit. Log a stable internal ID (`customer_id`) instead; it is enough for debugging and can be joined to the real data by someone allowed to see it.
 - **Full request and response bodies.** They contain all of the above, sooner or later. Log sizes, counts and IDs.
 - **Raw input as the message.** Input goes in an attribute, and the handler escapes it.

@@ -12,16 +12,14 @@ Five tickets from teams that run stateful things on Kubernetes:
 
 A container's own filesystem is a thin writable layer on top of the image (see [Filesystems](../linux/filesystems.md#under-the-hood-overlayfs-the-container-filesystem)), and it is thrown away with the container. Anything that must last longer needs a **volume**. Kubernetes has many kinds, and they differ in one question: **how long does the data live, and where?** On this page you use each kind on the `kind` cluster, watch a disk being created on demand, pin a pod to a node through its disk, and delete things to see what survives.
 
-## The idea: a left-luggage office
+## The idea: a request for storage, matched to a volume
 
-You arrive at a train station with a suitcase.
-
-- An **`emptyDir`** is the **shelf in your train compartment**. Everybody in your compartment (the containers of the pod) can use it. When you leave the train, the shelf is cleared.
-- A **`hostPath`** is putting your suitcase **in the driver's cabin**. It works, but now you are in a room you should not be in, and you only find it again if you board the same train.
-- A **PersistentVolumeClaim (PVC)** is a **ticket** you fill in: "one locker, 10 GB, only one person opens it at a time". You don't care which locker.
-- A **PersistentVolume (PV)** is the **actual locker**, with a number. The office matches your ticket to a locker. That's **binding**.
-- A **StorageClass** is the **locker company and the type of locker** ("fast lockers near platform 1"). If no free locker fits, the company **builds a new one** for your ticket. That's **dynamic provisioning**.
-- The **reclaim policy** says what happens to the locker when you hand back the ticket: **emptied and torn down** (`Delete`), or **kept, locked, for the manager to look at** (`Retain`).
+- An **`emptyDir`** is a directory that belongs to one pod. All containers of the pod can use it. When the pod is deleted, the directory is deleted.
+- A **`hostPath`** mounts a path from the node into the pod. It gives the pod access to the node's files, and the data stays on that one node.
+- A **PersistentVolumeClaim (PVC)** is a request for storage: "10 GB, mounted read-write by one node". It does not say which disk.
+- A **PersistentVolume (PV)** is an actual volume. Kubernetes matches a claim to a volume. That is **binding**.
+- A **StorageClass** describes a kind of storage and who creates it ("fast SSD disks"). If no existing PV fits a claim, the class's provisioner **creates a new one**. That is **dynamic provisioning**.
+- The **reclaim policy** says what happens to the volume when its claim is deleted: it is **deleted with its data** (`Delete`), or **kept for an admin to handle** (`Retain`).
 
 ```mermaid
 flowchart LR
@@ -138,7 +136,7 @@ Thu Nov 26 21:49:44 UTC 2026
 
 Gone. Same name, new pod (new UID, new directory). A Deployment rollout always makes **new** pods, so "deploy" means "lose every `emptyDir`". That's the first ticket from the top. Use `emptyDir` for caches, temporary files, and files shared between containers of one pod (an init container that prepares something, a sidecar that ships logs). Never for data you want back.
 
-### `hostPath`: a hole in the wall
+### `hostPath`: direct access to the node's files
 
 A `hostPath` volume mounts a path **from the node** into the container. Here, the node's pod log directory, read-only:
 
@@ -164,7 +162,7 @@ kube-system_kindnet-7c9fw_ebcb0ec0-bf7c-4dad-aa34-c2acc14ca77e
 kube-system_kube-proxy-wql9f_664287de-a825-4b5e-b914-b17bf0388e8f
 ```
 
-One small pod in `tutor-storage` now reads the logs of **every pod on the node**, from every namespace. With write access to the right path (`/var/lib/kubelet`, `/etc`, the containerd socket) it owns the node. That is why `hostPath` is forbidden by the `baseline` Pod Security Standard, and why you see it only in node agents (log shippers, CNI plugins, CSI node drivers), which run as DaemonSets.
+One small pod in `tutor-storage` now reads the logs of **every pod on the node**, from every namespace. With write access to the right path (`/var/lib/kubelet`, `/etc`, the containerd socket) it can take control of the node. That is why `hostPath` is forbidden by the `baseline` Pod Security Standard, and why you see it only in node agents (log shippers, CNI plugins, CSI node drivers), which run as DaemonSets.
 
 It also does not do what people hope: the data stays on **one node**. If the pod moves to another node, it finds an empty directory there. For node-local data that should follow a claim, use a **local PV** instead (next section).
 
@@ -554,7 +552,7 @@ Error from server (Forbidden): persistentvolumeclaims "data-tutor-db-0" is forbi
 
 Growing a claim works only if the StorageClass has `allowVolumeExpansion: true` and the driver supports it (cloud disks do). `standard` here has `false`. You can only **grow**, never shrink.
 
-## Under the hood: CSI, the plug for storage
+## Under the hood: CSI, the storage driver interface
 
 `local-path` is a simple, special case. Real storage on Kubernetes goes through the **Container Storage Interface (CSI)**: a gRPC API between Kubernetes and a **driver** written by the storage vendor. Kubernetes itself knows nothing about EBS, Ceph or NetApp. This cluster has no CSI driver at all:
 
@@ -687,7 +685,7 @@ $ kubectl -n tutor-storage get sts tutor-db -o jsonpath='{.spec.persistentVolume
 {"whenDeleted":"Retain","whenScaled":"Retain"}
 ```
 
-Set `whenScaled: Delete` or `whenDeleted: Delete` only for data you can rebuild (a cache, a replica that resyncs). The other side of this coin: claims left after scale-downs and deleted StatefulSets keep their disks, and keep costing money. Look for unused PVCs now and then.
+Set `whenScaled: Delete` or `whenDeleted: Delete` only for data you can rebuild (a cache, a replica that resyncs). The downside: claims left after scale-downs and deleted StatefulSets keep their disks, and keep costing money. Look for unused PVCs now and then.
 
 ## Try it
 
@@ -702,7 +700,7 @@ Set `whenScaled: Delete` or `whenDeleted: Delete` only for data you can rebuild 
 
 - **`emptyDir` for data you want to keep.** Every rollout creates new pods. The data is gone.
 - **Memory `emptyDir` without a limit.** It is RAM, and it counts as the pod's memory. Always set `sizeLimit`.
-- **`hostPath` in application pods.** It gives the pod the node, and the data stays on one node anyway. Use a PVC.
+- **`hostPath` in application pods.** It gives the pod control of the node, and the data stays on one node anyway. Use a PVC.
 - **Deleting a namespace with `reclaimPolicy: Delete`.** All its disks go with it. Use `Retain` for important data, and back up.
 - **`ReadWriteOnce` = one node, not one pod.** Two pods on one node can both write. Use `ReadWriteOncePod`, or the `Recreate` strategy, for single-writer software.
 - **`Immediate` binding with zonal disks.** The disk is made in the wrong zone, and the pod can never start. Use `WaitForFirstConsumer`.

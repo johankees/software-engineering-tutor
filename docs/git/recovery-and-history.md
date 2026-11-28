@@ -6,11 +6,11 @@
 - "I dropped a stash by accident."
 - "Production broke somewhere in the last 300 commits. Which one?"
 - "`git blame` says I wrote this whole file, because I moved it and reformatted it."
-- "Someone committed an API key. We deleted the file in the next commit. Are we safe?" (No.)
+- "Someone committed an API key. We deleted the file in the next commit. Are we safe?" (The answer is no.)
 
-This page is the toolbox for bad days: getting things back, finding where something changed, and rewriting history when you really must.
+This page covers the tools for when something went wrong: getting things back, finding where something changed, and rewriting history when you really must.
 
-## The idea: Git almost never forgets, it just stops pointing
+## The idea: lost commits still exist, only the ref moved
 
 From [Objects](objects.md) and [Refs](refs.md) you know: objects never change, refs move. When you "lose" a commit, the commit is still in the object database. Only the **pointer** to it moved. Recovery is always the same question: **where can I find the hash?**
 
@@ -24,7 +24,7 @@ flowchart TB
 
 ## Under the hood: reflog rescue
 
-The classic accident:
+A common accident:
 
 ```console
 $ git reset --hard HEAD~2
@@ -48,11 +48,11 @@ c621ed3 step 2
 d331011 step 1
 ```
 
-Back. The same works after a bad rebase (`git reflog` shows `rebase (start)` and `rebase (finish)` lines; go to the entry just before the start), a bad merge, a deleted branch (`git reflog` still has the commits it pointed to via `HEAD`), or an amend you regret.
+The commits are back. The same works after a bad rebase (`git reflog` shows `rebase (start)` and `rebase (finish)` lines; go to the entry just before the start), a bad merge, a deleted branch (`git reflog` still has the commits it pointed to via `HEAD`), or an amend you regret.
 
 ## Under the hood: dangling objects
 
-What if it was never committed? Remember: `git add` writes a blob ([The index](index-and-trees.md)). So staged work survives a `reset --hard` as an object that nothing points to, a **dangling** object:
+What if it was never committed? `git add` writes a blob ([The index](index-and-trees.md)). So staged work survives a `reset --hard` as an object that nothing points to, a **dangling** object:
 
 ```console
 $ echo "unsaved idea" > idea.txt; git add idea.txt
@@ -76,13 +76,13 @@ unreachable commit fff502e60f6485c0a188669385d67215133b5706
 unreachable commit bb5a7156aa13317957aef9da3da48173e87778b1
 ```
 
-Git even printed the hash when you dropped it. `git stash apply fff502e` brings it back. (The second commit is the stash's "index" commit. `git cat-file -p fff502e` shows two `parent` lines: the commit you were on, `5ca5709`, and `bb5a715`, which holds the staged state.)
+Git also printed the hash when you dropped it. `git stash apply fff502e` brings it back. (The second commit is the stash's "index" commit. `git cat-file -p fff502e` shows two `parent` lines: the commit you were on, `5ca5709`, and `bb5a715`, which holds the staged state.)
 
 `dangling` vs `unreachable`: a dangling object is unreachable **and** no other unreachable object points to it. It is the tip of a lost chain. `--no-reflogs` makes fsck ignore the reflog, which is needed here because the reflog still referenced the stash until the drop.
 
 You have the grace period from [Storage](storage.md): about 2 weeks for unreachable objects, longer for commits still in a reflog. After `gc` prunes them, they are really gone.
 
-## Undo anything: a table
+## How to undo common actions
 
 | Situation                                          | Command                                                              |
 | -------------------------------------------------- | -------------------------------------------------------------------- |
@@ -103,7 +103,7 @@ You have the grace period from [Storage](storage.md): about 2 weeks for unreacha
 
 Production broke. You know a good version and a bad one. **Bisect** does a binary search through history: test the middle commit, throw away half, repeat. With 16 commits, it needs about 4 tests. With 1,000 commits, about 10.
 
-Even better: let a script decide. The script's exit code is the answer:
+You can also let a script decide. The script's exit code is the answer:
 
 - `0`: this commit is **good**.
 - `1` to `127`, except `125`: this commit is **bad**.
@@ -144,14 +144,14 @@ Previous HEAD position was 018a244 change 11
 Switched to branch 'main'
 ```
 
-`git bisect start <bad> <good>`, then `run`. Four tests, zero human work. For a Go service, the script is often just `go test ./internal/orders -run TestDiscount` (with `go build ./... || exit 125` first). Keep the script **outside** the repo or untracked, so checkouts don't change it.
+`git bisect start <bad> <good>`, then `run`. Four tests, all automatic. For a Go service, the script is often only `go test ./internal/orders -run TestDiscount` (with `go build ./... || exit 125` first). Keep the script **outside** the repo or untracked, so checkouts don't change it.
 
 !!! tip "Bisect works best on a history where every commit builds"
 
     That is one more reason for small commits that each pass the tests. With many broken commits,
     bisect has to skip a lot, and may end with "the bad commit is one of these five".
 
-## Under the hood: blame that tells the truth
+## Under the hood: blame through moves and reformatting
 
 `git blame` shows, for every line, the last commit that touched it. "Touched" is the problem. Our sample: `Discount` was written in `be2e025`, then a commit changed tabs to spaces, then a commit moved it to its own file.
 
@@ -172,7 +172,7 @@ eb3d84a (You 2026-09-04 12:00:00 +0000 7)     return 0
 eb3d84a (You 2026-09-04 12:00:00 +0000 8) }
 ```
 
-Every line blames the move. Useless. `-w` ignores whitespace changes, and `-C` follows lines **moved or copied from other files**:
+Every line blames the move, which does not help. `-w` ignores whitespace changes, and `-C` follows lines **moved or copied from other files**:
 
 ```console
 $ git blame -w -C -C -C discount.go
@@ -190,7 +190,7 @@ Now the real author commit, and even the original file name. How many `-C`s?
 
 - `-C` once: look in other files **changed in the same commit**.
 - twice: also in other files of **the commit that created the file**.
-- three times: in **any** file of **any** commit. Slowest, most thorough.
+- three times: in **any** file of **any** commit. Slowest, and finds the most.
 
 ### `--ignore-revs-file`: hide formatting commits
 
@@ -223,7 +223,7 @@ $ git log --oneline -G "^ +sum"
 252ab5e style: tabs to spaces
 ```
 
-- `-S <string>`: commits where the **number of occurrences** of the string changed. It was added in `be2e025`. In `eb3d84a` the count did not change in total, but per file it did (gone from `orders.go`, new in `discount.go`), so that commit shows too. Great for "when was this function call removed?".
+- `-S <string>`: commits where the **number of occurrences** of the string changed. It was added in `be2e025`. In `eb3d84a` the count did not change in total, but per file it did (gone from `orders.go`, new in `discount.go`), so that commit shows too. Useful for "when was this function call removed?".
 - `-G <regex>`: commits whose **diff** has an added or removed line matching the regex. Here: indented `sum` lines with spaces appeared in the tabs-to-spaces commit.
 
 And to follow **one function** through history:
@@ -234,7 +234,7 @@ $ git log --oneline -L :Total:orders.go | grep -E "^[0-9a-f]{7} "
 111e185 add Total
 ```
 
-`-L :funcname:file` shows every commit that changed that function, with the diff of just that function. Git finds the function with a regex for the language. For Go, add `*.go diff=golang` to `.gitattributes` so it uses the built-in Go pattern (see [attributes](config-hooks-signing.md)). `-L 10,20:file` works with line ranges.
+`-L :funcname:file` shows every commit that changed that function, with the diff of only that function. Git finds the function with a regex for the language. For Go, add `*.go diff=golang` to `.gitattributes` so it uses the built-in Go pattern (see [attributes](config-hooks-signing.md)). `-L 10,20:file` works with line ranges.
 
 ## Under the hood: rewriting history with filter-repo
 
@@ -355,7 +355,7 @@ c621ed3 step 2
 d331011 step 1
 ```
 
-`--graft HEAD~1` with no parents made a replacement of `c621ed3` without parents, so history looks like it starts there. The real objects did not change, and `--no-replace-objects` shows the truth. Uses: stitch an old, archived history onto a new repo, or cut history for a demo. Replace refs replace the old "grafts" file, which Git 3.0 plans to remove.
+`--graft HEAD~1` with no parents made a replacement of `c621ed3` without parents, so history looks like it starts there. The real objects did not change, and `--no-replace-objects` shows the real history. Uses: stitch an old, archived history onto a new repo, or cut history for a demo. Replace refs replace the old "grafts" file, which Git 3.0 plans to remove.
 
 ## Traps
 
@@ -392,7 +392,7 @@ d331011 step 1
 ??? question "5. Why can't you check out the same branch in two worktrees?"
 
     Branches are shared between all worktrees (they live in the common dir). A commit in one worktree
-    would move the branch under the other worktree's feet, and its index and files would no longer
+    would move the branch that the other worktree has checked out, and its index and files would no longer
     match `HEAD`.
 
 ## Recap

@@ -2,7 +2,7 @@
 
 ## Why care?
 
-Five tickets, all from one bad Tuesday:
+Five tickets, all from the same day:
 
 - "A customer was charged twice for order `ord-1001`. Our logs show one click and two `POST /charge` calls, 120 ms apart."
 - "Payments was slow for 30 seconds. Then it was **down** for 20 minutes, although nothing changed."
@@ -10,18 +10,18 @@ Five tickets, all from one bad Tuesday:
 - "Payments recovered at 10:05. Its traffic went up 6×, at exactly 10:05:01, and it fell over again."
 - "Under load, the server's CPU is at 100 % and it answers **nothing** in time."
 
-Every network call can end in three ways: it worked, it failed, or **you don't know**. The third one is the hard one. This page is about living with it: timeouts and deadlines so you stop waiting, retries that don't make things worse, idempotency so retrying is safe, and circuit breakers and load shedding so an overloaded service can recover. Every demo below is a real Go program hitting a real HTTP server on this machine.
+Every network call can end in three ways: it worked, it failed, or **you don't know**. The third one is the hard one. This page is about handling it: timeouts and deadlines so you stop waiting, retries that don't make things worse, idempotency so retrying is safe, and circuit breakers and load shedding so an overloaded service can recover. Every demo below is a real Go program hitting a real HTTP server on this machine.
 
-## The idea: phoning in a pizza order
+## The idea: unknown outcomes, and how to make retries safe
 
-You call the pizza place, give your order, and the line goes dead before they confirm.
+`orders` sends `POST /charge` to `payments`, and the call times out before an answer arrives.
 
-- Did they get the order? **You can't know.** Maybe the line dropped before they heard you, maybe after they wrote it down.
-- Call again and order the same pizza: maybe you get **two pizzas**.
-- Unless you say: "This is order number **42**. If you already have 42, don't make it again." Now calling again is safe. That number is an **idempotency key**.
-- If the pizza place is **swamped**, calling again every second makes it worse for everyone. Wait a bit longer each time, and at a random moment so not all hungry people call back together. That's **exponential backoff with jitter**.
-- If the place didn't answer the last five calls, stop calling for a while and cook something at home. That's a **circuit breaker**.
-- And a pizza place that is full should say "sorry, we're full, call back in an hour" **at once**, instead of taking orders it will deliver cold, two hours later. That's **load shedding**.
+- Did the charge happen? **The client cannot know.** The request may have been lost before `payments` received it, or the reply may have been lost after the card was charged.
+- If the client sends the same request again, the customer may be charged **twice**.
+- The fix is to send a unique number with the request: "This is operation **42**. If you have already done 42, do not do it again." Now a retry is safe. That number is an **idempotency key**.
+- If `payments` is **overloaded**, retrying every second adds more load. The client should wait longer after each failure, and add a random part to the wait, so that clients do not all retry at the same moment. This is **exponential backoff with jitter**.
+- If the last several calls failed, the client should stop calling for a while and fail at once instead. This is a **circuit breaker**.
+- A server that is full should reject new requests **at once** (for example with `503`), instead of accepting work that it will finish only after the client has stopped waiting. This is **load shedding**.
 
 ```mermaid
 sequenceDiagram
@@ -33,7 +33,7 @@ sequenceDiagram
     Note over O: 100 ms timeout
     O--xO: timeout: did it happen?
     O->>P: POST /charge ord-1001 49.99 (retry)
-    P->>B: charge (again!)
+    P->>B: charge (again)
     B-->>P: ok (charge 1)
     P-->>O: 201
     B-->>P: ok (charge 2)
@@ -125,7 +125,7 @@ Retries add load exactly when the backend has the least capacity. Three ways it 
 
 - **Retrying at every layer.** Browser, API gateway, `orders`, its HTTP library: 3 retries each turn one click into 4 × 4 × 4 = 64 requests to `payments`. Retry at **one** layer, usually the one closest to the user that still knows whether the call is safe.
 - **Retrying immediately.** The backend is overloaded; the retry arrives while it still is.
-- **Retrying in sync.** Many clients failed at the same moment (the backend hiccupped), so they all retry at the same moment. That's the 10:05:01 ticket.
+- **Retrying in sync.** Many clients failed at the same moment (the backend had a short failure), so they all retry at the same moment. That's the 10:05:01 ticket.
 
 ### Try it: a burst, three ways
 
@@ -220,7 +220,7 @@ succeeded 415/500 (83%), requests sent 3015 (6.0 per client), rejected 2600, too
 ```
 
 - **No backoff:** all 7 attempts are spent in **66 ms**, 3,314 requests in a server that can do about 66 in that time. 12 % succeed. The retries are pure extra load.
-- **Exponential backoff, no jitter:** the clients wait 10, 20, 40, 80, 160, 320 ms, **all the same**. Look at the histogram: the load arrives in **waves** (0, 25, 75, 150, 325, 650 ms) with nothing in between. Each wave is ~460 requests for 10 slots. The server is idle most of the time and swamped the rest. Only 24 % succeed.
+- **Exponential backoff, no jitter:** the clients wait 10, 20, 40, 80, 160, 320 ms, **all the same**. Look at the histogram: the load arrives in **waves** (0, 25, 75, 150, 325, 650 ms) with nothing in between. Each wave is ~460 requests for 10 slots. The server is idle most of the time and overloaded the rest. Only 24 % succeed.
 - **Full jitter:** each client waits a **random** time between 0 and the exponential value. About the same number of requests (3,015) now arrive **spread out**, the server keeps its slots busy, and 83 % succeed in about the same time.
 
 Two more lessons in the numbers. First, all three sent about **6 requests per client**: backoff doesn't reduce how many retries you make, it reduces how many arrive **at once**. Second, even full jitter can't make 500 × 10 ms of work fit into 600 ms on 10 slots: retries can't create capacity. When the backend is really overloaded, the answer is fewer requests (a retry **budget**, a circuit breaker, load shedding), not smarter ones.
@@ -235,7 +235,7 @@ A **retry budget** caps retries as a share of normal traffic, for example "retri
 
 An operation is **idempotent** if doing it twice has the same effect as doing it once. "Set status to `paid`" is. "Charge 49.99" is not. An **idempotency key** turns the second kind into the first:
 
-1. The **client** creates a unique key per **logical operation** (not per attempt!), for example a UUIDv7 stored with the order, and sends it in an `Idempotency-Key` header. Every retry of that operation sends **the same key**.
+1. The **client** creates a unique key per **logical operation** (not per attempt), for example a UUIDv7 stored with the order, and sends it in an `Idempotency-Key` header. Every retry of that operation sends **the same key**.
 2. The **server** remembers each key with its result. A request with a known key gets the **stored answer** instead of being done again.
 
 There is an IETF draft that standardises the header ("The Idempotency-Key HTTP Header Field"), and payment APIs such as Stripe's have worked this way for years.
@@ -322,7 +322,7 @@ The demo keeps keys in a map, which forgets everything on restart and doesn't wo
 
 Idempotency doesn't need a key if the operation can be made naturally idempotent: "set order 1001 to `paid`" instead of "toggle", `INSERT ... ON CONFLICT DO NOTHING` with the order ID, "ship parcel for order 1001" with a unique constraint on `order_id`. Prefer that when you can; it is less code. Consumers of a message queue need the same thing, because brokers deliver **at least once** ([Messaging](messaging.md)).
 
-## Circuit breakers: stop calling a sick service
+## Circuit breakers: stop calling a failing service
 
 When `payments` hangs, every call from `orders` waits for its full timeout. With 20 concurrent callers, that's 20 goroutines and connections tied up, and a checkout page that takes the timeout every time before failing. A **circuit breaker** notices the failures and **fails fast** for a while:
 
@@ -403,16 +403,16 @@ ok 693, failed after timeout 22, failed fast 1001; backend saw 715 calls (22 whi
 ```
 
 - The circuit opens at **253 ms**: the first calls after 200 ms timed out at about 250 ms.
-- Probes at 405 and 606 ms hang (the backend is still sick) and open it again. The probe at 810 ms succeeds, and traffic flows again.
-- The sick backend got **22** calls instead of **180**. A backend that is struggling gets room to recover, instead of 8× the hopeless requests.
+- Probes at 405 and 606 ms hang (the backend is still failing) and open it again. The probe at 810 ms succeeds, and traffic flows again.
+- The failing backend got **22** calls instead of **180**. A backend that is struggling gets room to recover, instead of 8× as many requests that could not succeed.
 - Callers spent **1.9 s** waiting in total, instead of **10.1 s**. Failing fast frees goroutines and gives the checkout page a quick, clear error, or a fallback ("we'll confirm your payment by email").
 - The cost: from 700 ms (backend healthy) to 810 ms (the next probe), calls failed that would have worked. The cooldown is a trade-off between protecting the backend and noticing recovery.
 
 In production use a maintained library (for example `github.com/sony/gobreaker/v2`) and count failures over a **time window** or as a **rate**, not only in a row. Keep **one breaker per backend** (per host, sometimes per endpoint), and export its state as a metric: an open breaker is an alert.
 
-## Load shedding: say no early
+## Load shedding: reject work early
 
-A server that accepts every request and queues it looks friendly. Under overload it is the worst option. The queue grows, every request waits longer than its client's timeout, and the server spends all its CPU on answers **nobody is waiting for**. Work done, but **goodput** (useful answers per second) near zero.
+A server that accepts every request and queues it seems helpful. Under overload it is the worst option. The queue grows, every request waits longer than its client's timeout, and the server spends all its CPU on answers **nobody is waiting for**. Work done, but **goodput** (useful answers per second) near zero.
 
 **Load shedding** means: when the server is full, reject new work **at once and cheaply** (`503` with `Retry-After`), and drop queued work whose client has gone. Here: 4 workers, 10 ms per request (capacity 400 requests/s), **800 requests/s** for 3 seconds, clients with a 100 ms timeout. The shedding server allows at most 8 requests to wait:
 
@@ -453,7 +453,7 @@ server still busy 0s after the last client finished
 
 The server is the same speed in both runs. What changed is **which** work it did:
 
-- **Queue everything:** it did 2,294 units of work, and **2,260** of them were for clients that had already timed out. Goodput: **9 requests/s** from a server that can do 400. And it kept working for **3 seconds** after the load stopped, emptying a queue of the dead. This is the "100 % CPU, answers nothing" ticket.
+- **Queue everything:** it did 2,294 units of work, and **2,260** of them were for clients that had already timed out. Goodput: **9 requests/s** from a server that can do 400. And it kept working for **3 seconds** after the load stopped, working through a queue of requests whose clients had already left. This is the "100 % CPU, answers nothing" ticket.
 - **Shed load:** half the requests got a fast `503`, the other half got a real answer at **385 requests/s**, close to the capacity, with a p99 of 33 ms. No wasted work.
 
 A `503` in 1 ms is a better answer than a `200` in 3 seconds that nobody reads. It also tells a well-behaved client to back off. Real servers shed by queue length (as here), by in-flight requests, by CPU, or by **priority**: drop the product-catalog request, keep the checkout. Rate limiting per client is the same idea at the door; it is covered with load balancers in [Load balancers and proxies](../networking/load-balancers.md).
@@ -498,7 +498,7 @@ flowchart LR
 
 ??? question "2. In the storm demo, all three strategies sent about 6 requests per client. Why did full jitter still succeed more than three times as often as plain exponential backoff?"
 
-    Because what kills the server is requests arriving **at the same time**, not their total.
+    Because what overloads the server is requests arriving **at the same time**, not their total.
     Without jitter, all 500 clients wait exactly 10, 20, 40 ms, so their retries arrive in waves of
     ~460 for 10 slots, with idle gaps between them. Jitter spreads the same requests over time, so
     the slots stay busy instead of overflowing.
@@ -523,7 +523,7 @@ flowchart LR
 
 ??? question "6. What does a circuit breaker protect, and what does it cost?"
 
-    It protects the **backend** (no more hopeless calls while it is sick, so it can recover) and
+    It protects the **backend** (no more calls that cannot succeed while it is failing, so it can recover) and
     the **caller** (no goroutines and users stuck waiting for timeouts). The cost: while open, it
     also rejects calls that would have worked, until the next probe succeeds.
 
@@ -534,6 +534,6 @@ flowchart LR
 - **Retry** only idempotent operations or failures where the request clearly did nothing. Retry at **one** layer, with **exponential backoff and full jitter**, and a **retry budget**. Honour `Retry-After`.
 - Backoff doesn't reduce retries, it spreads them. Retries never create capacity.
 - **Idempotency keys**: one per logical operation, claimed before the work, stored with the result in the **same transaction**, replayed on retry, `409` while in progress, `422` on a different body. Pass them on downstream.
-- A **circuit breaker** fails fast when a backend is sick and probes for recovery. **Load shedding** rejects early so that the work you do is work someone waits for.
+- A **circuit breaker** fails fast when a backend is failing and probes for recovery. **Load shedding** rejects early so that the work you do is work someone waits for.
 
 Next: what changes when the call is a message on a queue instead of an HTTP request. [Messaging](messaging.md).

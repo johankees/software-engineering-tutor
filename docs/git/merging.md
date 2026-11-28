@@ -3,19 +3,19 @@
 ## Why care?
 
 - "We resolved this exact conflict last week. Why are we resolving it again?"
-- "I rebased my branch and a commit disappeared. No error, it is just gone."
+- "I rebased my branch and a commit disappeared. No error, it is simply gone."
 - "I have three stacked PRs. After I rebase the first one, I have to rebase the other two by hand."
 - "Merge or rebase? The team argues about it every month."
 
-Merging and rebasing feel like magic, so people learn rules ("never rebase public branches") without the reason. Under the hood, both are simple. They use the same building block: the **three-way merge**.
+Merging and rebasing look complicated, so people learn rules ("never rebase public branches") without the reason. Under the hood, both are simple. They use the same building block: the **three-way merge**.
 
 ## The idea: three versions, not two
 
-Imagine you and a colleague each get a copy of the same contract. You change clause 3. She changes clause 7. Now you have to make one final version. If you only compare **your copy and hers**, you see two differences, but you can't tell **who** changed what. Did you add clause 7, or did she remove it?
+Two branches start from the same file. On one branch, line 3 changes. On the other, line 7 changes. If Git only compares the **two branch versions**, it sees two differences, but it can't tell **which side** made each change. Was line 7 added on one side, or removed on the other?
 
-You need the **original** too. With the original, it is easy: "clause 3 changed only on my side, take mine; clause 7 changed only on hers, take hers". Only if both of you changed **the same clause** do you need to talk. That is a conflict.
+Git needs the **original** too. With the original, the decision is simple: "line 3 changed only on our side, take ours; line 7 changed only on their side, take theirs". Only when both sides changed **the same lines** does a person need to decide. That is a conflict.
 
-Git does exactly this. The original is the **merge base**: the best common ancestor of the two commits.
+The original is the **merge base**: the best common ancestor of the two commits.
 
 ```mermaid
 flowchart RL
@@ -61,7 +61,7 @@ $ git merge-base main x
 e9d87d76f53dd8776c2fbf25cadf6621307e2777
 ```
 
-`B` and `C` are both "best": neither is an ancestor of the other. Plain `merge-base` just shows one. What does the merge do? The default strategy, **`ort`**, first merges the merge bases **with each other** into a virtual tree, and then uses that as the base. That is the "recursive" idea. The name `ort` is short for "Ostensibly Recursive's Twin": it was written as a replacement for the old default strategy, `recursive`.
+`B` and `C` are both "best": neither is an ancestor of the other. Plain `merge-base` shows only one. What does the merge do? The default strategy, **`ort`**, first merges the merge bases **with each other** into a virtual tree, and then uses that as the base. That is the "recursive" idea. The name `ort` is short for "Ostensibly Recursive's Twin": it was written as a replacement for the old default strategy, `recursive`.
 
 ## Under the hood: a conflict, inside the index
 
@@ -74,7 +74,7 @@ CONFLICT (content): Merge conflict in config.ini
 Automatic merge failed; fix conflicts and then commit the result.
 ```
 
-Now look at the index. Normally each path has one entry with **stage 0**. During a conflict, it has up to three:
+Now look at the index: Normally each path has one entry with **stage 0**. During a conflict, it has up to three:
 
 ```console
 $ git ls-files -s
@@ -123,16 +123,16 @@ retries = 3
 log = info
 ```
 
-Now it is clear: base was 10, we changed it to 20, they changed it to 30. You need to decide, but at least you know what each side **meant**. `diff3` does the same. `zdiff3` is like `diff3`, but it also removes lines that match on both sides from the start and end of the conflict block, so the block is smaller.
+Now it is clear: base was 10, we changed it to 20, they changed it to 30. You still need to decide, but you know what each side **meant**. `diff3` does the same. `zdiff3` is like `diff3`, but it also removes lines that match on both sides from the start and end of the conflict block, so the block is smaller.
 
 !!! tip "Set this once"
 
-    `git config --global merge.conflictStyle zdiff3`. It is the single best change for resolving
+    `git config --global merge.conflictStyle zdiff3`. It is the most useful single setting for resolving
     conflicts. Your editor's merge tool will show the same three sides.
 
 ## Under the hood: renames in a merge
 
-Remember: Git does not store renames ([Objects](objects.md)). So in a merge, `ort` **detects** them between the base and each side. Here, one branch moved `util.go` to `internal/strutil.go` and changed line 1. The other branch fixed line 30 in `util.go`:
+Git does not store renames ([Objects](objects.md)). So in a merge, `ort` **detects** them between the base and each side. Here, one branch moved `util.go` to `internal/strutil.go` and changed line 1. The other branch fixed line 30 in `util.go`:
 
 ```console
 $ git diff -M --summary main~1 move
@@ -158,7 +158,7 @@ CONFLICT (modify/delete): util.go deleted in move and modified in HEAD.  Version
 Automatic merge failed; fix conflicts and then commit the result.
 ```
 
-That is the "conflict in a file nobody touched" from the chapter intro. If one side moves **and** heavily rewrites a file, it falls below the threshold, Git sees "delete + add", and you get a modify/delete conflict. Same advice as before: move in one commit, change in the next. `-X find-renames=30%` can rescue a merge with a lower threshold.
+That is the "conflict in a file nobody touched" from the chapter intro. If one side moves **and** heavily rewrites a file, it falls below the threshold, Git sees "delete + add", and you get a modify/delete conflict. Same advice as before: move in one commit, change in the next. `-X find-renames=30%` can fix such a merge with a lower threshold.
 
 ## Under the hood: rerere, reuse recorded resolution
 
@@ -181,7 +181,7 @@ Recorded resolution for 'config.ini'.
 c5d0a5b Merge branch 'alice'
 ```
 
-Now throw the merge away and do it again:
+Now abort the merge and run it again:
 
 ```console
 $ git reset -q --hard HEAD~1 && git merge alice
@@ -203,11 +203,11 @@ $ ls .git/rr-cache/
 31bd65793ae8b3ec8f9c42a1eedd53f488716517
 ```
 
-`rerere` shines when you rebase a long branch many times, or when you test-merge a feature branch into main every day and then throw the merge away. That was the "same conflict again" problem.
+`rerere` is most useful when you rebase a long branch many times, or when you test-merge a feature branch into main every day and then throw the merge away. That was the "same conflict again" problem.
 
 ## Under the hood: fast-forward and octopus
 
-**Fast-forward.** If the branch you are on is an ancestor of the one you merge, there is nothing to combine. Git just moves your branch ref forward. No new commit. `--no-ff` forces a merge commit anyway, so the history shows "this was a feature branch".
+**Fast-forward.** If the branch you are on is an ancestor of the one you merge, there is nothing to combine. Git only moves your branch ref forward. No new commit. `--no-ff` forces a merge commit anyway, so the history shows "this was a feature branch".
 
 **Octopus.** A merge commit can have more than two parents:
 
@@ -294,9 +294,9 @@ $ git range-diff main ORIG_HEAD HEAD
 2:  2e14558 = 1:  5f0fcaa topic: b more
 ```
 
-`<` = only in the old series (here: skipped). `=` = same patch. `!` = the patch changed, and range-diff shows a diff **of the diffs**. Reviewers love this after a force-push: "what did you change since my last review?"
+`<` = only in the old series (here: skipped). `=` = same patch. `!` = the patch changed, and range-diff shows a diff **of the diffs**. This helps reviewers after a force-push: "what did you change since my last review?"
 
-### `--onto`: transplant a part of a branch
+### `--onto`: move part of a branch to a new base
 
 `git rebase --onto <newbase> <upstream> <branch>` takes the commits in `upstream..branch` and replays them on `newbase`. Here `ui` was built on `api`, but we want only the `ui` commit on main:
 
@@ -343,7 +343,7 @@ bab192b fixup! api: add endpoint
 21f4cb7 api: add endpoint
 ```
 
-The message `fixup! api: add endpoint` is a note to rebase: "melt me into that commit". `--autosquash` moves it there in the todo list and squashes it:
+The message `fixup! api: add endpoint` is an instruction to rebase: "squash me into that commit". `--autosquash` moves it there in the todo list and squashes it:
 
 ```console
 $ GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash --update-refs main

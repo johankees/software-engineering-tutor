@@ -8,11 +8,11 @@
 - "We put a pre-commit hook in the repo. Why doesn't it run for new team members?"
 - "Anyone can set `user.email` to the CTO's address. How do we know who really made a commit?"
 
-The last page of the chapter is about making Git **yours**: config that changes by repo, attributes that change how files are stored, hooks that run your code, and signatures that prove who you are. We use this book's author's real setup (the dotfiles) as the worked example.
+The last page of the chapter is about adapting Git to your needs: config that changes by repo, attributes that change how files are stored, hooks that run your code, and signatures that prove who you are. The worked example is this book's author's real setup (the dotfiles).
 
-## The idea: layers of transparent sheets
+## The idea: layered configuration
 
-Picture a stack of transparent sheets on an overhead projector. Each sheet can write a value in any box. You look from the top, so **the top sheet wins** for any box it fills in. Empty boxes show what is below.
+Git config comes from several layers, from system-wide to a single command. Each layer can set any key. For a key that is set in more than one layer, **the most specific layer wins**. A key that a layer does not set comes from a layer below.
 
 ```mermaid
 flowchart TB
@@ -27,7 +27,7 @@ Git reads from the bottom (system) to the top (command line). For a normal key, 
 
 ## Under the hood: config layers and where a value came from
 
-Never guess where a setting comes from. Ask:
+Don't guess where a setting comes from. Ask Git:
 
 ```console
 $ git config list --show-scope --show-origin | grep -v "^command"
@@ -45,7 +45,7 @@ $ git config get --show-origin --show-scope core.bare
 local	file:.git/config	false
 ```
 
-Run `git config list --show-scope --show-origin` on your own machine once. Most people find at least one surprise.
+Run `git config list --show-scope --show-origin` on your own machine once. Most people find at least one setting they did not expect.
 
 !!! tip "The new `git config` subcommands"
 
@@ -75,7 +75,7 @@ This setup's global config uses all the ideas. Simplified:
     path = ~/.config/git/forgejo.gitconfig
 ```
 
-**`hasconfig:remote.*.url`** is the clever one. It picks config **by where the code lives**, not by folder. Clone anywhere, and as soon as the repo has a GitHub remote, the GitHub settings apply. Let's prove it with a copy of that idea in a sandbox home directory:
+**`hasconfig:remote.*.url`** is the most useful one. It picks config **by where the code lives**, not by folder. Clone anywhere, and as soon as the repo has a GitHub remote, the GitHub settings apply. Here is a test of that idea in a sandbox home directory:
 
 ```console
 $ git remote -v | head -1
@@ -88,9 +88,9 @@ $ git config get --show-scope --show-origin --all credential.https://github.com.
 exit=1
 ```
 
-(The sandbox home path is shortened to `~`.) Two values: the empty one resets the helper list (see [credential helpers](remotes.md)), then the `gh` helper. Remove the remote, and the whole file is no longer included. One rule: files included this way **may not contain remote URLs** themselves, to avoid a chicken-and-egg loop.
+(The sandbox home path is shortened to `~`.) Two values: the empty one resets the helper list (see [credential helpers](remotes.md)), then the `gh` helper. Remove the remote, and the whole file is no longer included. One rule: files included this way **may not contain remote URLs** themselves, to avoid a circular dependency.
 
-The same trick solves "wrong email in the wrong project": put `user.email` in a file included by `hasconfig:remote.*.url:https://github.com/your-company/**`.
+The same method solves "wrong email in the wrong project": put `user.email` in a file included by `hasconfig:remote.*.url:https://github.com/your-company/**`.
 
 ### `gitdir:` vs `worktree:` for linked worktrees
 
@@ -123,7 +123,7 @@ demo.worktree=matched
 
 !!! warning "Config fails silently"
 
-    A typo in an `includeIf` path, or a key that does not exist, is just ignored. For example,
+    A typo in an `includeIf` path, or a key that does not exist, is ignored. For example,
     this setup's config had `rebase.interactive = true`, but `git-config(1)` in 2.56 has no such
     key (it does have `rebase.autoSquash`, `rebase.autoStash` and `rebase.updateRefs`). Always check
     with `git config get --show-origin <key>` from inside the repo where it should apply.
@@ -165,7 +165,7 @@ flowchart LR
     O -->|"smudge (checkout)"| W
 ```
 
-Here is a toy filter that hides passwords from the repo:
+Here is a minimal example filter that hides passwords from the repo:
 
 ```console
 $ git config set filter.redact.clean "sed 's/^password=.*/password=REDACTED/'"
@@ -184,14 +184,14 @@ db.env: filter: redact
 
 Your file on disk has the real password. The blob in the index (and so in every commit) has `REDACTED`. The filter **config** is local (each developer must set it), but the `.gitattributes` line that says "use filter `redact`" is committed.
 
-!!! tip "Don't use this toy for real secrets"
+!!! tip "Don't use this example for real secrets"
 
     It shows the mechanism. For real secrets, keep them out of the repo entirely: environment
     variables, a secrets manager, or an encrypted-files tool built for it.
 
 ### How Git LFS works
 
-Git LFS is exactly a clean/smudge filter. This setup's global config has:
+Git LFS is a clean/smudge filter. This setup's global config has:
 
 ```ini
 [filter "lfs"]
@@ -249,7 +249,7 @@ Server-side hooks (`pre-receive`, `update`, `post-receive`, ...) run on the serv
 
 ### Where hooks live, and why they are not cloned
 
-By default hooks are executable files in `.git/hooks/<name>`. `.git/` is never transferred by clone or fetch, so **hooks are never cloned**. That is on purpose: otherwise cloning a stranger's repo would run a stranger's code on your machine. Three ways to share hooks anyway:
+By default hooks are executable files in `.git/hooks/<name>`. `.git/` is never transferred by clone or fetch, so **hooks are never cloned**. That is deliberate: otherwise cloning a stranger's repo would run a stranger's code on your machine. Three ways to share hooks anyway:
 
 1. **`core.hooksPath`**: point Git at a folder, for example a committed `.githooks/` directory. Each developer sets it once (`git config core.hooksPath .githooks`).
 2. **Templates**: `git init` and `git clone` copy files from a **template directory** into the new `.git/`. This setup sets `init.templateDir = ~/.config/git/template`, so every new repo gets its `prepare-commit-msg` hook.
@@ -318,7 +318,7 @@ Scripts and release tools should use `%(trailers)` instead of grepping messages.
 
 ## Under the hood: signing commits
 
-`user.name` and `user.email` are just text. Anyone can write any name. A **signature** proves that the holder of a private key made this exact commit.
+`user.name` and `user.email` are only text. Anyone can write any name. A **signature** proves that the holder of a private key made this exact commit.
 
 ### SSH or GPG
 
@@ -471,8 +471,8 @@ Changes to that file then need review like any other code: adding a line means "
 
 ## You finished the Git chapter
 
-You now know what Git really is: an object database of blobs, trees, commits and tags; refs that move over a graph of commits; an index between your files and your next commit; packs that keep it small; and merges, rebases, fetches and pushes that are all just objects being copied and refs being moved.
+You now know what Git really is: an object database of blobs, trees, commits and tags; refs that move over a graph of commits; an index between your files and your next commit; packs that keep it small; and merges, rebases, fetches and pushes that are all objects being copied and refs being moved.
 
-The next time Git surprises you, open `.git/`, run `git cat-file` and `git reflog`, and look. It is never magic.
+The next time Git does something you did not expect, open `.git/`, run `git cat-file` and `git reflog`, and look at the data. Every behaviour has a cause you can find there.
 
 Next: put it all to work in the [Go chapter](../go/index.md).

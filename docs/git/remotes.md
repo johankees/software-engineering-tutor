@@ -7,15 +7,15 @@
 - "We work on a fork. Should my branch track `origin` or `upstream`? Where does `git push` go?"
 - "Fetching our big repo is slow, even when nothing changed."
 
-A remote is just another repository. Everything on this page is about **copying objects** between two object databases and **moving refs** on both sides. Once you see that, `fetch`, `push` and `pull` are simple, and force-pushing becomes safe.
+A remote is another repository. Everything on this page is about **copying objects** between two object databases and **moving refs** on both sides. Once you understand that, `fetch`, `push` and `pull` are simple, and you can force-push safely.
 
-## The idea: your notes about someone else's notebook
+## The idea: a local record of the remote's refs
 
-You have your own notebook (your repo). Your colleague has hers (the server). You can't look in hers all the time, so you keep a **page of notes about her notebook**: "last time I checked, her `main` was at page 42". Those notes are your **remote-tracking refs**, `origin/main` and friends.
+Your repository can't check the server all the time. So it keeps a **local record of where the server's refs pointed** the last time you talked to it: "at the last fetch, the server's `main` was at commit `2a341a7`". These records are your **remote-tracking refs**, such as `origin/main`.
 
-- `git fetch` = go look at her notebook, copy any pages you don't have, and **update your notes**. Your own pages don't change.
-- `git push` = copy your pages to her notebook and ask her to move **her** bookmark. She only says yes if she loses nothing.
-- `git pull` = `fetch`, then combine her work into yours (merge or rebase).
+- `git fetch` = ask the server for its refs, copy the objects you don't have, and **update your remote-tracking refs**. Your own branches don't change.
+- `git push` = copy your objects to the server and ask it to move **its** ref. The server only accepts if no commits are lost.
+- `git pull` = `fetch`, then combine the server's work into your branch (merge or rebase).
 
 ```mermaid
 flowchart LR
@@ -42,7 +42,7 @@ $ git config get --all remote.origin.fetch
 +refs/heads/*:refs/remotes/origin/*
 ```
 
-Read it as `source:destination`. "Take every ref under `refs/heads/` on the remote, and write it under `refs/remotes/origin/` here." The leading `+` means "update it even if it is **not a fast-forward**". That is right for remote-tracking refs: if somebody force-pushed the server's branch, your notes should show the truth.
+Read it as `source:destination`. "Take every ref under `refs/heads/` on the remote, and write it under `refs/remotes/origin/` here." The leading `+` means "update it even if it is **not a fast-forward**". That is right for remote-tracking refs: if somebody force-pushed the server's branch, your remote-tracking ref should show the server's real state.
 
 Add a second remote and you get a second refspec:
 
@@ -78,7 +78,7 @@ Refspecs explain a lot of "why":
 
 ## Under the hood: what happens during a fetch
 
-Run a fetch with `GIT_TRACE_PACKET=1`, and you see the conversation. Here, upstream has one new commit:
+Run a fetch with `GIT_TRACE_PACKET=1`, and you see the messages between client and server. Here, upstream has one new commit:
 
 ```console
 $ GIT_TRACE_PACKET=1 git fetch upstream 2>&1 | grep -E "fetch> (want|have|done|command)|fetch< (acknowledgments|ACK|NAK|ready|packfile)" | sed -E "s/^.*packet: +//"
@@ -105,7 +105,7 @@ Four steps:
 3. **`have`**: the client lists commits it already has, newest first. This is **negotiation**.
 4. The server answers `ACK 2a341a7`: "I know that one too, it's a common commit". Now it knows the client has `2a341a7` and everything below it. It says `ready` and sends a **packfile** with only the missing objects: the new commit, its tree and its blob.
 
-This is why fetch is efficient: the server computes `want minus everything reachable from the common haves` and sends just that, often as a thin pack with deltas against objects you already have (see [Storage](storage.md)).
+This is why fetch is efficient: the server computes `want minus everything reachable from the common haves` and sends only that, often as a thin pack with deltas against objects you already have (see [Storage](storage.md)).
 
 ### Protocol v2
 
@@ -188,7 +188,7 @@ Ahead 1, behind 2: the branches **diverged**. A plain `--force` would replace `b
 
 The weak spot: your `origin/feature` is updated by **every** fetch. If your editor or a background job (`git maintenance` prefetch does not count; it writes to `refs/prefetch/`) runs `git fetch`, your remote-tracking ref already shows the reviewer's commit. Now the lease matches, and you overwrite the commit you never looked at. The `git push` manual warns about exactly this.
 
-`--force-if-includes` closes the hole. In the words of the manual, used together with `--force-with-lease` it will "verify if updates from the remote-tracking refs that may have been implicitly updated in the background are integrated locally before allowing a forced update". So a commit you only fetched, but never brought into your local branch, blocks the push.
+`--force-if-includes` fixes this gap. In the words of the manual, used together with `--force-with-lease` it will "verify if updates from the remote-tracking refs that may have been implicitly updated in the background are integrated locally before allowing a forced update". So a commit you only fetched, but never brought into your local branch, blocks the push.
 
 ```sh
 git push --force-with-lease --force-if-includes origin feature
@@ -198,7 +198,7 @@ To be fully explicit, give the expected value yourself: `git push --force-with-l
 
 !!! tip "Make it the default"
 
-    An alias saves you from ever typing `--force` again:
+    With an alias, you never need to type `--force`:
     `git config --global alias.pushf "push --force-with-lease --force-if-includes"`.
     Many teams also turn on branch protection on the server, so main cannot be force-pushed at all.
 
@@ -213,7 +213,7 @@ To be fully explicit, give the expected value yourself: `git push --force-with-l
 | `--no-rebase` / `pull.rebase=false` | Merge `@{u}` into your branch      |
 | `--squash`                          | Squash-merge                       |
 
-The `git pull` manual in 2.56 says `--ff-only` is the default "when no method for reconciling divergent histories is provided". That is the end of surprise merge commits like `Merge branch 'main' of github.com:...` in every PR.
+The `git pull` manual in 2.56 says `--ff-only` is the default "when no method for reconciling divergent histories is provided". This prevents unexpected merge commits like `Merge branch 'main' of github.com:...` in every PR.
 
 ### What happens with **both** `pull.ff=only` and `pull.rebase=true`?
 
@@ -252,7 +252,7 @@ Git Town's `git sync` (below) also rebases, branch by branch.
 
 ## Under the hood: credential helpers
 
-For HTTPS, Git asks a **credential helper** for a username and password (or token). The protocol is simple text on stdin/stdout. You can see it with a toy helper:
+For HTTPS, Git asks a **credential helper** for a username and password (or token). The protocol is simple text on stdin/stdout. You can see it with a minimal test helper:
 
 ```console
 $ printf 'protocol=https\nhost=git.example.com\n\n' | git -c credential.helper='!f() { echo username=you; echo password=s3cret; }; f' credential fill
@@ -363,7 +363,7 @@ With the parents known:
 - `git sync` (here an alias for `git town sync --all`): for each local branch, sync its ancestors, pull its own updates, bring in the parent branch, and push. Git Town's help says it **merges** the parent; this setup sets `sync-feature-strategy = rebase`, so it **rebases** onto the parent instead. With an `upstream` remote, main is also synced with upstream. This is the rebase that `pull.ff=only` does not do.
 - `git propose`: sync the branch, then open the forge's new-PR page, so the PR only shows the changes against the immediate parent branch.
 
-Everything it does is ordinary Git, so the rest of this chapter still applies. `git town undo` exists for the moment it surprised you, and the reflog is always there too.
+Everything it does is ordinary Git, so the rest of this chapter still applies. `git town undo` exists for when it does something you did not expect, and the reflog is always there too.
 
 ## Traps
 
@@ -404,7 +404,7 @@ Everything it does is ordinary Git, so the rest of this chapter still applies. `
 
 ## Recap
 
-- Remote-tracking refs (`refs/remotes/<remote>/*`) are your notes about another repo. A **refspec** maps their refs to yours.
+- Remote-tracking refs (`refs/remotes/<remote>/*`) are your local record of another repo's refs. A **refspec** maps their refs to yours.
 - Fetch = `ls-refs`, then `want`/`have` negotiation, then one pack of the missing objects. Protocol v2 lets the client ask only for the refs it needs.
 - SSH runs `git-upload-pack`/`git-receive-pack` on the server. Smart HTTP does the same over `GET info/refs` + `POST`.
 - Push must be a **fast-forward**, unless forced. Force safely: `--force-with-lease --force-if-includes`.

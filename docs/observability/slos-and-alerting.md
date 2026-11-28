@@ -2,7 +2,7 @@
 
 ## Why care?
 
-Five pagers, five bad nights:
+Five common alerting problems:
 
 - "CPU above 80% on `orders-7`." You wake up, look, and nothing is wrong for users. It was a batch job.
 - "Error rate above 1%." It fires at 04:00 because 2 of 150 requests failed. Then it fires again at 04:05.
@@ -12,17 +12,17 @@ Five pagers, five bad nights:
 
 All five come from the same mistake: alerting on **causes** (CPU, single error spikes) and fixed thresholds, instead of on **what users feel**, measured against a **target** you agreed on. This page shows the fix: SLIs, SLOs, error budgets and **multi-window burn-rate alerts**, with real Prometheus rules that fire (and stop firing) on a real `ordersd`.
 
-## The idea: a monthly allowance
+## The idea: a budget for failure
 
-Think of reliability as pocket money.
+Reliability works like a monthly budget: you agree in advance how much failure is acceptable, and you track how fast you use it.
 
-- You agree with your parents that you may spend **€10 a month** on sweets. That's the **error budget**: the amount of failure that is fine.
-- What you measure is "money spent on sweets". That's the **SLI** (service level indicator): a number that says how users experience the service, for example "the share of requests that did not fail".
-- "At most €10 a month" is the **SLO** (service level objective): a target for the SLI over a time window, for example "99.9% of requests succeed, over 30 days".
-- If you spend €3 on the first day, nobody panics. If you spend €3 **per hour**, someone must stop you **now**, or the month's money is gone by lunch. How fast you spend is the **burn rate**.
-- If the money is gone, you stop buying sweets until next month. For a team, that means: freeze risky releases, spend the time on reliability.
+- The **SLI** (service level indicator) is what you measure: a number that says how users experience the service, for example "the share of requests that did not fail".
+- The **SLO** (service level objective) is a target for the SLI over a time window, for example "99.9% of requests succeed, over 30 days".
+- The **error budget** is the failure the SLO allows: here 0.1% of requests in 30 days.
+- The **burn rate** is how fast you use the budget. Using 3% of it in one day is no reason for action. Using 3% **per hour** needs action **now**, or the budget is gone within two days.
+- When the budget is gone, the team freezes risky releases and spends the time on reliability until the window recovers.
 
-You never alert on "€1 spent". You alert on "at this speed, the money is gone too early".
+You do not alert on single failures. You alert when, at the current rate, the budget will run out too early.
 
 ```mermaid
 flowchart LR
@@ -37,7 +37,7 @@ flowchart LR
 
 An **SLA** (service level agreement) is different: it is a **contract** with a customer, with money attached when you miss it. Your internal SLO must be stricter than any SLA, so you notice trouble before it costs money.
 
-## Under the hood: SLIs that users feel
+## Under the hood: SLIs that measure user experience
 
 A good SLI is a ratio of **good events to valid events**, measured as close to the user as you can:
 
@@ -101,7 +101,7 @@ Two kinds of rules, both evaluated by Prometheus every `evaluation_interval`:
 
 ## Try it: burn the budget of `ordersd`
 
-We instrument a copy of `ordersd` (see [Building a service](../go/services.md) for its structure), make it fail on purpose, and watch the three alerts in a real Prometheus.
+We instrument a copy of `ordersd` (see [Building a service](../go/services.md) for its structure), make it fail on purpose, and observe the three alerts in a real Prometheus.
 
 ### 1. Count requests by route and status
 
@@ -273,7 +273,7 @@ Processing test file: slo-rules.test.yml
 
 Put both commands in CI next to `go test`.
 
-### 4. Run it for real
+### 4. Run the alert rules
 
 `prometheus.yml` scrapes the admin port of `ordersd` every 5 s. The service runs on the host; the container reaches it through `host.docker.internal`:
 
@@ -441,7 +441,7 @@ Good on-call habits:
 ??? question "1. Your SLO is 99.9% over 30 days. Last week a bad deploy failed 2% of requests for 3 hours. How much of the month's budget did it use?"
 
     The burn rate was 2% / 0.1% = 20. Budget spent = 20 × 3 h / 720 h = 0.083, so about 8%
-    of the monthly budget. Painful but not fatal; the page should have fired after a few
+    of the monthly budget. That is a large share, but not the whole budget; the page should have fired after a few
     minutes (20 > 14.4).
 
 ??? question "2. Why does the fast-burn alert need both a 1-hour and a 5-minute window? What goes wrong with only one of them?"

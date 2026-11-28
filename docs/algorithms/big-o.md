@@ -2,25 +2,25 @@
 
 ## Why care?
 
-Three messages you may have seen in a team chat:
+Three typical reports from a team:
 
 - "The nightly report took 4 minutes last year. Now it takes 3 hours. The code did not change."
 - "I replaced the map with a slice and the handler got **faster**. Is Big-O wrong?"
 - "The profile says `runtime.growslice` is 20% of CPU. We never call that."
 
-All three are about **how cost grows** when the input grows. Big-O is the tool for that question. It is not maths for its own sake. It is a quick way to say "if we get 10 times more orders, this part gets 10 times slower, and that part gets 100 times slower."
+All three are about **how cost grows** when the input grows. Big-O is the tool for that question. It gives you a short way to say: "with 10 times more orders, this part gets 10 times slower, and that part gets 100 times slower."
 
-But Big-O hides constants, and constants are real: cache misses, allocations, hashing. So this page does both. First you learn to count work. Then you measure it with `go test -bench`, and see where the counting is right and where the CPU surprises you.
+But Big-O hides constants, and constants are real: cache misses, allocations, hashing. So this page does both. First you learn to count work. Then you measure it with `go test -bench`, and see where the count predicts the time and where the hardware changes the result.
 
-## The idea: how many trips to the archive?
+## The idea: count steps as the input grows
 
-You work at a company with an archive room full of paper orders. Your boss asks questions, and each question costs you trips.
+Take a list of orders and five questions about it. Each question needs a different number of steps.
 
-- "What is the first order in the box?" One trip, whatever the size of the box. That's **O(1)**, constant.
-- "Is order 4711 in the box?" The box is not sorted, so you check every order. Twice as many orders, twice as many checks. That's **O(n)**, linear.
-- "Is order 4711 in the box?", but the box is **sorted by ID**. Open in the middle, throw away the wrong half, repeat. 1,000 orders need about 10 looks; 1,000,000 need about 20. That's **O(log n)**, logarithmic.
-- "Sort the box by date." Good methods split the box, sort the halves and merge them: about `n × log n` steps. That's **O(n log n)**.
-- "Find two orders with the same ID." Compare every order with every other: `n × n / 2` comparisons. That's **O(n²)**, quadratic. 10 times more orders, 100 times more work.
+- "What is the first order in the list?" One step, whatever the length of the list. That is **O(1)**, constant.
+- "Is order 4711 in the list?" The list is not sorted, so you check every order. Twice as many orders, twice as many checks. That is **O(n)**, linear.
+- "Is order 4711 in the list?", but the list is **sorted by ID**. Look at the middle, discard the half that cannot hold the ID, and repeat. 1,000 orders need about 10 looks; 1,000,000 need about 20. That is **O(log n)**, logarithmic.
+- "Sort the list by date." Good methods split the list, sort the halves and merge them: about `n × log n` steps. That is **O(n log n)**.
+- "Find two orders with the same ID." Compare every order with every other: `n × n / 2` comparisons. That is **O(n²)**, quadratic. 10 times more orders, 100 times more work.
 
 The letter `n` is the size of the input. **O(...)** says how the work grows with `n`, ignoring fixed costs and constant factors. "O(n)" means "roughly proportional to n, for big n".
 
@@ -34,7 +34,7 @@ xychart-beta
     line "n" [1, 8, 16, 24, 32, 40, 48, 56, 64]
 ```
 
-`log n` and `1` are not even drawn: at n = 64 they are 6 and 1, flat on the x-axis. That's the point: at scale, the shape of the curve matters more than anything else.
+`log n` and `1` are not even drawn: at n = 64 they are 6 and 1, flat on the x-axis. At scale, the shape of the curve matters more than anything else.
 
 ### The five you meet every week
 
@@ -46,7 +46,7 @@ xychart-beta
 | O(n log n) | linearithmic | ~10,000     | ~20,000,000       | `slices.Sort`, `slices.SortFunc`                  |
 | O(n²)      | quadratic    | 1,000,000   | 1,000,000,000,000 | a loop inside a loop over the same data           |
 
-Read the last line again. At one nanosecond per step, a million squared is **17 minutes**. The nightly report from the top of the page is almost always a hidden O(n²).
+Look at the last line. At one nanosecond per step, a million squared is **17 minutes**. A nightly report that slows down like the one at the top of the page usually contains a hidden O(n²).
 
 ## Under the hood: counting work
 
@@ -84,11 +84,11 @@ func refunded(orders []Order, refunds []Refund) []Order {
 }
 ```
 
-`refunded` looks innocent. With 1,000 orders and 50 refunds it is instant. With 2 million orders and 200,000 refunds it is 400 billion comparisons. The fix is a different structure: put the refund IDs in a `map` first (O(m)), then one pass over the orders (O(n)). O(n × m) becomes O(n + m).
+`refunded` looks cheap. With 1,000 orders and 50 refunds it is instant. With 2 million orders and 200,000 refunds it is 400 billion comparisons. The fix is a different structure: put the refund IDs in a `map` first (O(m)), then one pass over the orders (O(n)). O(n × m) becomes O(n + m).
 
 ### Rule 2: the hidden loop
 
-The dangerous loops are the ones you can't see. Each of these is O(n) **per call**:
+The most expensive loops are often the ones you cannot see in your own code. Each of these is O(n) **per call**:
 
 - `slices.Contains(s, x)`, `slices.Index(s, x)`
 - `strings.Contains(s, sub)`, `bytes.Equal(a, b)`
@@ -101,9 +101,9 @@ Put any of them in a loop and you have O(n²) without writing a nested loop.
 
 ### Rule 3: halving gives `log n`
 
-Whenever each step throws away a constant **fraction** of the remaining work, you get `log n`. Binary search halves. A B-tree with 300 keys per page divides by 300, so a billion rows need only 4 levels. `log₂(1,000,000) ≈ 20`. That's why "sorted" is such a valuable property: it turns O(n) searches into O(log n).
+Whenever each step throws away a constant **fraction** of the remaining work, you get `log n`. Binary search halves. A B-tree with 300 keys per page divides by 300, so a billion rows need only 4 levels. `log₂(1,000,000) ≈ 20`. That is why sorted data is valuable: it turns O(n) searches into O(log n).
 
-### Rule 4: drop the constants, but don't forget them
+### Rule 4: drop the constants, but remember they exist
 
 O(2n) is O(n). O(n + 1000) is O(n). For big `n`, only the fastest-growing part matters. This is what makes Big-O useful: you can reason about a design on a whiteboard.
 
@@ -117,11 +117,11 @@ One algorithm can have several costs:
 - **Average case**: random input. Linear search for an ID that is there: n/2 steps on average. Still O(n).
 - **Best case**: rarely useful. "If the first item matches, it's O(1)" tells you nothing.
 
-For services, care about the worst case. Somebody will send you the input that triggers it, by accident or on purpose. A textbook quicksort is O(n²) on already-sorted data (see [Sorting and searching](sorting-and-searching.md)). A hash map is O(n) per lookup if all keys collide. Go defends against both, as you will see.
+For services, care about the worst case. Sooner or later someone sends the input that triggers it, by accident or on purpose. A textbook quicksort is O(n²) on already-sorted data (see [Sorting and searching](sorting-and-searching.md)). A hash map is O(n) per lookup if all keys collide. Go defends against both, as you will see.
 
 ### Space counts too
 
-Big-O also describes memory. `hasDupMap` below uses O(n) extra memory for its map; `hasDupNested` uses O(1). Allocations are not free in Go: every byte the program allocates on the heap is work for the garbage collector later (see [Memory](../fundamentals/memory.md)). That's why `go test -benchmem` reports bytes and allocations next to time.
+Big-O also describes memory. `hasDupMap` below uses O(n) extra memory for its map; `hasDupNested` uses O(1). Allocations are not free in Go: every byte the program allocates on the heap is work for the garbage collector later (see [Memory](../fundamentals/memory.md)). That is why `go test -benchmem` reports bytes and allocations next to time.
 
 ## Amortized cost: why `append` is O(1)
 
@@ -222,9 +222,7 @@ func nextslicecap(newLen, oldCap int) int {
 
 So why `cap=853` and not 512 + (512 + 768) / 4 = 832? `growslice` (same file) calls `nextslicecap`, then rounds the byte size **up** to the next allocator size class with `roundupsize`. 832 orders × 24 bytes = 19,968 bytes. The next size class in `$GOROOT/src/internal/runtime/gc/sizeclasses.go` is 20,480 bytes, and 20,480 / 24 = 853. The allocator would give you those bytes anyway, so `append` uses them.
 
-Now the **amortized** argument. With growth factor `g`, the copies form a geometric series: to reach `n` elements you copied about `n/g + n/g² + ...` elements, which is less than `n × 1/(g-1)`. For doubling that's at most `n` copies in total, so **on average** each append costs O(1), even though a single one costs O(n). "Amortized" means exactly that: the expensive operations are rare enough that the average over many operations stays constant.
-
-It's like a moving company. Each move is expensive, but if you buy a house twice as big every time, you only move a few times in your life.
+Now the **amortized** argument. With growth factor `g`, the copies form a geometric series: to reach `n` elements you copied about `n/g + n/g² + ...` elements, which is less than `n × 1/(g-1)`. For doubling that is at most `n` copies in total, so **on average** each append costs O(1), even though a single one costs O(n). "Amortized" means exactly that: the expensive operations are rare enough that the average over many operations stays constant.
 
 ```mermaid
 flowchart LR
@@ -234,7 +232,7 @@ flowchart LR
     D -- "append o9: full" --> E["allocate cap 16, copy 8"]
 ```
 
-Amortized O(1) is still not free. Each move is an allocation, a copy, and garbage for the GC. That's the `runtime.growslice` in the profile from the top of the page. When you know the size, say so.
+Amortized O(1) is still not free. Each move is an allocation, a copy, and garbage for the GC. This is the `runtime.growslice` in the profile from the top of the page. When you know the size, say so.
 
 ## Try it in Go: measure, don't guess
 
@@ -338,7 +336,7 @@ Read it as growth, not as speed:
 - **Map**: flat. Textbook O(1).
 - At **n=100**, binary search beats the map. Both are tiny, and hashing has a cost that 7 compares do not.
 
-### When the cache joins in
+### Random keys and the CPU cache
 
 That benchmark has a flaw: it looks up the **same** ID every time, so every memory location it touches stays in the CPU cache. Real lookups use different keys. Here is the same 1,000,000-element test with a different random ID on each call:
 
@@ -383,7 +381,7 @@ BenchmarkLookupCold/map-16      46290932     29.97 ns/op   0 B/op   0 allocs/op
 BenchmarkLookupCold/map-16      39419682     38.56 ns/op   0 B/op   0 allocs/op
 ```
 
-Same algorithms, same Big-O, but binary search is now **10 times** slower than before (13 → 140 ns), and the map 4 times (8 → 30 ns). Binary search makes 20 jumps across 8 MB of memory; the first few always hit cache, the last ones are mostly cache misses at roughly 80-100 ns each (see the cache table in [Memory](../fundamentals/memory.md#caches-why-the-same-work-can-be-2-slower)). The map needs one or two memory reads per lookup, so it misses less. Also note the third map run: 38 ns instead of 30. That's noise from the machine, and why you always use `-count`.
+Same algorithms, same Big-O, but binary search is now **10 times** slower than before (13 → 140 ns), and the map 4 times (8 → 30 ns). Binary search makes 20 jumps across 8 MB of memory; the first few always hit cache, the last ones are mostly cache misses at roughly 80-100 ns each (see the cache table in [Memory](../fundamentals/memory.md#caches-why-the-same-work-can-be-2-slower)). The map needs one or two memory reads per lookup, so it misses less. Also note the third map run: 38 ns instead of 30. That is noise from the machine, and the reason to always use `-count`.
 
 ### Same Big-O, different speed: access order
 
@@ -436,7 +434,7 @@ BenchmarkSum/random-16        10   127580759 ns/op   0 B/op   0 allocs/op
 BenchmarkSum/random-16         7   155204932 ns/op   0 B/op   0 allocs/op
 ```
 
-**3.5 to 4.9 times slower**, with exactly the same number of additions (and noisy: random access is at the mercy of whatever else uses the memory bus). In order, every 64-byte cache line brings 8 useful numbers, and the CPU's prefetcher sees the pattern and loads the next lines early. In random order, almost every read is a cache miss. Big-O counts steps; the hardware decides what a step costs. This is the main reason the next page prefers slices over linked lists.
+**3.5 to 4.9 times slower**, with exactly the same number of additions (and noisy: random access also depends on whatever else uses the memory bus at the same time). In order, every 64-byte cache line brings 8 useful numbers, and the CPU's prefetcher sees the pattern and loads the next lines early. In random order, almost every read is a cache miss. Big-O counts steps; the hardware decides what a step costs. This is the main reason the next page prefers slices over linked lists.
 
 ### O(n²) vs O(n): the crossover
 
@@ -500,7 +498,7 @@ BenchmarkHasDup/map/n=10000-16          3406   353014 ns/op      295555 B/op   3
 
 - **Nested**: ×10 in `n` gives ×114, ×67, ×95. Roughly ×100: O(n²).
 - **Map**: ×10 in `n` gives ×7.5, ×11, ×10. Roughly ×10: O(n).
-- Below about **100** items, the "bad" algorithm wins. At 10 items it is **22 times** faster, because it touches 80 bytes of memory and allocates nothing, while the map allocates 328 bytes in 3 allocations.
+- Below about **100** items, the O(n²) algorithm wins. At 10 items it is **22 times** faster, because it touches 80 bytes of memory and allocates nothing, while the map allocates 328 bytes in 3 allocations.
 - At 10,000 items, the map wins by **37 times**. At 1,000,000 the nested loop would take minutes.
 
 The lesson is not "Big-O is wrong". It is: **Big-O tells you who wins for big n. The benchmark tells you where big starts.** If your input is guaranteed small (the items of one order are capped at 100 in `examples/orders`), the simple loop is fine. If it is a batch from a customer, assume it will one day be huge.
@@ -569,7 +567,7 @@ Both are O(n). But "grow" allocates **5.9 times** the bytes (all the old arrays 
 
     It only copies when the capacity is full, and then it grows the capacity by a factor
     (2× for small slices, down to about 1.25× for large ones). The copies form a geometric
-    series, so their total is proportional to n. Spread over n appends, that's O(1) each:
+    series, so their total is proportional to n. Spread over n appends, that is O(1) each:
     amortized O(1). Single appends can still be slow.
 
 ??? question "4. Why did `make([]Order, 0, n)` allocate 2.4 MB while growing from nil allocated 14 MB for the same 100,000 orders?"

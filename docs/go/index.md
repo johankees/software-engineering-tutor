@@ -4,20 +4,20 @@ From your first `go mod init` to a production service, the way real teams write 
 
 ## Why Go feels so strict
 
-The first week with Go is often a little annoying:
+In the first week, many people find Go strict:
 
 - An unused import? **Compile error.**
 - An unused variable? **Compile error.**
 - You want to put the `{` on the next line? **Not allowed.**
 - You want classes, inheritance, exceptions, a `while` loop? **There are none.**
 
-This is not an accident. Go was designed at Google from 2007 by Robert Griesemer, Rob Pike and Ken Thompson. They had a very specific problem: **huge codebases, thousands of engineers, slow builds, and code that nobody could read anymore.** A big C++ build could take most of an hour. Every team had its own style. Reading someone else's code was a research project.
+This is deliberate. Go was designed at Google from 2007 by Robert Griesemer, Rob Pike and Ken Thompson. They had a very specific problem: **huge codebases, thousands of engineers, slow builds, and code that nobody could read anymore.** A big C++ build could take most of an hour. Every team had its own style. Reading another team's code took a long time.
 
 So they made a language where the main goal is not "how much can I express?" but:
 
 > **Can a new engineer read this code, understand it, and change it safely, two years from now?**
 
-Almost every rule in Go comes from that one question. When a rule looks strange, ask: _"how does this help the next person who reads the code?"_ You will find the answer almost every time. This chapter always gives you that answer, so the rules stop feeling like rules and start feeling like common sense.
+Almost every rule in Go comes from that one question. When a rule looks strange, ask: _"how does this help the next person who reads the code?"_ Almost every time, that question explains the rule. This chapter always gives you the reason, so each rule makes sense.
 
 ## Go's design ideas, in four lines
 
@@ -45,11 +45,11 @@ examples/orders/
 
 ## Reading order
 
-The pages build on each other. Part 1 sets up your workshop. Part 2 is the language itself. Part 3 is how Go thinks about failure and quality. Part 4 is running many things at once. Part 5 puts it all together.
+The pages build on each other. Part 1 sets up your tools. Part 2 is the language itself. Part 3 is how Go thinks about failure and quality. Part 4 is running many things at once. Part 5 puts it all together.
 
 | #                        | Page                                                | You will learn                                                                              |
 | ------------------------ | --------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| **Part 1: The workshop** |                                                     |                                                                                             |
+| **Part 1: Tools**        |                                                     |                                                                                             |
 | 1                        | [The Go toolchain](toolchain.md)                    | Installing Go, the `go` command, the build cache, cross-compiling, reading docs offline     |
 | 2                        | [Modules and dependencies](modules.md)              | `go.mod`, `go.sum`, versions, why Go picks the _minimum_ version, workspaces, private repos |
 | 3                        | [Project layout](project-layout.md)                 | Packages, `cmd/`, `internal/`, and how to structure CLIs, services, libraries and monorepos |
@@ -78,11 +78,11 @@ The same shape as the [Fundamentals](../fundamentals/index.md):
 
 - **Why care?** A real problem first.
 - **The idea.** Plain words, often a picture.
-- **Under the hood.** The deep part. This is where understanding comes from.
+- **Under the hood.** How it works inside. This part gives you real understanding.
 - **Try it in Go.** Code you can run. Output shown in this book comes from real runs with Go 1.27.
 - **Convention boxes.** Every Go convention gets a box with the rule _and_ the reason.
 - **Traps.** Mistakes real teams make.
-- **Check yourself.** Questions with hidden answers. Try first.
+- **Check yourself.** Questions with hidden answers. Try to answer before you open them.
 
 A convention box looks like this:
 
@@ -96,4 +96,4 @@ A convention box looks like this:
 
     Install Go with `mise use go@latest` (see [The Go toolchain](toolchain.md)). For any small example:
     make a folder, run `go mod init demo`, paste the code into `main.go`, and run `go run .`.
-    Then break it on purpose. Reading the compiler's error messages is a skill too.
+    Then change it so that it fails on purpose. Reading the compiler's error messages is a skill too.

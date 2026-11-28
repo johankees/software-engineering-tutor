@@ -11,17 +11,17 @@ Four tickets that are all DNS, though none of them says so:
 
 DNS turns a name into an address. It looks like one function call: `net.LookupHost("go.dev")`. Under that call are config files, a search list, a cache with a timer on every entry, and up to four servers you never see. This page opens each of them. (We captured raw packets on the [layers and packets](layers-and-packets.md) page. Here we build DNS packets by hand.)
 
-## The idea: asking for directions
+## The idea: a chain of resolvers and servers
 
-You are in a strange city and want the "Go Developers' Café".
+A lookup passes through several parties. Each one knows a little and asks the next.
 
-- You ask the **hotel receptionist**. You don't want to search yourself; you want an answer. That is your **stub resolver**: the small piece of code in your program (Go's `net` package, or glibc).
-- The receptionist doesn't know either, but is good at finding out. That is the **recursive resolver**: your company's DNS server, `8.8.8.8`, or the cluster's CoreDNS. It does the legwork and **remembers** the answer for a while.
-- The receptionist calls the **city hall**. City hall doesn't know cafés, but knows who keeps the list for each district: "for `.dev`, call this office". That is a **root server**.
-- The `.dev` office doesn't know the café either, but knows who registered it: "`go.dev` is managed by these people". That is a **TLD server** (top-level domain).
-- Those people know: "the café is at 216.239.32.21". That is the **authoritative server**. Its answer is the truth, and it comes with a "best before" time: the **TTL**.
+- Your program has a **stub resolver**: a small piece of code (Go's `net` package, or glibc) that sends the question and waits for a final answer. It does not search by itself.
+- The stub asks a **recursive resolver**: your company's DNS server, `8.8.8.8`, or the cluster's CoreDNS. The recursive resolver does the search for you and **caches** (remembers) the answer for a while.
+- The recursive resolver first asks a **root server**. The root server does not know `go.dev`, but it knows which servers handle `.dev`.
+- It then asks a **TLD server** (top-level domain, here `.dev`). The TLD server does not know the address either, but it knows which servers are responsible for `go.dev`.
+- Finally it asks the **authoritative server** for `go.dev`. This server holds the real record, for example "`go.dev` is at 216.239.32.21". Every answer comes with a **TTL** (time to live): how many seconds a cache may keep it.
 
-The receptionist writes the answer on a note and keeps it until the time runs out. The next guest gets the note at once. That note is the whole reason a DNS change "takes time to propagate": nothing propagates. Old notes expire.
+The recursive resolver keeps the answer until the TTL runs out, and gives it straight to the next client that asks. This is why a DNS change "takes time to propagate". Nothing is pushed out. Old cached answers expire, one cache at a time.
 
 ## Under the hood: the resolution chain
 
@@ -53,7 +53,7 @@ sequenceDiagram
 
 <!-- TODO(real-output): `dig +trace go.dev` from a network without DNS interception (dig is not installed here, and this machine's DNS traffic is intercepted, see below). -->
 
-### Who answers your packets? (A WSL surprise)
+### Who answers your packets: DNS interception on WSL
 
 You can walk the chain yourself by sending a query with RD=0 straight to a root server, `a.root-servers.net` (198.41.0.4). A root server only knows the TLDs, so it should answer with a referral to the `.dev` servers. Here is what came back on this machine, using the `ask` tool we build in the next section:
 
@@ -74,7 +74,7 @@ go.dev.                       3 A     216.239.34.21
 go.dev.                       3 A     216.239.32.21
 ```
 
-That is impossible for a real root server. It claims to be authoritative for `go.dev`, it offers recursion, and it answered in 3 ms from across the internet. The second query goes to `192.0.2.1`, an address reserved for documentation that no real host uses. It answered too. The TTLs give it away: 42, then 3, counting down in **one** cache.
+That is impossible for a real root server. It claims to be authoritative for `go.dev`, it offers recursion, and it answered in 3 ms from across the internet. The second query goes to `192.0.2.1`, an address reserved for documentation that no real host uses. It answered too. The TTLs show what happened: 42, then 3, counting down in **one** cache.
 
 Something between this program and the internet answers **every** packet to port 53 itself. Here it is WSL 2 in `networkingMode=mirrored`, whose DNS tunneling hands all DNS traffic to Windows (even TCP port 53 gets the same treatment). Hotel Wi-Fi, corporate networks and some home routers do the same. Remember this when a DNS test "proves" something: first check **who** really answered.
 
@@ -82,7 +82,7 @@ Something between this program and the internet answers **every** packet to port
 
 DNS is a binary protocol, and simple enough to write by hand. A message is a 12-byte header, then four sections: **question**, **answer**, **authority** and **additional**. The `golang.org/x/net/dns/dnsmessage` package packs and parses them; the Go standard library uses a copy of it internally.
 
-This is `ask`, a tiny `dig`:
+This is `ask`, a minimal version of `dig`:
 
 ```go
 // Command ask is a tiny dig: it builds one DNS query by hand, sends it
@@ -261,7 +261,7 @@ In the response, the flags are `85 80`, in bits `1000 0101 1000 0000`: QR=1 (a r
 Two details:
 
 - **The ID is the only thing that ties a reply to a question.** UDP has no connection. An attacker who can guess the ID and the source port can inject a fake answer (the 2008 "Kaminsky attack"). That's why both must be random: Go picks a random ID, and the kernel a random source port.
-- **Most servers compress names.** Instead of repeating `02 67 6f 03 64 65 76 00` in every answer, they write `c0 0c`: "the name at offset 12". The Windows proxy here doesn't bother. `dnsmessage` reads both.
+- **Most servers compress names.** Instead of repeating `02 67 6f 03 64 65 76 00` in every answer, they write `c0 0c`: "the name at offset 12". The Windows proxy here does not compress names. `dnsmessage` reads both.
 
 !!! note "Why the 'aa=true'?"
 
@@ -468,7 +468,7 @@ search shop.svc.cluster.local svc.cluster.local cluster.local
 options ndots:5
 ```
 
-`ndots:5` means that `go.dev` (1 dot), `api.github.com` (2 dots) and even `orders-db.prod.eu-west-1.rds.amazonaws.com` (4 dots) all go through the search list **first**. Let's count what that costs, for real.
+`ndots:5` means that `go.dev` (1 dot), `api.github.com` (2 dots) and even `orders-db.prod.eu-west-1.rds.amazonaws.com` (4 dots) all go through the search list **first**. The lab below measures what that costs.
 
 ### A lab: a fake DNS server in a namespace
 
@@ -622,7 +622,7 @@ go.dev.: [216.239.32.21] <nil> (0s)
 
 Count them:
 
-- **`go.dev`: 8 queries** for one lookup. Six of them are guaranteed to fail. Each pair (A and AAAA, sent in parallel) is one round trip to the DNS server, so that's **four round trips** before the first useful answer. In a real cluster, CoreDNS answers the junk from its cache, but it still has to receive, process and answer every one. That is the second ticket: "eight times more queries".
+- **`go.dev`: 8 queries** for one lookup. Six of them are guaranteed to fail. Each pair (A and AAAA, sent in parallel) is one round trip to the DNS server, so that's **four round trips** before the first useful answer. In a real cluster, CoreDNS answers the failing queries from its cache, but it still has to receive, process and answer every one. That is the second ticket: "eight times more queries".
 - **`orders`: 2 queries.** The short in-namespace name hits on the first search domain. This is the case `ndots:5` is designed for.
 - **`orders.shop`** (service `orders` in namespace `shop`): 4 queries. It first tries `orders.shop.shop.svc...`.
 - **`go.dev.`**, with a trailing dot: **2 queries**, the minimum. The trailing dot says "this name is complete".
@@ -661,7 +661,7 @@ Fixes, from cheapest:
 1. **Use fully qualified names with a trailing dot** in config for external services: `https://api.github.com./`. Works everywhere. (Some servers and TLS libraries dislike the dot in the `Host` header or SNI; test it with yours.)
 2. **Lower `ndots` per pod**: `spec.dnsConfig.options: [{name: ndots, value: "2"}]`. Short in-cluster names still work.
 3. **Reuse connections.** Every new connection is a new lookup in Go. A healthy `http.Transport` pool does few lookups at all.
-4. **NodeLocal DNSCache** in the cluster, so the junk is answered on the node.
+4. **NodeLocal DNSCache** in the cluster, so the failing queries are answered on the node.
 
 ## Go's two resolvers
 
@@ -728,13 +728,13 @@ go package net: hostLookupOrder(go.dev) = files,dns
 go.dev: [192.0.2.80] <nil> (2ms)
 ```
 
-| Go switches to cgo when...                                                         | Because                                |
-| ---------------------------------------------------------------------------------- | -------------------------------------- |
-| `nsswitch.conf` has a source it doesn't know (`resolve`, `ldap`, `sss`, `wins`...) | Only glibc can load NSS modules        |
-| `mdns*` is in `nsswitch.conf` **and** the name ends in `.local`                    | Go doesn't speak multicast DNS         |
-| `myhostname` is listed and you look up the machine's own name or `localhost`       | That module answers from local config  |
-| `resolv.conf` has an option it doesn't understand, or can't be read                | Better ask the one who wrote the rules |
-| `LOCALDOMAIN`, `RES_OPTIONS` or `HOSTALIASES` is set in the environment            | glibc reads them, Go doesn't           |
+| Go switches to cgo when...                                                         | Because                               |
+| ---------------------------------------------------------------------------------- | ------------------------------------- |
+| `nsswitch.conf` has a source it doesn't know (`resolve`, `ldap`, `sss`, `wins`...) | Only glibc can load NSS modules       |
+| `mdns*` is in `nsswitch.conf` **and** the name ends in `.local`                    | Go doesn't speak multicast DNS        |
+| `myhostname` is listed and you look up the machine's own name or `localhost`       | That module answers from local config |
+| `resolv.conf` has an option it doesn't understand, or can't be read                | Only glibc knows how to apply it      |
+| `LOCALDOMAIN`, `RES_OPTIONS` or `HOSTALIASES` is set in the environment            | glibc reads them, Go doesn't          |
 
 That switch only exists if the binary **has** cgo. A static binary (`CGO_ENABLED=0`, the norm for distroless and `scratch` images) has only the Go resolver, and says so:
 
@@ -777,7 +777,7 @@ Always give lookups a deadline through the `context`, as `net/http` does with th
 
 `go.dev` has both A and AAAA records. Which address does `net.Dial` use? Go sorts the addresses by the rules of RFC 6724 (prefer the family you have a real source address for), then races them: it starts with the first family, and if that hasn't connected after **300 ms** (`Dialer.FallbackDelay`), it starts the other family in parallel. First to connect wins. This is "Happy Eyeballs" (RFC 6555), and it hides broken IPv6 from users.
 
-This machine has no global IPv6 address, so Go puts IPv4 first for `go.dev` (as in the `netdns` output above). To see the race, the namespace lab gets an IPv6 network where every packet disappears: a `dummy` interface with `2001:db8::1/64`. `dual.test` in `fakedns` points to both `2001:db8::99` (on that black hole) and `127.0.0.1`, where a web server listens. `dial` prints every `connect(2)` it makes, via `Dialer.ControlContext` (`fakedns` is again logging to `/dev/null`):
+This machine has no global IPv6 address, so Go puts IPv4 first for `go.dev` (as in the `netdns` output above). To see the race, the namespace lab gets an IPv6 network that drops every packet: a `dummy` interface with `2001:db8::1/64`. `dual.test` in `fakedns` points to both `2001:db8::99` (on that dropping network) and `127.0.0.1`, where a web server listens. `dial` prints every `connect(2)` it makes, via `Dialer.ControlContext` (`fakedns` is again logging to `/dev/null`):
 
 ```go
 // Command dial shows Go's Happy Eyeballs: which addresses it tries, and when.
@@ -831,7 +831,7 @@ dual.test.: [2001:db8::99 127.0.0.1] <nil> (1ms)
 2.004s connected to 127.0.0.1:8080
 ```
 
-- With Happy Eyeballs: IPv6 goes first (we now have an IPv6 source address), the SYN vanishes, and after exactly **300 ms** Go starts IPv4, which connects at once. Every new connection to a "dual-stack but IPv6 is broken" service pays 300 ms.
+- With Happy Eyeballs: IPv6 goes first (we now have an IPv6 source address), the SYN is dropped, and after exactly **300 ms** Go starts IPv4, which connects at once. Every new connection to a "dual-stack but IPv6 is broken" service pays 300 ms.
 - Without it, Go tries the addresses one after another. Each gets a share of the remaining timeout, but at least **2 s** (`saneMinimum` in `net/dial.go`): 3 s split over 2 addresses would be 1.5 s, so it's 2 s.
 
 If your p99 latency has a step of 300 ms "before the request is sent", look at IPv6.

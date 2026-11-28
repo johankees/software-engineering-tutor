@@ -6,7 +6,7 @@ Open ten Python or Java projects from ten companies. You will find ten styles: d
 
 Open ten Go projects. They look **almost the same**. Same formatting, same naming, same error handling, same test style. A Go developer can join a new team and send a useful pull request on day one.
 
-That is not luck. Go's community decided very early that **consistency across all Go code in the world** is worth more than any one person's taste. This page collects the conventions that make this work. For each one you get the **rule**, but more importantly the **why**. Once you understand the reasons, you won't need to memorise the rules: you'll find yourself arriving at them on your own, and you'll know what to do in cases no rule covers.
+This is by design. Go's community decided very early that **consistency across all Go code** is worth more than any one person's taste. This page collects the conventions that make this work. For each one you get the **rule** and, more importantly, the **why**. When you understand the reasons, you do not need to memorise the rules: you can work them out yourself, and you know what to do in cases no rule covers.
 
 ## Where the conventions come from
 
@@ -29,14 +29,14 @@ The Google style guide gives a helpful **priority order** for when goals conflic
 
 Keep this list in mind. Almost every convention below is one of these five goals, made concrete.
 
-## Formatting: `gofmt` decides, nobody argues
+## Formatting: `gofmt`
 
 ```sh
 gofmt -d ugly.go   # show what would change
 gofmt -w .         # rewrite all files in place
 ```
 
-Here is a file written by someone who doesn't care about formatting:
+Here is a badly formatted file:
 
 ```go
 package order
@@ -85,16 +85,16 @@ diff ugly.go.orig ugly.go
     **Rule:** Run `gofmt` (or `goimports`, which also fixes imports) on save, and check it in CI.
     There are no settings to choose: tabs for indentation, spaces for alignment, no line length limit.
 
-    **Why:** Formatting debates are pure waste. Teams can spend hours arguing about brace style, and
-    the result doesn't change what the program does. `gofmt` removes the debate by having **no
+    **Why:** Formatting debates waste time. Teams can spend hours discussing brace style, and
+    the result does not change what the program does. `gofmt` removes the debate by having **no
     options**. That has three deeper benefits:
 
     - **Diffs show only real changes.** If everyone formats the same way, a code review diff never
       contains "I reformatted this file". Merge conflicts from formatting disappear.
-    - **Your eyes learn one shape.** After a few weeks, you read Go code faster because every file
+    - **You learn one layout.** After a few weeks, you read Go code faster because every file
       has the same layout. Unusual layout is a signal that something unusual is happening.
     - **Tools can rewrite code safely.** Because there is one canonical format, tools like `gofmt -r`,
-      `go fix` and `gopls` refactorings can change code and print it back without making a mess.
+      `go fix` and `gopls` refactorings can change code and print it back in the same standard format.
       Large-scale automated refactoring across millions of lines was one of Go's original goals.
 
     As Rob Pike put it: _"Gofmt's style is no one's favourite, yet gofmt is everyone's favourite."_
@@ -161,8 +161,9 @@ You saw this in [Basics](basics.md#unused-things-are-errors):
     - **An unused variable is usually a bug.** You computed `total` and then returned something else.
       A warning would be ignored, like most warnings are. An error can't be ignored.
 
-    Go's designers didn't want warnings at all: _either it's a problem, so fix it, or it's not, so
-    don't bother me._ Things that are "maybe a problem" go to `go vet` and linters instead.
+    Go's designers did not want compiler warnings at all: either something is a problem, so it must
+    be fixed, or it is not, so the compiler does not report it. Things that are "maybe a problem" go
+    to `go vet` and linters instead.
 
 ## Naming
 
@@ -254,9 +255,9 @@ import "github.com/acme/orders/internal/models"     // bad
     **Why:** In Go, the package name is **part of every use** of its contents: callers write
     `order.Service`, `json.Marshal`, `http.Get`. So the package name is not a folder label, it is the
     first word of every identifier. A good one makes the call site read like a sentence. `util.Parse`
-    tells you nothing; `money.Parse` tells you everything.
+    tells you nothing; `money.Parse` tells you what is parsed.
 
-    Worse, `util`-style packages become **dumping grounds**. Because the name doesn't say what
+    Also, `util`-style packages become **dumping grounds**: places where unrelated code collects. Because the name doesn't say what
     belongs there, everything ends up there. Soon every package imports `util`, and `util` imports
     half the codebase, and you get import cycles and slow builds. A package named after what it
     _provides_ has a natural boundary. "Is this about money? Then it goes in `money`."
@@ -446,7 +447,7 @@ if err != nil {
 
     Each layer added one lower-case phrase. If one layer had written `"Failed to insert row."`, the
     line becomes `create order 7f3a: Failed to insert row.: connection refused`. Capitals and periods
-    in the middle of a sentence are wrong. And "failed to" in every layer is pure noise. The
+    in the middle of a sentence are wrong. And "failed to" in every layer adds only noise. The
     resulting chain reads like a stack trace written in English, and costs nothing at run time.
 
 !!! abstract "Convention: handle an error once"
@@ -461,7 +462,7 @@ if err != nil {
 
 ## Control flow: keep the happy path on the left
 
-Compare these two versions of the same function.
+The **happy path** is the normal flow of a function when nothing goes wrong. Compare these two versions of the same function.
 
 Nested (common in other languages):
 
@@ -565,7 +566,7 @@ var wg sync.WaitGroup    // ready
     (`if c.Timeout == 0 { timeout = 10 * time.Second }`). If the zero value _can't_ work, unexport the
     fields and provide `NewT`, so nobody can build a broken one.
 
-    **Why:** Go has zero values whether you like it or not. Every `var x T`, every new struct field,
+    **Why:** Every Go type has a zero value; you cannot avoid it. Every `var x T`, every new struct field,
     every missing JSON field produces one. If your type's zero value is broken, it _will_ be used
     somewhere by accident. If it works, a whole class of "forgot to initialise" bugs is gone. It also
     composes: a struct made of useful-zero-value fields has a useful zero value itself, with no
@@ -620,7 +621,7 @@ type Config struct {
 func (s *Service) Get(ctx context.Context, id uuid.UUID) (Order, error)
 ```
 
-**Rule:** Any function that does I/O, can block, or calls something that does, takes `ctx context.Context` as its **first** parameter. Don't store a context in a struct. **Why:** a context carries the request's deadline and cancellation signal; making it the first parameter everywhere means it is never forgotten and always easy to spot. The full story is in [Context and cancellation](context.md).
+**Rule:** Any function that does I/O, can block, or calls something that does, takes `ctx context.Context` as its **first** parameter. Don't store a context in a struct. **Why:** a context carries the request's deadline and cancellation signal; making it the first parameter everywhere means it is never forgotten and always easy to spot. Details are in [Context and cancellation](context.md).
 
 ### Let the caller decide about concurrency
 
@@ -663,7 +664,7 @@ func init() {
     the reader can't see. It can't return an error, so failures become panics or, worse, are ignored.
     It runs in **tests** too: importing your package in a unit test suddenly tries to connect to a
     database. And it makes the package impossible to use twice with different settings. Explicit
-    setup in `main` is boring, visible and testable, which is exactly what you want.
+    setup in `main` is simple, visible and testable.
 
 ### Mutable global state
 
@@ -683,7 +684,7 @@ func CreateOrder(o Order) error { return defaultRepo.Create(context.Background()
     **Why:** Global state is the opposite of everything Go optimises for.
 
     - **Hidden dependencies.** `CreateOrder(o)` looks pure, but it secretly talks to storage. The
-      signature lies. With `svc.Create(ctx, o)`, you can see what it needs.
+      signature is misleading. With `svc.Create(ctx, o)`, you can see what it needs.
     - **Tests interfere.** Two tests that change the same global can't run with `t.Parallel()`, and
       a test that forgets to reset it breaks other tests, in random order.
     - **No second instance.** You can't run two services with different configs in one process (or
@@ -705,7 +706,7 @@ Rob Pike's [Go Proverbs](https://go-proverbs.github.io/) are short, so they are 
 | _Don't communicate by sharing memory, share memory by communicating._     | Prefer passing data between goroutines over channels to having many goroutines lock the same data. See [Concurrency](concurrency.md). |
 | _Concurrency is not parallelism._                                         | Concurrency is how you **structure** a program (independent tasks); parallelism is running them at the same time on many CPUs.        |
 | _The bigger the interface, the weaker the abstraction._                   | Small interfaces (`io.Reader`) are satisfied by many types and are hugely reusable.                                                   |
-| _Make the zero value useful._                                             | See above. `var x T` should just work.                                                                                                |
+| _Make the zero value useful._                                             | See above. `var x T` should work with no setup.                                                                                       |
 | _`interface{}` says nothing._                                             | A parameter of type `any` gives the reader and the compiler no information. Use real types, or generics.                              |
 | _Gofmt's style is no one's favourite, yet gofmt is everyone's favourite._ | Consistency beats personal taste.                                                                                                     |
 | _A little copying is better than a little dependency._                    | See above.                                                                                                                            |
@@ -729,7 +730,7 @@ Conventions that a machine can check should be checked by a machine, so humans c
 | Naming, stutter, initialisms, doc comments, error strings, `else` after `return`        | `revive`, `staticcheck` (`ST*` checks) in golangci-lint  |
 | Unchecked errors                                                                        | `errcheck` in golangci-lint                              |
 | Outdated idioms (for example manual loops that `slices` replaces)                       | `go fix` modernizers (Go 1.26), the `modernize` analyzer |
-| `Get` prefix, receiver names, package naming, interface placement, global state, `init` | Code review (you!)                                       |
+| `Get` prefix, receiver names, package naming, interface placement, global state, `init` | Code review                                              |
 
 [Tooling and code quality](tooling-and-quality.md) shows the configuration used in the reference project.
 

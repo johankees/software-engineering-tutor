@@ -10,21 +10,22 @@ Five things people say in their first month with Kubernetes:
 - "`kubectl apply` said `configured`, but the rollout hasn't started. Or has it?"
 - "Somebody killed the process inside the container, and nothing broke."
 
-All five come from one design. You don't tell Kubernetes **what to do**. You tell it **what you want**, and many small loops keep comparing what you want with what is, and fix the difference. Over and over, forever. This is **reconciliation**, and once you see the loop, Kubernetes stops being magic.
+All five come from one design. You don't tell Kubernetes **what to do**. You tell it **what you want**, and many small loops keep comparing what you want with what is, and fix the difference. They repeat this for as long as the object exists. This is **reconciliation**. Once you understand the loop, the five messages above are easy to explain.
 
 On this page you watch the API's change feed, make two writers collide, see how the cluster tracks "have you seen my change yet?", and break things on purpose to watch them heal.
 
-## The idea: a thermostat, not a light switch
+## The idea: level-triggered control loops
 
-A light switch is **edge-triggered**: you flip it, something happens once. If the bulb was broken at that moment, too bad. The command is gone.
+There are two ways to react to change:
 
-A thermostat is **level-triggered**. You set 21 °C (the **desired state**). The thermostat measures the room (the **actual state**). Too cold? Heat. Warm enough? Stop. It does not remember how many times you turned the dial, or what the setting was yesterday. It only looks at two numbers, now. Open a window, and it simply heats more. Pull the plug for an hour, and when it comes back it looks at the two numbers and carries on.
+- **Edge-triggered**: act once, when an event happens ("a pod was deleted"). If the action fails, or the event is missed, nothing tries again.
+- **Level-triggered**: look at the current state, compare it with the wanted state, and act on the difference. The loop does not remember past events or past settings. It only compares two things, now. If it is stopped for an hour, it compares the two states again when it restarts and continues.
 
-Every Kubernetes controller is a thermostat:
+A thermostat works the second way: it compares the set temperature with the room temperature, and heats until they match. Every Kubernetes controller works the second way too:
 
-- **`spec`** is the dial: what you want. You (or another controller) write it.
-- **`status`** is the thermometer: what is. The controller writes it.
-- The **reconcile loop** looks at both and acts, then looks again.
+- **`spec`** is the **desired state**: what you want. You (or another controller) write it.
+- **`status`** is the **actual state**: what is. The controller writes it.
+- The **reconcile loop** reads both, acts on the difference, and then reads them again.
 
 ```mermaid
 flowchart LR
@@ -111,7 +112,7 @@ $ jq -c '{type, name: .object.metadata.name, rv: .object.metadata.resourceVersio
 
 Three events: `ADDED`, `MODIFIED`, `DELETED`. Each one carries the **whole object**, not a diff. That fits the level-triggered idea: the receiver always gets the full current state.
 
-The first event is interesting. The ConfigMap existed before the watch started, yet it came as `ADDED`. A watch without a starting point begins with the current state, as synthetic `ADDED` events, and then streams changes. `kubectl get -w` does the same; that's why it prints the existing objects first.
+Look at the first event. The ConfigMap existed before the watch started, yet it came as `ADDED`. A watch without a starting point begins with the current state, as synthetic `ADDED` events, and then streams changes. `kubectl get -w` does the same; that's why it prints the existing objects first.
 
 Every event has a **`resourceVersion`** (`3012`, `3015`, `3016`). It is a cluster-wide counter that goes up with every write, backed by etcd's revision number. A list also returns one:
 
@@ -145,7 +146,7 @@ The first event is the change **after** 3012: the patch at 3015. The API server 
 
 ### `resourceVersion` and optimistic concurrency
 
-`resourceVersion` has a second job: it stops two writers from overwriting each other. Two people, Alice and Bob, read the same ConfigMap at the same time:
+`resourceVersion` has a second job: it stops two writers from overwriting each other. In this example, two clients, Alice and Bob, read the same ConfigMap at the same time:
 
 ```console
 $ kubectl -n tutor-reconciliation create configmap tutor-stock --from-literal=count=10
@@ -157,7 +158,7 @@ $ jq -r .metadata.resourceVersion alice.json bob.json
 3064
 ```
 
-Alice sells one item (10 → 9). Bob, at the same moment, sells two (10 → 8). Both write back the whole object with `kubectl replace` (an HTTP PUT):
+Alice takes one item out of stock (10 → 9). At the same moment, Bob takes two (10 → 8). Both write back the whole object with `kubectl replace` (an HTTP PUT):
 
 ```console
 $ jq '.data.count="9"' alice.json | kubectl replace -f -
@@ -173,7 +174,7 @@ $ jq '.data.count="8"' bob.json | kubectl replace -v=6 -f - 2>&1 | grep 'PUT'
 I1126 22:46:23.886823  472353 round_trippers.go:632] "Response" verb="PUT" url="https://127.0.0.1:46318/api/v1/namespaces/tutor-reconciliation/configmaps/tutor-stock?fieldManager=kubectl-replace&fieldValidation=Strict" status="409 Conflict" milliseconds=4
 ```
 
-This is **optimistic concurrency**: no locks, nobody waits. Everyone writes, and the loser of a race is told to read again and retry. Bob should now read 9 and write 7. Here is what happens if he removes `resourceVersion` from his object instead:
+This is **optimistic concurrency**: no locks, nobody waits. Everyone writes, and the client whose write arrives second is told to read again and retry. Bob should now read 9 and write 7. Here is what happens if he removes `resourceVersion` from his object instead:
 
 ```console
 $ jq '.data.count="8" | del(.metadata.resourceVersion)' bob.json | kubectl replace -f -
@@ -182,7 +183,7 @@ $ kubectl -n tutor-reconciliation get configmap tutor-stock -o jsonpath='{.data.
 8 rv=3082
 ```
 
-No `resourceVersion`, no check: **last write wins**, silently. Three items were sold, the count says 8, and Alice's sale is lost. Now do it properly, from Go, with ten writers at once. `retry.RetryOnConflict` from `client-go` runs your function again (read, change, write) whenever the write gets a 409:
+No `resourceVersion`, no check: **last write wins**, silently. Three items were taken, the count says 8, and Alice's change is lost. Now do it properly, from Go, with ten writers at once. `retry.RetryOnConflict` from `client-go` runs your function again (read, change, write) whenever the write gets a 409:
 
 ```go
 // Command decrement takes one item out of stock, safely, with many writers.
@@ -261,16 +262,16 @@ Eight writers succeeded (some on the fourth try), and the count is exactly 100 �
     so they don't conflict on unrelated fields: the API server applies the change to the
     current object. Server-side apply tracks **which manager owns which field**
     (`managedFields`, which you saw in the watch output) and returns a conflict only when two
-    managers fight over the same field. [Packaging](packaging.md) uses it.
+    managers try to set the same field. [Packaging](packaging.md) uses it.
 
-### `generation` and `observedGeneration`: "have you seen my change?"
+### `generation` and `observedGeneration`: has the controller seen my change?
 
 `kubectl apply` returns as soon as the API server has **stored** your change. The controller hasn't even looked at it yet. How do you know when it has? Two numbers:
 
 - **`metadata.generation`**: the API server adds 1 every time the **spec** changes.
 - **`status.observedGeneration`**: the controller writes the generation it last acted on.
 
-When they are equal, the status describes your latest spec. When `observedGeneration` is lower, the status is old news. A Deployment to play with:
+When they are equal, the status describes your latest spec. When `observedGeneration` is lower, the status is out of date. Here is a Deployment to test with:
 
 ```yaml
 # tutor-orders-deploy.yaml
@@ -311,7 +312,7 @@ $ kubectl -n tutor-reconciliation get deploy tutor-orders -o jsonpath="right aft
 right after scale: gen=2 observed=2
 ```
 
-A label is metadata: no new generation. Scaling changes the spec: generation 2. The controller was so fast that it had already caught up when we looked. To catch it in the act, watch the Deployment while you change its image (to one that doesn't exist, which also shows a stuck rollout):
+A label is metadata: no new generation. Scaling changes the spec: generation 2. The controller had already caught up before the `get` ran. To see the gap, watch the Deployment while you change its image (to one that doesn't exist, which also shows a stuck rollout):
 
 ```console
 $ kubectl get --raw '/apis/apps/v1/namespaces/tutor-reconciliation/deployments?watch=1&fieldSelector=metadata.name=tutor-orders' > dwatch.out &
@@ -382,9 +383,9 @@ $ kubectl -n tutor-reconciliation events --for replicaset/tutor-orders-78799859d
 12s         Normal   SuccessfulCreate   ReplicaSet/tutor-orders-78799859db   Created pod: tutor-orders-78799859db-c86g2
 ```
 
-The order tells the story. The pod got a **deletion timestamp** (`Terminating`), and the ReplicaSet controller stopped counting it as one of its replicas at once. Two wanted, one counted: create `c86g2`. The replacement was `Pending` before the old pod was even gone. For the first message at the top of the page: you don't delete pods to stop them, you change the **desired state** (`kubectl scale`, or delete the Deployment).
+The order of the events shows what happened. The pod got a **deletion timestamp** (`Terminating`), and the ReplicaSet controller stopped counting it as one of its replicas at once. Two wanted, one counted: create `c86g2`. The replacement was `Pending` before the old pod was even gone. For the first message at the top of the page: you don't delete pods to stop them, you change the **desired state** (`kubectl scale`, or delete the Deployment).
 
-A controller finds "its" pods with the **label selector**, and owner references confirm it. Change the label of a pod, and it leaves the family:
+A controller finds "its" pods with the **label selector**, and owner references confirm it. Change the label of a pod, and the ReplicaSet no longer selects it:
 
 ```console
 $ kubectl -n tutor-reconciliation label pod tutor-orders-78799859db-c86g2 app=tutor-quarantine --overwrite
@@ -398,7 +399,7 @@ $ kubectl -n tutor-reconciliation get pod tutor-orders-78799859db-c86g2 -o jsonp
 ownerReferences=
 ```
 
-The ReplicaSet **released** the pod (removed its owner reference) and made a new one, `bhrpv`. The old pod keeps running, out of the traffic (a Service selects on the same label), so you can debug it at leisure. That's a real production trick for a misbehaving pod.
+The ReplicaSet **released** the pod (removed its owner reference) and made a new one, `bhrpv`. The old pod keeps running, out of the traffic (a Service selects on the same label), so you can debug it without time pressure. Teams use this in production to take a misbehaving pod out of service.
 
 ### Garbage collection: cascading deletes
 
@@ -432,7 +433,7 @@ No resources found in tutor-reconciliation namespace.
 
 The Deployment is gone, its ReplicaSets live on as orphans and keep their pods running. Then a foreground delete: the ReplicaSet still exists with a deletion timestamp and a `foregroundDeletion` **finalizer** while its pods go, and disappears last. Orphaning is how you replace a Deployment's spec in ways the API forbids (such as its selector) without downtime.
 
-### Finalizers: "not yet, I have work to do"
+### Finalizers: clean-up before deletion
 
 A **finalizer** is a string in `metadata.finalizers`. While the list is not empty, the object **cannot disappear**. A delete only sets `metadata.deletionTimestamp`. Some controller is expected to see that, do its clean-up (release a cloud load balancer, delete a database, detach a volume), and then remove its finalizer. When the list is empty, the API server really deletes the object.
 
@@ -449,7 +450,7 @@ $ kubectl -n tutor-reconciliation get configmap tutor-guarded -o jsonpath='delet
 deletionTimestamp=2026-11-26T21:48:44Z finalizers=["tutor.example.com/cleanup"]
 ```
 
-`kubectl` said "deleted". It wasn't. It still exists, and you can even still change its data, but no new finalizers can be added:
+`kubectl` printed "deleted", but the object was not removed. It still exists, and you can even still change its data, but no new finalizers can be added:
 
 ```console
 $ kubectl -n tutor-reconciliation patch configmap tutor-guarded --type=merge -p '{"data":{"k":"changed"}}'
@@ -458,7 +459,7 @@ $ kubectl -n tutor-reconciliation patch configmap tutor-guarded --type=merge -p 
 The ConfigMap "tutor-guarded" is invalid: metadata.finalizers: Forbidden: no new finalizers can be added if the object is being deleted, found new finalizers []string{"tutor.example.com/another"}
 ```
 
-Now the second message from the top of the page. Delete the **namespace**:
+This explains the second message at the top of the page. Delete the **namespace**:
 
 ```console
 $ kubectl delete namespace tutor-reconciliation --wait=false
@@ -521,7 +522,7 @@ $ kubectl -n tutor-reconciliation create configmap tutor-late --from-literal=a=b
 error: failed to create configmap: configmaps "tutor-late" is forbidden: unable to create new content in namespace tutor-reconciliation because it is being terminated
 ```
 
-In real life, the finalizer belongs to a controller that is gone: an operator that was uninstalled before its resources were deleted, or a CRD's controller that is crash-looping. The right fix is to bring the controller back and let it finish. When you are **sure** the clean-up is not needed (or you did it by hand), remove the finalizer yourself:
+In production, the finalizer usually belongs to a controller that is gone: an operator that was uninstalled before its resources were deleted, or a CRD's controller that is crash-looping. The right fix is to bring the controller back and let it finish. When you are **sure** the clean-up is not needed (or you did it by hand), remove the finalizer yourself:
 
 ```console
 $ kubectl -n tutor-reconciliation patch configmap tutor-guarded --type=json -p='[{"op":"remove","path":"/metadata/finalizers"}]'
@@ -530,11 +531,11 @@ $ kubectl get namespace tutor-reconciliation
 Error from server (NotFound): namespaces "tutor-reconciliation" not found
 ```
 
-The namespace was gone within seconds. Don't remove the namespace's own `kubernetes` finalizer (through the `/finalize` subresource, a popular answer online): it leaves the contents behind in etcd, invisible and orphaned.
+The namespace was gone within seconds. Don't remove the namespace's own `kubernetes` finalizer (through the `/finalize` subresource, an answer often given online): it leaves the contents behind in etcd, invisible and orphaned.
 
 ## Try it: why it heals
 
-Two loops healed things on this page already: the ReplicaSet controller replaced a deleted pod. Now the loop one level down, on the node. Start a pod, then kill its process from **outside** Kubernetes, on the node itself:
+Earlier on this page, the ReplicaSet controller replaced a deleted pod. Now look at the loop one level down, on the node. Start a pod, then kill its process from **outside** Kubernetes, on the node itself:
 
 ```console
 $ kubectl -n tutor-reconciliation run tutor-heal --image=tutor-ordersd:dev --image-pull-policy=Never
@@ -560,7 +561,7 @@ $ kubectl -n tutor-reconciliation get pod tutor-heal -o jsonpath='{.status.conta
 }
 ```
 
-Exit code 137 = 128 + 9, `SIGKILL` (see [Signals and process lifetime](../linux/signals-and-processes.md)). The kubelet's loop compared "this pod should have a running `tutor-heal` container" with "it is dead", and started a new one in the same pod (`RESTARTS 1`). No API server round trip was needed for the decision; the kubelet already had the spec. That's the fifth message from the top.
+Exit code 137 = 128 + 9, `SIGKILL` (see [Signals and process lifetime](../linux/signals-and-processes.md)). The kubelet's loop compared "this pod should have a running `tutor-heal` container" with "it is dead", and started a new one in the same pod (`RESTARTS 1`). No API server round trip was needed for the decision; the kubelet already had the spec. This explains the fifth message at the top of the page.
 
 So the cluster heals at three levels, each a loop of its own:
 

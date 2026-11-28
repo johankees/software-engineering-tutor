@@ -2,26 +2,26 @@
 
 ## Why care?
 
-Sorting is the most common algorithm you never write. It's behind:
+Sorting is a very common algorithm that you rarely write yourself. It is behind:
 
 - `ORDER BY created_at` on every list endpoint.
 - "Top 10 orders by amount" on the dashboard.
 - Merging two sorted streams of events, deduplicating IDs, finding "all orders between Monday and Friday".
 - Every database index, every log-structured store, every `sort | uniq -c` in a shell pipeline.
 
-You will (almost) never implement a sort in Go. `slices.Sort` is better than what you'd write. But you still choose: stable or not, structs or keys, sort or map, sort in memory or on disk. And you need to know why sorting first makes searching so cheap. This page opens `slices.Sort`, measures the choices, and ends with sorting a file that does not fit in memory.
+You will (almost) never implement a sort in Go. `slices.Sort` is better than a hand-written sort. But you still choose: stable or not, structs or keys, sort or map, sort in memory or on disk. And you need to know why sorting first makes searching so cheap. This page opens `slices.Sort`, measures the choices, and ends with sorting a file that does not fit in memory.
 
-## The idea: sorting a pile of paper orders
+## The idea: a few sorting methods, each for a different case
 
-You have a pile of 1,000 paper orders and must sort them by date.
+Take 1,000 orders that must be sorted by date. Different cases need different methods:
 
-- **Small piles** (a dozen): pick each one up and slide it into place among the ones you already sorted. That's **insertion sort**. O(n²) in theory, but nothing beats it for a handful of items.
-- **Big piles**: pick one order as the **pivot** (say, 15 March). Make two piles: earlier, and later. Do the same with each pile. That's **quicksort**. On average, each split halves the problem: O(n log n).
-- **Bad luck**: if your pivot is always the earliest order (the pile was already sorted, and you always take the top one), each "split" removes only one order. Quicksort becomes O(n²). A good sort notices this and **changes strategy**.
-- **Keeping ties in order**: two orders on the same day stay in the order they came in. That's a **stable** sort, and it costs extra.
-- **The pile doesn't fit on your desk**: sort it one desk-full at a time, put the sorted stacks aside, then **merge** them by always taking the earliest top order from any stack. That's **external merge sort**.
+- **Small inputs** (a dozen items): take each item and move it into place among the items already sorted. This is **insertion sort**. It is O(n²) in theory, but it is the fastest method for a handful of items.
+- **Large inputs**: choose one order as the **pivot** (for example, 15 March). Split the rest into two groups: earlier, and later. Repeat for each group. This is **quicksort**. On average, each split halves the problem: O(n log n).
+- **Bad pivots**: if the pivot is always the earliest order (the input was already sorted, and the method always takes the first item), each split removes only one order. Quicksort becomes O(n²). A good sort detects this and **changes method**.
+- **Keeping ties in order**: two orders on the same day stay in the order they came in. This is a **stable** sort, and it costs extra.
+- **Input bigger than memory**: sort one memory-sized part at a time, write each sorted part aside, then **merge** the parts by always taking the earliest first item of any part. This is **external merge sort**.
 
-And once the pile is sorted, finding "the orders from 15 March" doesn't need a full pass anymore: open in the middle, go left or right, repeat. That's **binary search**: O(log n).
+Once the data is sorted, finding "the orders from 15 March" no longer needs a full pass: look in the middle, go left or right, repeat. This is **binary search**: O(log n).
 
 ```mermaid
 flowchart TD
@@ -40,7 +40,7 @@ flowchart TD
 
 ## Under the hood: `slices.Sort` is pdqsort
 
-Go's `slices.Sort` (and since Go 1.19, `sort.Sort` and `sort.Slice`) uses **pdqsort**, "pattern-defeating quicksort" by Orson Peters. It's a quicksort that falls back to insertion sort for small pieces and to heapsort when quicksort goes wrong, and that detects common patterns (sorted, reversed, many equal values) to finish them in linear time.
+Go's `slices.Sort` (and since Go 1.19, `sort.Sort` and `sort.Slice`) uses **pdqsort**, "pattern-defeating quicksort" by Orson Peters. It is a quicksort that falls back to insertion sort for small pieces and to heapsort when quicksort goes wrong, and that detects common patterns (sorted, reversed, many equal values) to finish them in linear time.
 
 The entry point is in `$GOROOT/src/slices/sort.go`:
 
@@ -137,7 +137,7 @@ Six ideas, one per block:
 
 1. **Insertion sort cutoff: 12.** Pieces of 12 or fewer elements are finished with insertion sort. For tiny inputs it does fewer moves and has no recursion overhead; this is the "constants win for small n" lesson from [Big-O in practice](big-o.md#on2-vs-on-the-crossover).
 2. **Heapsort fallback.** Every unbalanced split (one side smaller than 1/8 of the piece) costs one unit of `limit`. When it reaches 0, the piece is finished with **heapsort**, which is O(n log n) in the worst case. So `slices.Sort` is **never** O(n²), whatever input an attacker sends. (Heaps are explained in [Heaps and queues](heaps-and-queues.md).)
-3. **Breaking patterns.** After a bad split, `breakPatternsOrdered` swaps three elements near the middle with pseudo-random positions, so a nasty pattern can't produce bad pivots again and again.
+3. **Breaking patterns.** After a bad split, `breakPatternsOrdered` swaps three elements near the middle with pseudo-random positions, so a bad input pattern cannot produce bad pivots again and again.
 4. **Pivot choice.** `choosePivotOrdered` takes the median of three elements (at 1/4, 1/2 and 3/4), or for 50 or more elements the "Tukey ninther": the median of three medians of three. While it does this, it counts swaps. Zero swaps means "these samples were already in order": `increasingHint`. The maximum number of swaps means "all reversed": `decreasingHint`, and pdqsort reverses the whole piece in O(n) first.
 5. **Already sorted?** If the samples look sorted and the last split was clean, `partialInsertionSortOrdered` tries to finish with insertion sort, but gives up after fixing 5 out-of-order pairs. On sorted input it walks the slice once and returns: **O(n)**.
 6. **Many duplicates.** If the pivot equals the element just left of this piece (which is known to be ≤ everything in it), then the piece has a lot of elements equal to the pivot. `partitionEqualOrdered` moves them all out of the way in one pass and never looks at them again.
@@ -196,9 +196,9 @@ func stableOrdered[E cmp.Ordered](data []E, n int) {
 }
 ```
 
-Insertion sort is stable. Sort blocks of 20 with it, then merge neighbouring blocks, doubling the block size each round, with `symMerge` (an in-place stable merge). In-place merging needs more moves than merging into a buffer. The `sort.Stable` docs give the cost: O(n log n) comparisons, but O(n log n log n) swaps. You'll see the price below.
+Insertion sort is stable. Sort blocks of 20 with it, then merge neighbouring blocks, doubling the block size each round, with `symMerge` (an in-place stable merge). In-place merging needs more moves than merging into a buffer. The `sort.Stable` docs give the cost: O(n log n) comparisons, but O(n log n log n) swaps. The benchmark below shows the cost.
 
-If you don't need stability, or your comparison is a total order (a unique tiebreaker like the ID), use the unstable `SortFunc`.
+If you do not need stability, or your comparison is a total order (a unique tiebreaker like the ID), use the unstable `SortFunc`.
 
 ## Under the hood: binary search
 
@@ -225,10 +225,10 @@ func BinarySearch[S ~[]E, E cmp.Ordered](x S, target E) (int, bool) {
 }
 ```
 
-Three details worth stealing:
+Three details worth reusing:
 
 - It returns the **position** where `target` is or **would be inserted**, plus a `found` bool. So the same call answers "is it there?", "where do I insert it to keep the slice sorted?" and "where does the range start?".
-- With duplicates, it returns the **first** one. That's because of the `>=` in the invariant.
+- With duplicates, it returns the **first** one. That is because of the `>=` in the invariant.
 - `uint(i+j) >> 1` instead of `(i+j)/2`: if `i+j` overflows `int`, the `uint` conversion still gives the right middle. This exact bug sat in Java's `Arrays.binarySearch` for about nine years.
 
 The older `sort.Search(n, f int) int` in `$GOROOT/src/sort/search.go` is the same loop with the same invariant, but more general: instead of comparing elements, it calls `f(h)`, and finds the smallest index `i` for which `f(i)` is true, given that `f` is false, then true, across the range.
@@ -237,7 +237,7 @@ The older `sort.Search(n, f int) int` in `$GOROOT/src/sort/search.go` is the sam
 
 ## Try it in Go: measuring the choices
 
-All benchmarks sort 1,000,000 elements on one laptop (AMD Ryzen 7 5800H, Go 1.27). Every iteration first copies the unsorted input into a buffer, so we never sort already-sorted output by accident. Results vary between runs: each benchmark ran three times (`-count=3`), and one typical run per line is shown unless the spread matters.
+All benchmarks sort 1,000,000 elements on one laptop (AMD Ryzen 7 5800H, Go 1.27). Every iteration first copies the unsorted input into a buffer, so a benchmark never sorts already-sorted output by accident. Results vary between runs: each benchmark ran three times (`-count=3`), and one typical run per line is shown unless the spread matters.
 
 ### Input shape: pdqsort's pattern detection
 
@@ -271,12 +271,12 @@ BenchmarkSortShapes/equal-16      1222     999753 ns/op   0 B/op   0 allocs/op
 BenchmarkSortShapes/nearly-16      129    9151230 ns/op   0 B/op   0 allocs/op
 ```
 
-- **Random**: 69 ms. That's the O(n log n) baseline: about 20 million comparisons.
+- **Random**: 69 ms. This is the O(n log n) baseline: about 20 million comparisons.
 - **Sorted, reversed, all equal**: about 1-1.8 ms, **40-70 times faster**. That includes the `copy`. pdqsort sees the pattern and does a few linear passes. (Reversed: one reverse, then one check.)
 - **Nearly sorted** (10 swaps in a million): 9 ms. Not linear (too many out-of-place elements for `partialInsertionSort`'s limit of 5), but still 7 times faster than random, because most partitions are already partitioned.
 - **0 allocations** in all cases: pdqsort sorts in place.
 
-Real data is often like this: orders arrive roughly in time order, a list is "sorted except for today's changes". You get that speed-up for free.
+Real data is often like this: orders arrive roughly in time order, a list is "sorted except for today's changes". You get that speed-up without any extra code.
 
 ### Why pattern defeating matters
 
@@ -302,7 +302,7 @@ func naiveQuicksort(s []int64) {
 }
 ```
 
-Compared with `slices.Sort` on 20,000 elements (not a million: you'll see why):
+Compared with `slices.Sort` on 20,000 elements (not a million, for the reason shown below):
 
 ```console
 $ go test -run='^$' -bench=NaiveVsPdq -benchmem -count=3
@@ -312,7 +312,7 @@ BenchmarkNaiveVsPdq/naive/sorted-16                21   51997820 ns/op   0 B/op 
 BenchmarkNaiveVsPdq/slices.Sort/sorted-16       83576      13522 ns/op   0 B/op   0 allocs/op
 ```
 
-On random input, the naive version is even a bit **faster** (0.83 vs 0.93 ms): it does less work per step. On sorted input, every pivot is the smallest element, every split removes one element, and the naive sort does 200 million comparisons: **52 ms, 3,800 times slower** than `slices.Sort`. At a million sorted elements it would take minutes and probably overflow the stack. That's the O(n²) worst case, triggered by the most common input there is.
+On random input, the naive version is even a bit **faster** (0.83 vs 0.93 ms): it does less work per step. On sorted input, every pivot is the smallest element, every split removes one element, and the naive sort does 200 million comparisons: **52 ms, 3,800 times slower** than `slices.Sort`. At a million sorted elements it would take minutes and probably overflow the stack. That is the O(n²) worst case, triggered by already sorted input, which is very common.
 
 ### Structs, pointers or keys?
 
@@ -366,9 +366,9 @@ BenchmarkSortWhat/keys-16        10   104919805 ns/op   0 B/op   0 allocs/op
 
 - **Structs**: every swap moves 40 bytes, and every call to the `cmp` function copies two 40-byte structs.
 - **Pointers**: swaps move only 8 bytes, but every compare follows two pointers to random places in memory: cache misses. Slower than structs here.
-- **Keys**: build a small slice of `{amount, index}` (16 bytes, packed tight), sort that, and use the indexes to find the orders. **Twice as fast**, even counting the time to build the keys.
+- **Keys**: build a small slice of `{amount, index}` (16 bytes, packed together), sort that, and use the indexes to find the orders. **Twice as fast**, even counting the time to build the keys.
 
-Rule: for big structs, sort small keys. That's also what databases do: an index is a sorted list of (key, row pointer) pairs.
+Rule: for big structs, sort small keys. Databases do the same: an index is a sorted list of (key, row pointer) pairs.
 
 ### Stable sort costs
 
@@ -382,8 +382,8 @@ BenchmarkSortOrders/sort.SliceStable-16             1   1582358150 ns/op   120 B
 
 The benchmark is the "structs" case above with four sort functions (`sort.Slice` with `less: buf[i].AmountCents < buf[j].AmountCents`). Amounts are random in `0..99,999`, so a million orders have many ties: stability matters here.
 
-- **Stable is 4 times slower** (0.8 s vs 0.2 s) with `slices`, and 8 times with `sort.SliceStable`. That's the in-place `symMerge` at work.
-- `sort.Slice` is a little **faster** than `slices.SortFunc` here (184 vs 199 ms). Its `less` gets indexes, so it never copies the 40-byte structs into a function call; it swaps through reflection instead (`reflectlite.Swapper`, the 3 allocations). With small elements, `slices.SortFunc` usually wins. Don't trust a rule of thumb; measure your own type.
+- **Stable is 4 times slower** (0.8 s vs 0.2 s) with `slices`, and 8 times with `sort.SliceStable`. This is the cost of the in-place `symMerge`.
+- `sort.Slice` is a little **faster** than `slices.SortFunc` here (184 vs 199 ms). Its `less` gets indexes, so it never copies the 40-byte structs into a function call; it swaps through reflection instead (`reflectlite.Swapper`, the 3 allocations). With small elements, `slices.SortFunc` usually wins. Do not rely on a rule of thumb; measure your own type.
 
 If you need stability and speed: make the order total with a tiebreaker (`cmp.Or(byStatus, byTime, byID)`) and use the unstable sort.
 
@@ -420,9 +420,9 @@ BenchmarkDistinct/sort/customers=1000000-16       16   69112247 ns/op          0
 
 - **Few distinct values**: the map wins by 3.5 times. It stays small (74 KB), fits in cache, and each insert is a cheap update.
 - **Many distinct values**: the map grows to 38 MB, rehashes again and again, and every insert is a cache miss. Sorting, in place with 0 allocations, wins.
-- Sorting has a bonus: the result is **sorted**, ready for a merge, a binary search, or a deterministic output. And note how sorting got **faster** with more duplicates (33 ms vs 69 ms): that's `partitionEqual` at work.
+- Sorting has a further benefit: the result is **sorted**, ready for a merge, a binary search, or a deterministic output. And note how sorting got **faster** with more duplicates (33 ms vs 69 ms): that is the effect of `partitionEqual`.
 
-Big-O says the map is O(n) and the sort O(n log n). The machine says: it depends on the data. Same lesson as in [Big-O in practice](big-o.md).
+Big-O says the map is O(n) and the sort O(n log n). The measurement shows that the winner depends on the data. Same lesson as in [Big-O in practice](big-o.md).
 
 ### Range queries with binary search
 
@@ -461,7 +461,7 @@ BenchmarkBetween/sort.Search-16             50281399      23.81 ns/op   0 B/op  
 BenchmarkBetween/sort.Search-16             52681528      25.81 ns/op   0 B/op   0 allocs/op
 ```
 
-Binary search is about **17,000 times** (`BinarySearchFunc`) to **80,000 times** (`sort.Search`) faster than the scan. That's 40 steps instead of a million.
+Binary search is about **17,000 times** (`BinarySearchFunc`) to **80,000 times** (`sort.Search`) faster than the scan. That is 40 steps instead of a million.
 
 But why is `sort.Search` **4.5 times faster** than `slices.BinarySearchFunc` for the same job? Ask the compiler which calls it inlined:
 
@@ -481,7 +481,7 @@ $ go test -c -o /dev/null -gcflags=-m . 2>&1 | grep -E 'range_test.go:(1[0-9]|2[
 ...
 ```
 
-`sort.Search` is small and was inlined into `betweenSearch`, and then the closure was inlined into the loop: the result is a plain loop with no function calls. `slices.BinarySearchFunc` was **not** inlined, so each of the 20 steps is an indirect call to `cmpTime`, which receives a **copy** of a 40-byte `Order`. The same algorithm, the same O(log n), and a 4.5× difference from inlining. Nothing in Big-O predicts this; a benchmark finds it in a minute. (For a `cmp.Ordered` slice, `slices.BinarySearch` has no callback and is the fast choice.)
+`sort.Search` is small and was inlined into `betweenSearch`, and then the closure was inlined into the loop: the result is a plain loop with no function calls. `slices.BinarySearchFunc` was **not** inlined, so each of the 20 steps is an indirect call to `cmpTime`, which receives a **copy** of a 40-byte `Order`. The same algorithm, the same O(log n), and a 4.5× difference from inlining. Big-O does not predict this; a benchmark shows it in a minute. (For a `cmp.Ordered` slice, `slices.BinarySearch` has no callback and is the fast choice.)
 
 ### Sort once, search many?
 
@@ -495,11 +495,11 @@ When should you sort plus binary search, and when build a map?
 | Ordered output (pages, reports, JSON)    | sorted slice                                        |
 | Many inserts **and** ordered reads       | a balanced tree or B-tree, see [Trees](trees.md)    |
 
-Inserting into a sorted slice is O(n) (shift). That's fine for a few hundred items or for batch rebuilds, not for a million inserts one by one.
+Inserting into a sorted slice is O(n) (shift). That is fine for a few hundred items or for batch rebuilds, not for a million inserts one by one.
 
 ## External merge sort: data bigger than RAM
 
-`slices.Sort` needs the whole slice in memory. A 200 GB export of orders does not fit. The answer is 60 years old and still in every database: **external merge sort**.
+`slices.Sort` needs the whole slice in memory. A 200 GB export of orders does not fit. The solution is about 60 years old and is still used in every database: **external merge sort**.
 
 1. **Phase 1, make runs**: read as many records as fit in memory (a "chunk"), sort them in memory, write them to a temporary file. Repeat until the input is done. You now have `k` sorted files ("runs").
 2. **Phase 2, k-way merge**: open all runs. Keep the **current head** of each run in a min-heap. Repeatedly take the smallest head, write it out, and replace it with the next line from the same run. The heap makes each step O(log k).
@@ -515,7 +515,7 @@ flowchart LR
     H --> OUT["sorted.csv"]
 ```
 
-Total work: O(n log n) comparisons, but only **two** sequential passes over the data on disk (read + write in each phase). Disks, and even SSDs, love sequential I/O. With very many runs, merge in several rounds (merge 100 runs at a time into bigger runs, then merge those).
+Total work: O(n log n) comparisons, but only **two** sequential passes over the data on disk (read + write in each phase). Disks, and even SSDs, are much faster at sequential I/O than at random I/O. With very many runs, merge in several rounds (merge 100 runs at a time into bigger runs, then merge those).
 
 Here is a complete version for an orders CSV (`id,amount_cents,created_at`), sorting by `created_at`, with `container/heap` for the merge:
 
@@ -702,7 +702,7 @@ phase 2: merged 40 runs in 468ms
 
 `sort -c` checks that a file is sorted and prints nothing if it is. With a 5× smaller memory budget, 40 runs instead of 8, the merge is only about 20% slower: the heap went from 3 to about 5 levels (log₂ 8 vs log₂ 40).
 
-### You already have one: GNU `sort` and Postgres
+### Existing tools: GNU `sort` and Postgres
 
 GNU `sort` is an external merge sort. `-S` sets its memory buffer, `-T` the directory for its runs:
 
@@ -721,7 +721,7 @@ sys	0m0.348s
 
 With 8 MB it spills to disk and takes 2.3 s. With its default buffer the whole file fits, and it sorts in memory with several threads (`user` time is three times `real`).
 
-PostgreSQL does the same for `ORDER BY` when the rows don't fit in `work_mem`. In a throwaway `postgres:18` container (`docker run -d --rm --name tutor-sort-pg -e POSTGRES_PASSWORD=tutor postgres:18`), fed to `psql -q` on standard input:
+PostgreSQL does the same for `ORDER BY` when the rows do not fit in `work_mem`. In a throwaway `postgres:18` container (`docker run -d --rm --name tutor-sort-pg -e POSTGRES_PASSWORD=tutor postgres:18`), fed to `psql -q` on standard input:
 
 ```sql
 CREATE TABLE orders AS
@@ -773,14 +773,14 @@ EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) SELECT * FROM orders ORDER BY amount_ce
 
 - `external merge  Disk: 33296kB`: runs written to temporary files (`temp written=8337` pages), then merged. Exactly the algorithm above.
 - `quicksort  Memory: 63639kB`: everything fits in `work_mem`, so it sorts in memory.
-- `top-N heapsort  Memory: 26kB`: for `LIMIT 10` it never sorts the million rows. It keeps a heap of the best 10 seen so far: O(n log 10). That's the "top 10 orders by amount" trick, and you'll build it yourself in [Heaps and queues](heaps-and-queues.md). See [Query planning](../databases/query-planning.md) for reading plans like these.
+- `top-N heapsort  Memory: 26kB`: for `LIMIT 10` it never sorts the million rows. It keeps a heap of the best 10 seen so far: O(n log 10). That is the "top 10 orders by amount" method from [Heaps and queues](heaps-and-queues.md). See [Query planning](../databases/query-planning.md) for reading plans like these.
 
 ## Traps
 
-- **Comparators that lie.** `cmp` must be consistent: if `a < b` and `b < c` then `a < c`, and `cmp(a, b)` must be the opposite of `cmp(b, a)`. A comparator that returns random results, or uses `<=` logic, or compares floats with NaN, gives a garbage order (pdqsort will not crash or loop, but the output is not sorted).
+- **Inconsistent comparators.** `cmp` must be consistent: if `a < b` and `b < c` then `a < c`, and `cmp(a, b)` must be the opposite of `cmp(b, a)`. A comparator that returns random results, or uses `<=` logic, or compares floats with NaN, gives an incorrect order (pdqsort will not crash or loop, but the output is not sorted).
 - **Subtraction as compare.** `return int(a.AmountCents - b.AmountCents)` overflows for big values and flips the sign. Use `cmp.Compare`.
 - **Expecting stability from `SortFunc`.** Equal elements may come out in any order, and the order can change between Go versions. Use `SortStableFunc`, or a tiebreaker that makes every key unique.
-- **Binary search on unsorted data.** No error, no panic: just wrong answers. Sort with the **same** comparison you search with. A test with `slices.IsSortedFunc` is cheap insurance.
+- **Binary search on unsorted data.** No error, no panic: just wrong answers. Sort with the **same** comparison you search with. A test with `slices.IsSortedFunc` is a cheap safeguard.
 - **Sorting inside a loop.** Sorting the whole slice after every insert is O(n² log n). Insert at the position `BinarySearch` gives you (`slices.Insert`), or collect and sort once.
 - **Sorting big structs.** Every swap and every `cmp` call copies them. Sort small keys with an index, as in the benchmark above.
 - **Sorting to find the top 10.** O(n log n) for a full sort to keep 10 elements. A heap of size 10 does it in O(n log 10), like Postgres's top-N heapsort.
@@ -792,7 +792,7 @@ EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) SELECT * FROM orders ORDER BY amount_ce
 
     pdqsort's pivot selection counts swaps while taking medians. Zero swaps gives
     `increasingHint`, and `partialInsertionSortOrdered` then walks the slice once, finds
-    no out-of-order pairs, and returns. That's O(n) instead of O(n log n). Reversed input
+    no out-of-order pairs, and returns. That is O(n) instead of O(n log n). Reversed input
     is reversed first (O(n)) and then handled the same way.
 
 ??? question "2. What stops `slices.Sort` from being O(n²) on a malicious input?"

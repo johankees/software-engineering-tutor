@@ -2,22 +2,22 @@
 
 ## Why care?
 
-Four things people say about Go code, and each one is half true:
+Four common statements about Go code. Each one is only half true:
 
 - "Use a linked list, inserts are O(1)." True, and the loop over it can be **50 times** slower than over a slice.
 - "Maps are O(1)." True, and for 8 keys a plain slice scan is twice as fast.
-- "My test passed, then failed in CI. It printed the map in a different order." Not a bug in Go. On purpose.
-- "We deleted half the cache entries, but memory did not go down." Also on purpose.
+- "My test passed, then failed in CI. It printed the map in a different order." This is not a bug in Go. It is intended.
+- "We deleted half the cache entries, but memory did not go down." This is also intended.
 
 Almost every Go program is built from two structures: the **slice** (an array in one block of memory) and the **map** (a hash table). This page shows how each one is laid out in memory, why that layout decides its speed, and what Go's map does inside since Go 1.24 replaced it with a Swiss table.
 
-## The idea: a row of lockers and a coat check
+## The idea: position by index, position by hash
 
-**An array is a row of numbered lockers in one corridor.** Locker 0, 1, 2, ... all the same size, side by side. To find locker 4711 you don't search: you walk to `start + 4711 × locker size`. And when you need lockers 1 to 100, you walk past them in one go.
+**An array stores elements of the same size side by side in one block of memory.** To find element 4711 you do not search: its address is `start + 4711 × element size`. Reading elements 1 to 100 means reading one continuous range of memory.
 
-**A linked list is a treasure hunt.** Each box holds an order and a note: "the next box is in room 37". To reach the 4711th order you open 4711 boxes, and each one can be anywhere in the building.
+**A linked list stores each element in its own node.** Each node holds an order and a pointer to the next node. To reach the 4711th order you follow 4711 pointers, and each node can be anywhere in memory.
 
-**A hash map is a coat check.** You give your coat; the attendant computes a hook number from your name (the **hash**), and hangs it there. To get it back, the same computation gives the same hook. No searching. Sometimes two names give the same hook (a **collision**), so each hook has a little shelf with room for a few coats, and when the shelves are full, the attendant moves everything to a bigger room.
+**A hash map computes the position from the key.** A **hash function** turns the key into a number (the **hash**), and the hash picks a place in the table. To find the key again, the same computation gives the same place, so there is no search. Sometimes two keys get the same place (a **collision**), so each place has room for a few entries. When the table gets too full, the map moves everything into a bigger table.
 
 ```mermaid
 flowchart TB
@@ -49,7 +49,7 @@ type slice struct { // see $GOROOT/src/runtime/slice.go
 }
 ```
 
-`s[i]` is one multiplication and one memory read: `array + i × sizeof(Order)`. That is O(1), with a tiny constant. And reading `s[0], s[1], s[2], ...` in order is the best thing you can do to a CPU: each 64-byte cache line brings several orders at once, and the hardware prefetcher loads the next lines before you ask (see [Memory](../fundamentals/memory.md#caches-why-the-same-work-can-be-2-slower)).
+`s[i]` is one multiplication and one memory read: `array + i × sizeof(Order)`. That is O(1), with a tiny constant. Reading `s[0], s[1], s[2], ...` in order is the fastest way to read memory: each 64-byte cache line brings several orders at once, and the hardware prefetcher loads the next lines before you ask (see [Memory](../fundamentals/memory.md#caches-why-the-same-work-can-be-2-slower)).
 
 The price: inserting or deleting in the middle shifts everything after it. `slices.Insert` documents it plainly: "This function is O(len(s) + len(v))." Growth is amortized O(1), as you saw in [Big-O in practice](big-o.md#amortized-cost-why-append-is-o1).
 
@@ -74,7 +74,7 @@ type Element struct {
 }
 ```
 
-Count the cost of one `Order` (24 bytes) in a list:
+Here is the cost of one `Order` (24 bytes) in a list:
 
 - `next`, `prev`, `list`: three pointers, 24 bytes.
 - `Value any`: an interface, 16 bytes (type pointer plus data pointer). A 24-byte struct does not fit in the data pointer, so Go **boxes** it: a second heap allocation of 24 bytes.
@@ -235,7 +235,7 @@ The table has a limited number of places. With 2^16 slots, the hash picks a slot
 
 The **load factor** is "used slots / total slots". The fuller the table, the longer the probe paths, the slower every lookup. Every hash table grows (allocates a bigger table and moves every entry, called **rehashing**) before it gets too full. Growing doubles the size, so like `append`, inserts stay amortized O(1).
 
-You can feel both effects with a toy table: open addressing, linear probing (try the next slot), 65,536 slots. It counts how many slots a successful lookup has to inspect, for two hash functions:
+You can see both effects with a small test table: open addressing, linear probing (try the next slot), 65,536 slots. It counts how many slots a successful lookup has to inspect, for two hash functions:
 
 ```go
 // Command probe fills a toy open-addressing table (linear probing,
@@ -311,8 +311,8 @@ load        maphash     identity
 
 Two lessons:
 
-- **Load factor**: with a good hash, half full means 1.5 looks per lookup. At 95% full it is 11. (Theory for linear probing says about `(1 + 1/(1-load)) / 2`: 1.5 at 50%, 10.5 at 95%.) That's why tables grow long before they are full.
-- **Bad hash**: IDs that step by 1024 all have the same low 10 bits. Using the ID as its own hash, they land on only 64 different start slots, and lookups need **hundreds** of probes even when the table is half empty. Real data has patterns like this all the time: IDs from a sharded sequence, timestamps in whole seconds, prices in whole euros. A good hash function destroys the pattern. With an attacker choosing keys, this is a denial-of-service attack; the random seed stops it.
+- **Load factor**: with a good hash, half full means 1.5 looks per lookup. At 95% full it is 11. (Theory for linear probing says about `(1 + 1/(1-load)) / 2`: 1.5 at 50%, 10.5 at 95%.) That is why tables grow long before they are full.
+- **Bad hash**: IDs that step by 1024 all have the same low 10 bits. Using the ID as its own hash, they land on only 64 different start slots, and lookups need **hundreds** of probes even when the table is half empty. Real data has patterns like this all the time: IDs from a sharded sequence, timestamps in whole seconds, prices in whole euros. A good hash function removes the pattern. With an attacker choosing keys, this is a denial-of-service attack; the random seed stops it.
 
 ## Under the hood: Go's Swiss-table map
 
@@ -335,7 +335,7 @@ Since Go 1.24 the built-in `map` is a **Swiss table**, a design from Google's Ab
 // - Directory: Array of the tables used by the map.
 ```
 
-Let's build it up from the bottom.
+The sections below explain it from the bottom up.
 
 ### Groups and control bytes
 
@@ -353,7 +353,7 @@ A **group** is 8 slots plus one 8-byte **control word**: one control byte per sl
 The 64-bit hash is split in two:
 
 - **H1**, the upper 57 bits, chooses **where** to look: which group to start probing at.
-- **H2**, the lower 7 bits, is stored **in the control byte** of a full slot. It's a tiny fingerprint of the key.
+- **H2**, the lower 7 bits, is stored **in the control byte** of a full slot. It is a short fingerprint of the key.
 
 ```mermaid
 flowchart LR
@@ -367,7 +367,7 @@ flowchart LR
 
 ### Lookup: 8 slots in one instruction
 
-Here is the heart of a lookup, from `getWithKey` in `$GOROOT/src/internal/runtime/maps/table.go` (the long comment at its top left out):
+Here is the core of a lookup, from `getWithKey` in `$GOROOT/src/internal/runtime/maps/table.go` (the long comment at its top left out):
 
 ```go
 	seq := makeProbeSeq(h1(hash), t.groups.lengthMask)
@@ -406,8 +406,8 @@ Here is the heart of a lookup, from `getWithKey` in `$GOROOT/src/internal/runtim
 Step by step:
 
 1. **`matchH2`** compares H2 against all 8 control bytes **at the same time**. The portable version does it with bit tricks on one `uint64`; on amd64 it is a compiler intrinsic using SIMD instructions. The result is a bitset of candidate slots.
-2. For each candidate, compare the **full key**. Because H2 has 7 bits, a random slot matches by accident only 1 time in 128. The comment above `getWithKey` estimates fewer than 1/8 false comparisons per lookup. So the expensive key compare (think: a long string) almost always succeeds the first time.
-3. If the group has an **empty** slot, the key can't be further along: stop, not found.
+2. For each candidate, compare the **full key**. Because H2 has 7 bits, a random slot matches by accident only 1 time in 128. The comment above `getWithKey` estimates fewer than 1/8 false comparisons per lookup. So the expensive key compare (for example, of a long string) almost always succeeds the first time.
+3. If the group has an **empty** slot, the key cannot be further along: stop, not found.
 4. Otherwise, go to the next group in the **probe sequence**. It is quadratic (`offset + 1`, `+ 2`, `+ 3`, ...), and the comment on `probeSeq` explains that it visits every group exactly once because the group count is a power of two.
 
 So one lookup usually reads one control word, compares one key, and is done. That is the "1" in O(1), and it is why the map stayed flat at about 8 ns in [the Big-O benchmarks](big-o.md#on-vs-olog-n-vs-o1-looking-up-an-order).
@@ -431,7 +431,7 @@ From `group.go`:
 
 A table grows when used slots plus tombstones reach 7/8 of its capacity. That is much fuller than the 50-75% a linear-probing table can afford (look at the toy above at 87.5%). The 8-wide group compare is what makes it affordable.
 
-Growing a big hash table in one go is a latency spike: every entry must be moved, because the probe positions depend on the table size. Go limits that pain with two levels:
+Growing a big hash table in one go is a latency spike: every entry must be moved, because the probe positions depend on the table size. Go limits that cost with two levels:
 
 - A **table** holds at most `maxTableCapacity = 1024` slots (`table.go`). Up to that size, growing replaces the table with one twice as big.
 - Beyond that, growing **splits** the table into two tables of 1024 slots. The **directory** is an array of table pointers, indexed by the **top bits** of the hash ("extendible hashing"). So the most work one insert can trigger is moving 1024 slots, not the whole map.
@@ -448,7 +448,7 @@ Growing a big hash table in one go is a latency spike: every entry must be moved
 	t.split(typ, m)
 ```
 
-The directory can have more entries than there are tables: when one table splits and its neighbours don't, several directory entries point to the same table. The diagram is in the `map.go` comment:
+The directory can have more entries than there are tables: when one table splits and its neighbours do not, several directory entries point to the same table. The diagram is in the `map.go` comment:
 
 ```text
 	directory (globalDepth=2)
@@ -474,11 +474,11 @@ flowchart LR
     T1 --> G2["..."]
 ```
 
-One more trick: the **small map**. A map that never held more than 8 entries has no directory and no table at all; `dirPtr` points straight at a single group. And `make(map[K]V, hint)` with `hint <= 8` allocates nothing until the first insert.
+One more optimization: the **small map**. A map that never held more than 8 entries has no directory and no table at all; `dirPtr` points straight at a single group. And `make(map[K]V, hint)` with `hint <= 8` allocates nothing until the first insert.
 
-### Iteration order is random, on purpose
+### Iteration order is random by design
 
-The spec says map iteration order is unspecified. The implementation makes sure you notice: each `range` starts at a random slot and a random directory entry (`it.entryOffset = rand()` and `it.dirOffset = rand()` in `table.go`).
+The spec says map iteration order is unspecified. The implementation makes it random so that code cannot depend on it: each `range` starts at a random slot and a random directory entry (`it.entryOffset = rand()` and `it.dirOffset = rand()` in `table.go`).
 
 ```go
 // Command iterorder ranges over the same small map three times.
@@ -591,7 +591,7 @@ BenchmarkSmallLookup/map/n=256-16       88253814    14.23 ns/op
 
 The map is flat at 12-17 ns: it must hash the whole string every time. The slice grows linearly, and the crossover on this machine is between 16 and 32 keys. Below that, the slice wins, because comparing two short strings that differ early is a few instructions, and the whole slice fits in a cache line or two.
 
-Should you replace your maps with slices? Usually not. The map is never slow, its cost doesn't depend on n, and code that uses a map says "lookup by key" clearly. But for a fixed, small set of keys (HTTP methods, a handful of statuses, config flags), a slice or a `switch` is fine and often faster.
+Should you replace your maps with slices? Usually not. The map is never slow, its cost does not depend on n, and code that uses a map says "lookup by key" clearly. But for a fixed, small set of keys (HTTP methods, a handful of statuses, config flags), a slice or a `switch` is fine and often faster.
 
 ### Preallocate with a size hint
 
@@ -634,12 +634,12 @@ Twice as fast, half the memory. With the hint, `NewMap` computes the capacity up
 ## Traps
 
 - **Depending on map order.** Tests that compare printed maps, code that takes "the first" key, hashes over `range m`. All break randomly. Sort the keys.
-- **Concurrent map writes.** A map is not safe for concurrent use. The runtime detects some races and stops the whole program with `fatal error: concurrent map writes` (or `concurrent map read and map write`). This is not a panic; `recover` can't catch it. Use a `sync.Mutex` (like `examples/orders`'s `memory.Store`), or `sync.Map` for the special cases its docs describe.
-- **Maps don't shrink.** Deleting entries frees the slots but keeps the tables. A cache that once held 10 million entries keeps that memory after you delete 9.9 million. `clear(m)` also keeps the capacity. To shrink, copy the live entries into a new map and drop the old one.
+- **Concurrent map writes.** A map is not safe for concurrent use. The runtime detects some races and stops the whole program with `fatal error: concurrent map writes` (or `concurrent map read and map write`). This is not a panic; `recover` cannot catch it. Use a `sync.Mutex` (like `examples/orders`'s `memory.Store`), or `sync.Map` for the special cases its docs describe.
+- **Maps do not shrink.** Deleting entries frees the slots but keeps the tables. A cache that once held 10 million entries keeps that memory after you delete 9.9 million. `clear(m)` also keeps the capacity. To shrink, copy the live entries into a new map and drop the old one.
 - **Holding pointers into a slice across `append`.** `p := &s[3]`, then `s = append(s, x)` may move the array. `p` now points into the old copy; writes through it are lost.
-- **Big structs in maps.** `m[id] = order` copies the struct in, `o := m[id]` copies it out, and you can't do `m[id].Status = "paid"` (compile error). For big values that change often, store a pointer, or an index into a slice.
+- **Big structs in maps.** `m[id] = order` copies the struct in, `o := m[id]` copies it out, and you cannot write `m[id].Status = "paid"` (compile error). For big values that change often, store a pointer, or an index into a slice.
 - **Linked lists for "fast inserts".** Only if you already hold the element. Otherwise you walk the list to find the place (O(n), with a cache miss per step), and the slice would have been faster.
-- **Weak hash for your own table.** `id % shards` or `crc32` on patterned keys clumps. Use `hash/maphash` with a seed, and remember the seed is random per process: don't store those hashes or send them to another service. For stable hashes across machines (consistent hashing, see [Probabilistic structures](probabilistic-structures.md)), use a fixed, documented hash such as FNV or xxhash.
+- **Weak hash for your own table.** `id % shards` or `crc32` on patterned keys clumps. Use `hash/maphash` with a seed, and remember the seed is random per process: do not store those hashes or send them to another service. For stable hashes across machines (consistent hashing, see [Probabilistic structures](probabilistic-structures.md)), use a fixed, documented hash such as FNV or xxhash.
 - **NaN keys.** `NaN != NaN`, so `m[math.NaN()] = 1` adds a new entry every time, and you can never look it up. Avoid float keys.
 
 ## Check yourself
@@ -685,17 +685,17 @@ Twice as fast, half the memory. With the hint, `NewMap` computes the capacity up
 
     Either is fine. At around 10 keys, a linear scan of a slice is about as fast as or
     faster than a map lookup on this machine (crossover between 16 and 32 keys), and needs
-    no hashing. A `switch` is fine too. Choose what reads best; it won't be the
+    no hashing. A `switch` is fine too. Choose what reads best; it will not be the
     bottleneck. Use a map once the set is large or comes from data.
 
 ## Recap
 
-- A **slice** is a header (pointer, len, cap) over one contiguous array. Index is O(1); sequential reads are what CPU caches love; middle inserts shift.
+- A **slice** is a header (pointer, len, cap) over one contiguous array. Index is O(1); sequential reads use the CPU cache well; middle inserts shift.
 - A **linked list** (`container/list`) costs 72 bytes and 2 allocations per 24-byte order, and a cache miss per step once it is scattered. It wins only for inserts and deletes at an element you already hold.
 - A **hash function** must be deterministic, spread keys, be fast and be seeded. Go uses AES-based hashing with a random seed per map; use `hash/maphash` for your own.
 - **Load factor** decides probe length. Tables grow (rehash) before they get full, keeping inserts amortized O(1).
 - Go's **Swiss-table map**: groups of 8 slots with a control word; H1 picks the group, H2 is a 7-bit fingerprint matched against 8 slots at once; tombstones for deletes; 7/8 max load; tables of at most 1024 slots under a directory, so growth is incremental.
-- Map iteration order is **random on purpose**. Sort the keys when order matters.
+- Map iteration order is **random by design**. Sort the keys when order matters.
 - Small maps (≤ 8 entries) are a single group. For tiny fixed key sets, a slice scan is as fast or faster.
 - Pass a size hint to `make` when you know the count. Maps never shrink.
 

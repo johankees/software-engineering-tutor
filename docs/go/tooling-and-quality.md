@@ -4,7 +4,7 @@
 
 A code review with 34 comments. Twenty are about spaces, import order and line breaks. Ten are "please check this error". Three are "this name is confusing". **One** is about the real problem: the new endpoint can be called without authentication. It was easy to miss between the other 33.
 
-Humans are bad at finding missing spaces and unchecked errors, and good at judging design. Machines are the opposite. So in Go teams, the rule is simple: **everything a tool can check, a tool checks**, in the editor and in CI, before a human looks. Reviewers then spend their attention on what matters.
+Humans are bad at finding missing spaces and unchecked errors, and good at judging design. Machines are the opposite. So Go teams follow one rule: **everything a tool can check, a tool checks**, in the editor and in CI, before a human looks. Reviewers then spend their attention on design and correctness.
 
 Go makes this easy, because it ships strong tools and has one accepted style. This page builds the quality pipeline for the [`orders`](project-layout.md#the-reference-project-examplesorders) project, layer by layer.
 
@@ -21,9 +21,9 @@ flowchart LR
     S --> CI["CI: the same, enforced"]
 ```
 
-Each layer catches a different class of problems. They all run on your laptop through **one command** (`make pr`), and CI runs exactly the same command. If it is green locally, it is green in CI.
+Each layer catches a different class of problems. They all run on your laptop through **one command** (`make pr`), and CI runs exactly the same command. If it passes locally, it passes in CI.
 
-## Layer 1: `gofmt`, the end of style debates
+## Layer 1: `gofmt`, one standard format
 
 `gofmt` rewrites Go source into **the** standard format. There are no options to choose tabs or spaces, brace style, or alignment. Here is what it does to untidy code:
 
@@ -63,8 +63,8 @@ Tabs for indentation, fields aligned in columns, spaces around operators that bi
     **Why:** Rob Pike: _"Gofmt's style is no one's favorite, yet gofmt is everyone's favorite."_
     The value is not in the style itself. It is that **there is only one**:
 
-    - no review comments or team wiki pages about style, ever;
-    - every Go file in the world looks the same, so your eyes read any codebase fast;
+    - no review comments or team wiki pages about style;
+    - every Go file looks the same, so you can read any codebase quickly;
     - diffs contain only real changes, never "reformatted the file";
     - tools can safely rewrite code (`go fix`, refactorings), because the output format is known.
 
@@ -221,7 +221,7 @@ go fix -diff ./...
 
 ## Layer 4: `golangci-lint`, many linters, one config
 
-`go vet` is deliberately conservative: it only reports things that are almost always bugs. Teams want more: unchecked errors, security problems, missing `context`, unclosed HTTP bodies. There are dozens of excellent Go linters. **golangci-lint** runs them all in one process, shares the parsing and type-checking work between them, and reads one config file.
+`go vet` is deliberately conservative: it only reports things that are almost always bugs. Teams want more checks: unchecked errors, security problems, missing `context`, unclosed HTTP bodies. There are dozens of good Go linters. **golangci-lint** runs them all in one process, shares the parsing and type-checking work between them, and reads one config file.
 
 ```sh
 golangci-lint --version
@@ -243,7 +243,7 @@ With no configuration, golangci-lint v2 runs five linters. They are worth knowin
 | `staticcheck` | Hundreds of checks: bugs, deprecated APIs, simplifications, style (`ST1005`, ...) |
 | `unused`      | Unused functions, types, fields and constants                                     |
 
-`staticcheck` deserves special mention. It is the most respected Go linter, by Dominik Honnef, and it is precise: when it reports something, it is almost always right.
+`staticcheck` is the most important of these. It is the most respected Go linter, written by Dominik Honnef, and it is precise: when it reports something, it is almost always right.
 
 ### A realistic enterprise configuration
 
@@ -329,9 +329,9 @@ issues:
 
 The choices explained:
 
-- **`default: standard` + a list of extras** instead of `default: all`. New golangci-lint versions add linters. With `all`, an upgrade can suddenly fail every build. With an explicit list, upgrades are boring.
+- **`default: standard` + a list of extras** instead of `default: all`. New golangci-lint versions add linters. With `all`, an upgrade can suddenly fail every build. With an explicit list, upgrades are predictable.
 - **`errorlint`, `wrapcheck`, `nilerr`** enforce the error strategy from [Errors](errors.md): errors crossing a package boundary get context, and are compared with `errors.Is`/`errors.As`. `wrapcheck` ignores our own packages (they already add context).
-- **`bodyclose`, `noctx`, `contextcheck`, `rowserrcheck`, `sqlclosecheck`** catch resource leaks and missing cancellation: the bugs that take down services at 3 a.m. (see [Context](context.md)).
+- **`bodyclose`, `noctx`, `contextcheck`, `rowserrcheck`, `sqlclosecheck`** catch resource leaks and missing cancellation. These bugs often cause production outages (see [Context](context.md)).
 - **`gosec`** is a basic security scanner. Disabled in tests, where things like fixed file paths are fine.
 - **`exhaustive`** makes sure a `switch` over `order.Status` handles every status, or has a `default`. Add a new status, and the linter shows every place you must update.
 - **`revive`** enforces naming and doc-comment conventions from [Conventions](conventions.md).
@@ -340,7 +340,7 @@ The choices explained:
 
 ### See it work
 
-A first version of the API client, written in a hurry:
+Here is a first version of the API client, written quickly and without care:
 
 ```go
 // Package client talks to the orders API.
@@ -372,7 +372,7 @@ func Get(url string) ([]byte, error) {
 }
 ```
 
-It compiles, and `go vet` is happy. golangci-lint is not:
+It compiles, and `go vet` reports nothing. golangci-lint reports ten issues:
 
 ```sh
 golangci-lint run ./...
@@ -467,7 +467,7 @@ The `*http.Client` is passed in, so `main` decides the timeout, and tests can pa
 
     By default golangci-lint shows only **the first issue per line**. In the output above, line
     15 has three problems (`gosec`, `bodyclose`, `noctx`). With the default, you would see only
-    one, fix it, and then be surprised by the next. Showing everything is less frustrating.
+    one, fix it, and then find the next one only on the next run. Showing everything saves time.
 
 ### Silencing a linter: `//nolint` with a reason
 
@@ -477,7 +477,7 @@ Sometimes a linter is wrong for one line. Then you silence it **for that line, f
 resp, err := http.Get(healthURL) //nolint:noctx // one-shot startup probe; process exits on failure
 ```
 
-`nolintlint` with `require-specific` and `require-explanation` rejects a bare `//nolint`. Why so strict? A `//nolint` without a reason is a decision nobody can review later. With the reason, a reviewer can say "that is not true anymore" a year from now.
+`nolintlint` with `require-specific` and `require-explanation` rejects a bare `//nolint`. The reason for this strict rule: a `//nolint` without a reason is a decision nobody can review later. With the reason, a reviewer can say "that is not true anymore" a year from now.
 
 !!! abstract "Convention: linter config is code"
 
@@ -485,8 +485,8 @@ resp, err := http.Get(healthURL) //nolint:noctx // one-shot startup probe; proce
     PR. Turn on a new linter only after fixing (or explicitly excluding) its existing findings.
     Never let CI run with known lint failures.
 
-    **Why:** a lint step that is "always a bit red" trains everybody to ignore it, and then it
-    catches nothing. A green baseline means every new finding is news.
+    **Why:** if a lint step always has some failures, everybody learns to ignore it, and then it
+    catches nothing. If the baseline has no failures, every new finding gets attention.
 
 ## Layer 5: tests with the race detector
 
@@ -512,7 +512,7 @@ Covered in [Modules](modules.md#govulncheck-vulnerability-scanning-that-reads-yo
 - the same `go vet` analyzers and modernizers as you type, with quick fixes;
 - inlay hints for parameter names and types.
 
-Set your editor to **format on save**. Then you never think about formatting again, and CI never fails on it.
+Set your editor to **format on save**. Then you do not need to think about formatting, and CI does not fail on it.
 
 ## One entry point: `make pr`
 
@@ -572,9 +572,9 @@ make help
     **Rule:** `make pr` (or `mise run check`) runs exactly what CI runs. CI calls the same targets
     or the same commands with the same versions.
 
-    **Why:** "push and wait 10 minutes to see if CI likes it" is slow and frustrating. When the
-    local command is the CI command, a green `make pr` means a green PR, and a red CI can always
-    be reproduced on a laptop.
+    **Why:** pushing and waiting 10 minutes for the CI result is slow. When the local command is
+    the CI command, a passing `make pr` means a passing PR, and a CI failure can always be
+    reproduced on a laptop.
 
 ## The CI pipeline
 
@@ -647,10 +647,10 @@ Why each part is there:
 ## Traps
 
 - **Different tool versions locally and in CI.** golangci-lint 2.10 on your laptop, 2.15 in CI: different findings. Pin the version in one place (`mise.toml`, `go.mod` `tool`, or the CI file) and use it everywhere.
-- **`default: all` in the linter config.** Every golangci-lint upgrade can turn the build red with dozens of new linters. Enable linters explicitly.
+- **`default: all` in the linter config.** Every golangci-lint upgrade can fail the build with dozens of new linters. Enable linters explicitly.
 - **Bare `//nolint`.** Silences everything on that line, forever, with no explanation. Require a linter name and a reason.
 - **Skipping `-race` because it is slow.** Run it in CI at least. Data races are the hardest bugs to find in production.
-- **A CI that is only green "most of the time".** Flaky tests teach the team to press "re-run". Fix or quarantine flaky tests immediately; `-shuffle=on` and `-race` help to find why.
+- **A CI that passes only "most of the time".** Flaky tests (tests that sometimes pass and sometimes fail without a code change) teach the team to press "re-run". Fix or quarantine flaky tests immediately; `-shuffle=on` and `-race` help to find why.
 
 ## Check yourself
 
@@ -690,4 +690,4 @@ Why each part is there:
 - One command (`make pr`) runs locally exactly what CI runs.
 - CI: least privileges, a timeout, cached builds, fast checks first, and a weekly vulnerability scan.
 
-This finishes Part 1. Your workshop is ready. Next, the language itself: [Basics](basics.md).
+This finishes Part 1. Your tools are set up. Next, the language itself: [Basics](basics.md).

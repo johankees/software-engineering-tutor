@@ -2,15 +2,15 @@
 
 ## Why care?
 
-Here is a real kind of bug. A counter of type `int8` counts how many retries a job did. It reaches 127. One more retry, and the counter says **-128**. The job now thinks it has a negative number of retries, and the retry logic goes crazy.
+Here is a common kind of bug. A counter of type `int8` counts how many retries a job did. It reaches 127. One more retry, and the counter says **-128**. The job now thinks it has a negative number of retries, and the retry logic stops working correctly.
 
 Nothing crashed. No error was printed. The computer did exactly what it was told. To understand _why_, you need to know how numbers are stored.
 
 ## The idea: everything is bits
 
-A **bit** is one tiny switch. It is `0` or `1`. That is all a computer can store.
+A **bit** is the smallest unit of data. It is `0` or `1`. All data in a computer is stored as bits.
 
-One bit is not much. So we group them:
+One bit holds very little, so we group bits:
 
 - **8 bits = 1 byte.** The byte is the smallest unit that has its own address in memory.
 - 2 bytes = 16 bits, 4 bytes = 32 bits, 8 bytes = 64 bits. A "64-bit CPU" works on 64 bits at once.
@@ -22,9 +22,9 @@ The bits themselves have **no meaning**. The byte `01000001` can be:
 - part of a pixel color,
 - part of a machine instruction.
 
-The meaning comes only from the code that reads it. Keep this in mind for the whole chapter: **bits + a rule for reading them = data.**
+The meaning comes only from the code that reads it. This rule applies to the whole chapter: **bits + a rule for reading them = data.**
 
-## Binary: counting with only two fingers
+## Binary: base 2
 
 In normal (decimal) numbers, each position is worth 10 times the position on its right: ones, tens, hundreds.
 
@@ -52,16 +52,16 @@ With `n` bits you can make 2ⁿ different patterns:
 
 ## Hexadecimal: binary for humans
 
-Long rows of 0 and 1 are hard to read. **Hexadecimal** (hex, base 16) is the fix. It uses the digits `0-9` and then `A-F` for 10 to 15.
+Long rows of 0 and 1 are hard to read. **Hexadecimal** (hex, base 16) is easier to read. It uses the digits `0-9` and then `A-F` for 10 to 15.
 
-The trick: **one hex digit = exactly 4 bits.** So one byte is always exactly two hex digits.
+The key fact: **one hex digit = exactly 4 bits.** So one byte is always exactly two hex digits.
 
 ```text
 binary:  1100 1010
 hex:        C    A     → 0xCA = 202
 ```
 
-This is why hex is everywhere: memory addresses, colors (`#FF8800`), hashes, UUIDs, byte dumps. It is not a different kind of number. It is just a short way to write bits.
+This is why hex is everywhere: memory addresses, colors (`#FF8800`), hashes, UUIDs, byte dumps. It is not a different kind of number. It is a short way to write bits.
 
 ## Negative numbers: two's complement
 
@@ -85,13 +85,13 @@ flip 1111 1010
  +1  1111 1011  = -5
 ```
 
-Why this strange system? Because the CPU can use **the same adding circuit** for signed and unsigned numbers. `5 + (-5)` in bits is `00000101 + 11111011 = 1_00000000`. The extra ninth bit falls off the end, and you get `0`. No special case. Cheap and fast hardware.
+Why use this system? Because the CPU can use **the same adding circuit** for signed and unsigned numbers. `5 + (-5)` in bits is `00000101 + 11111011 = 1_00000000`. The extra ninth bit falls off the end, and you get `0`. There is no special case, so the hardware is cheap and fast.
 
-## Overflow: the odometer effect
+## Overflow: wrap-around
 
-Think of an old car odometer with 3 digits. After 999 comes 000. The number "wraps around".
+A fixed-size integer has a fixed number of bits. When a result needs more bits than the type has, the extra high bits are lost, and the value "wraps around" to the other end of the range. A 3-digit counter does the same: after 999 comes 000.
 
-Fixed-size integers do the same. This is our retry bug:
+This is our retry bug:
 
 ```text
 int8:   0111 1111  (127)
@@ -187,7 +187,7 @@ func main() {
 
 ## Floating point: why 0.1 + 0.2 is not 0.3
 
-Integers are exact. Fractions are a different story. Go's `float64` uses the **IEEE 754** standard. A float64 is 64 bits split in three parts:
+Integers are exact. Fractions are not. Go's `float64` uses the **IEEE 754** standard. A float64 is 64 bits split in three parts:
 
 ```text
 | sign (1 bit) | exponent (11 bits) | fraction (52 bits) |
@@ -208,7 +208,7 @@ false 0.30000000000000004
 true
 ```
 
-Wait, why is the second line `true`? Because `0.1+0.2` written with constants is computed by the **compiler** with exact, very high precision math. Only when values go into `float64` variables do you get the real hardware behavior. This difference surprises many Go developers.
+The second line is `true` because `0.1+0.2` written with constants is computed by the **compiler** with exact, very high precision math. Only when values go into `float64` variables do you get the real hardware behavior. This difference surprises many Go developers.
 
 !!! danger "Never use floats for money"
 

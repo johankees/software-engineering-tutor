@@ -2,7 +2,7 @@
 
 ## Why care?
 
-It is 3 a.m. Your phone rings. The orders service returns `500 Internal Server Error` for 4% of requests. You open the logs and find this:
+An orders service returns `500 Internal Server Error` for 4% of requests. The logs show this:
 
 ```text
 ERROR not found
@@ -11,9 +11,9 @@ ERROR failed to get order: not found
 ERROR error: not found
 ```
 
-Four log lines for one failed request. None of them says _which_ order, _which_ layer, or _why_. And worse: "not found" should never be a 500. It should be a `404`, and nobody should be woken up for it.
+Four log lines for one failed request. None of them says _which_ order, _which_ layer, or _why_. Also, "not found" should never be a 500. It should be a `404`, and it should not trigger an alert.
 
-Nothing here is a bug in one line of code. It is a missing **error strategy**. This page teaches Go's error model from the ground up, and ends with a strategy for a whole service that gives you one clear log line, the right HTTP status, and no 3 a.m. calls for a missing order.
+Nothing here is a bug in one line of code. It is a missing **error strategy**. This page teaches Go's error model from the ground up, and ends with a strategy for a whole service that gives you one clear log line, the right HTTP status, and no alerts for a missing order.
 
 ## The idea: an error is just a value
 
@@ -33,7 +33,7 @@ That is the whole model. The function tells you "this can fail" in its signature
 
 ### What is `error`?
 
-`error` is not magic. It is a tiny interface, built into the language:
+`error` is a small interface, built into the language:
 
 ```go
 type error interface {
@@ -53,7 +53,7 @@ Any type with an `Error() string` method **is** an error. `nil` means "no error"
 
 ## Why Go chose values over exceptions
 
-This is the most criticized decision in Go. "So much `if err != nil`!" Here is why the designers still chose it, and why most teams who use Go for some years agree.
+This is the most criticized decision in Go. The common complaint is that code has too many `if err != nil` checks. Here is why the designers still chose it, and why most teams who use Go for some years agree.
 
 **1. You can see every place where the code can fail.** With exceptions, any function call _might_ jump away. When you read a 30-line Java method, you cannot tell which lines can throw. In Go, every failure point has an `if err != nil` right under it. The "unhappy path" is as visible as the happy path. In a service where failure handling is half the work, that is a feature.
 
@@ -144,7 +144,7 @@ When you get an error, you have exactly three good options:
 | **Handle it**                 | You can recover: retry, use a default, try another way | Cache miss → read from the database           |
 | **Log it and stop it**        | You are at the top: the HTTP handler, `main`, a worker | Write a 500 response and one log line         |
 
-And one **bad** option: **log it and also return it.** Then the caller logs it again, and its caller again. That is how one failure becomes four log lines at 3 a.m.
+And one **bad** option: **log it and also return it.** Then the caller logs it again, and its caller again. That is how one failure becomes four log lines.
 
 !!! abstract "Convention: handle an error once"
 
@@ -357,7 +357,7 @@ Now any error type from any package can say "I'm a timeout", without importing `
 
 Start with the simplest. Every sentinel and every exported error type is a **promise** you must keep for as long as the package exists.
 
-### Bonus: make a type match a sentinel
+### Make a type match a sentinel
 
 You can have both: rich details _and_ a simple check. Give the type an `Is` method:
 
@@ -370,7 +370,7 @@ Now an HTTP layer can just ask `errors.Is(err, order.ErrInvalid)`, while a UI la
 
 ## Many errors at once: `errors.Join`
 
-Validation should report **all** problems, not only the first. A user fixing one field, resubmitting, then hearing about the next field, will hate your API. `errors.Join` combines errors into one:
+Validation should report **all** problems, not only the first. If the API reports one problem at a time, the user must fix one field, resubmit, and only then learn about the next field. `errors.Join` combines errors into one:
 
 ```go
 func validateItem(i int, it Item) error {
@@ -407,7 +407,7 @@ errors.As found: items[1].sku
 <nil>
 ```
 
-Two details make this pleasant: `errors.Join` **skips `nil` values** (so you can append every result without checking), and it **returns `nil` if all inputs are `nil`**. The joined messages are separated by newlines. `errors.AsType` finds the first match in the tree.
+Two details make this easy to use: `errors.Join` **skips `nil` values** (so you can append every result without checking), and it **returns `nil` if all inputs are `nil`**. The joined messages are separated by newlines. `errors.AsType` finds the first match in the tree.
 
 ## Errors and `defer`: don't lose the `Close` error
 
@@ -452,7 +452,7 @@ The rule is simple:
     **Why:** a panic in a library kills the caller's whole program, maybe a server with 10,000 open connections.
     The caller cannot see from the signature that it can happen. Panic only for real programmer bugs, inside your own code.
 
-### The `Must` exception
+### The `Must` pattern
 
 There is one accepted pattern: `MustXxx` functions that panic on error, used **only at program start** with constant input:
 
@@ -494,7 +494,7 @@ If this panics, it panics on startup, in every test run, every time. You will se
     *main.ValidationError true
     ```
 
-    The quantity is valid, but `err != nil`! An interface value is two words: a **type** and a **pointer**.
+    The quantity is valid, but `err != nil`. An interface value is two words: a **type** and a **pointer**.
     Here the type is `*ValidationError` and the pointer is nil. An interface is only `nil` when **both** are nil.
     (`go vet` does not catch this; `nilnil`/`nilerr` linters catch some cases.) **Fix:** always `return nil`
     explicitly for "no error", and never return a concrete error pointer type from a function whose result is `error`.
@@ -615,7 +615,7 @@ level=ERROR msg="request failed" path=/orders/0195d0f8-5f6b-7c2a-9d3e-1a2b3c4d5e
 db down  -> 500 internal error
 ```
 
-Compare that with the 3 a.m. logs from the start of the page:
+Compare that with the logs from the start of the page:
 
 - **One** log line per failed request, written at the top.
 - The log has the **full chain**: which use case, which query, which ID, which host.

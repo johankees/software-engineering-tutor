@@ -2,7 +2,7 @@
 
 ## Why care?
 
-Four stories from real teams:
+Four problems from real teams:
 
 - "Our service writes its state to `state.json`. After a power cut, the file was **empty**. Zero bytes."
 - "The disk has 60 GB free, but every write fails with `No space left on device`."
@@ -13,14 +13,15 @@ Each one has a short answer, and all four answers live in the kernel, not in you
 
 The page before this one, [File descriptors](file-descriptors.md), showed the numbers your process uses to talk to open files. Here we look at what those numbers point to.
 
-## The idea: a library with a card catalogue
+## The idea: data, inodes and names are separate
 
-Think of a filesystem as an old library.
+A filesystem keeps three kinds of things apart:
 
-- The **books** are the data blocks on the disk. Just bytes.
-- Each book has one **index card** in the catalogue: its size, owner, permissions, dates, and the shelf positions of its pages. That card is the **inode**. The card has a number, the **inode number**.
-- The **name** of a book is not on the card. Names live in **directories**, which are just lists: "name → card number".
-- The **reading room** is the **page cache**: copies of pages that people read recently, kept on a table in RAM, so the next reader doesn't need to walk to the shelf.
+- The **data blocks** on the disk hold the file's bytes.
+- Each file has one **inode**: a small record with the size, owner, permissions, times, and the list of data blocks. Each inode has a number, the **inode number**.
+- The **name** of a file is not in the inode. Names live in **directories**, which are lists of "name → inode number".
+
+On top of this, the kernel keeps recently used file pages in RAM. This is the **page cache**. The next read of the same pages does not need the disk.
 
 ```mermaid
 flowchart LR
@@ -35,7 +36,7 @@ flowchart LR
     I1 --> B["data blocks on disk"]
 ```
 
-Three rules follow from this picture, and most of this page is just these rules at work:
+Three rules follow from this picture. Most of this page explains them in more detail:
 
 1. **A file is an inode, not a name.** One inode can have many names (hard links). A name can point to a name (symlink).
 2. **A directory is a small file that maps names to inode numbers.** Renaming a file changes only the directory. The data does not move.
@@ -62,11 +63,11 @@ Read it line by line:
 
 - **Size: 12** is the number of bytes. **Blocks: 8** is the space really used, counted in 512-byte units: 8 × 512 = 4096 bytes. The filesystem hands out space in 4 KiB blocks (`IO Block: 4096`), so even 12 bytes take 4 KiB.
 - **Device: 8,32** is the disk (major 8, minor 32 = `/dev/sdc` here). An inode number is unique only **inside one filesystem**. The pair (device, inode) identifies a file on the machine.
-- **Inode: 439257** is the card number. **Links: 1** says how many directory entries point to it.
+- **Inode: 439257** is the inode number. **Links: 1** says how many directory entries point to it.
 - **Access** (0644) is the permission bits, then owner and group as numbers. The inode stores numbers; `you` is looked up in `/etc/passwd` for display.
 - Four times: **Access** (last read, often updated lazily, see `relatime` below), **Modify** (content changed), **Change** (the _inode_ changed: content, permissions, owner or link count), **Birth** (created). There is no "rename time": a rename changes the directory, not the file.
 
-Notice what is **not** in the inode: the name `a.txt`. Let's prove it.
+The name `a.txt` is **not** in the inode. The next example shows this.
 
 ### Hard links and symlinks
 
@@ -182,7 +183,7 @@ $ ls -fi d
 439260 ..
 ```
 
-`.` is an entry pointing to the directory itself (439261), and `..` points to the parent. They are real entries, which explains the strange link count of a directory:
+`.` is an entry pointing to the directory itself (439261), and `..` points to the parent. They are real entries, which explains the link count of a directory:
 
 ```console
 $ ls -lid d
@@ -197,7 +198,7 @@ Because a directory is "a file of names", its **permissions are about names**, n
 - `w`: you may **add, remove and rename** names.
 - `x`: you may **use** names to reach inodes (`cd`, open a file inside).
 
-This gives two surprises:
+This has two results that are easy to miss:
 
 ```console
 $ chmod 444 d/x
@@ -223,7 +224,7 @@ Filesystem       Inodes  IUsed    IFree IUse% Mounted on
 none            2038058      1  2038057    1% /dev/shm
 ```
 
-Millions of tiny files (cache entries, session files, mail queues) can use every inode while bytes are still free. Here is the "60 GB free, but no space" story, in miniature. A user namespace lets us mount a small `tmpfs` without root (more about that in [Namespaces and cgroups](namespaces-and-cgroups.md)):
+Millions of tiny files (cache entries, session files, mail queues) can use every inode while bytes are still free. Here is the "60 GB free, but no space" problem, on a small scale. A user namespace lets us mount a small `tmpfs` without root (more about that in [Namespaces and cgroups](namespaces-and-cgroups.md)):
 
 ```console
 $ unshare -Urm sh -c '
@@ -339,7 +340,7 @@ cat big.bin > /dev/null  0.00s user 0.07s system 96% cpu 0.077 total
 
 Cold: 0.84 s. Warm: 0.08–0.12 s. **Ten times faster**, and the code did not change. Also look at the CPU column: the cold read was 49% CPU because `cat` spent half its time _waiting for the disk_. The warm read is 96% CPU: pure memory copying.
 
-That is the "first request after deploy is slow" story. A new pod starts with a cold cache for its binary, its config, its templates and (worse) its database files. Postgres, Elasticsearch and Kafka all rely on the page cache, which is why you should leave them free RAM rather than give it all to their heap.
+That explains the "first request after deploy is slow" problem. A new pod starts with a cold cache for its binary, its config, its templates and (worse) its database files. Postgres, Elasticsearch and Kafka all rely on the page cache, which is why you should leave them free RAM rather than give it all to their heap.
 
 !!! note "This machine is WSL2"
 
@@ -388,9 +389,9 @@ So how do you make a write durable? You ask for it:
 
 - **`fsync(fd)`** blocks until the file's dirty data **and** its inode (size, times) are on stable storage, and the disk has been told to flush its own cache. In Go: `(*os.File).Sync()`.
 - **`fdatasync(fd)`** is the same, but skips inode fields that are not needed to read the data back (like modification time). Go has it only as `syscall.Fdatasync`.
-- **`sync`** (the command or `syscall.Sync`) flushes everything on the machine. Too big a hammer for a service.
+- **`sync`** (the command or `syscall.Sync`) flushes everything on the machine. That is far more than a service needs.
 
-But `fsync` alone does not solve the empty `state.json` story. `os.WriteFile` opens the file with `O_TRUNC`: it **first cuts the file to zero bytes**, then writes. Between those two steps, the file is empty or half-written, for readers and for crashes. You can see it without a crash. One goroutine rewrites a 1 MiB file in a loop; the main goroutine reads it for one second and counts reads that were not 1 MiB:
+But `fsync` alone does not solve the empty `state.json` problem. `os.WriteFile` opens the file with `O_TRUNC`: it **first cuts the file to zero bytes**, then writes. Between those two steps, the file is empty or half-written, for readers and for crashes. You can see it without a crash. One goroutine rewrites a 1 MiB file in a loop; the main goroutine reads it for one second and counts reads that were not 1 MiB:
 
 ```go
 // Command torn shows what a concurrent reader sees while a file is rewritten.
@@ -448,7 +449,7 @@ Rewriting in place: **99.7% of reads saw a truncated file**. Writing a temp file
 
 ### The full pattern
 
-`rename` is atomic for **readers**. To be atomic for **crashes** too, each step must reach the disk in order. The classic recipe:
+`rename` is atomic for **readers**. To be atomic for **crashes** too, each step must reach the disk in order. The standard steps:
 
 1. Create a temp file **in the same directory** (same filesystem; `rename` across filesystems fails with `EXDEV`).
 2. Write the data, then **`fsync` the temp file**. Now the new inode and its data are on disk.
@@ -528,13 +529,13 @@ os.WriteFile:    661µs
 writeFileAtomic: 32.733ms
 ```
 
-About **50× slower**, nearly all of it in the two `fsync` calls waiting for the disk. That is why databases batch many changes into one `fsync` (a "group commit"), and why you should not `fsync` on every HTTP request unless you really need that guarantee. For a config or state file written now and then, 30 ms is nothing. For a log written 10,000 times a second, it is everything.
+About **50× slower**, nearly all of it in the two `fsync` calls waiting for the disk. That is why databases batch many changes into one `fsync` (a "group commit"), and why you should not `fsync` on every HTTP request unless you really need that guarantee. For a config or state file written now and then, 30 ms does not matter. For a log written 10,000 times a second, it is far too slow.
 
 !!! warning "When fsync fails, the data is gone"
 
     If `fsync` returns an error (a disk error, a full thin-provisioned volume), Linux may already
     have marked the dirty pages clean. A second `fsync` can then return **success** while the data
-    was never written. PostgreSQL learned this in 2018 ("fsyncgate") and now crashes on any `fsync`
+    was never written. PostgreSQL found this in 2018 ("fsyncgate") and now crashes on any `fsync`
     error and recovers from its log. Do the same: treat an `fsync` error as "this write is lost",
     never as "retry later".
 
@@ -557,7 +558,7 @@ $ grep -E ' / / | /proc | /sys ' /proc/self/mountinfo
 114 78 0:62 / /proc rw,nosuid,nodev,noexec,noatime shared:20 - proc proc rw
 ```
 
-Take the first line apart:
+The fields of the first line:
 
 | Field           | Value                         | Meaning                                                                |
 | --------------- | ----------------------------- | ---------------------------------------------------------------------- |
@@ -629,7 +630,7 @@ flowchart TB
     M --- U --- L
 ```
 
-Since Linux 5.11, an unprivileged user can mount overlayfs inside a user + mount namespace. Kernel 5.15 here allows it, so let's build one for real. We put everything on a `tmpfs` at `/mnt` (to keep paths short) and add a fake "image":
+Since Linux 5.11, an unprivileged user can mount overlayfs inside a user + mount namespace. Kernel 5.15 here allows it, so the next example builds one. We put everything on a `tmpfs` at `/mnt` (to keep paths short) and add a fake "image":
 
 ```console
 $ unshare -Urm sh
@@ -643,7 +644,7 @@ app.conf
 delete-me
 ```
 
-The merged view shows the lower layer. Now behave like a container: change a file, delete a file, add a file.
+The merged view shows the lower layer. Now do what a container does: change a file, delete a file, add a file.
 
 ```console
 # echo "changed in container" > merged/app.conf
@@ -669,7 +670,7 @@ Three mechanisms, all visible in `upper`:
 2. **Copy-up.** The first write to a lower file copies the **whole file** into upper, then changes the copy. `upper/app.conf` is 21 bytes: the new content.
 3. **Whiteouts.** You cannot delete from a read-only layer. So overlayfs puts a **character device with number 0,0** in upper, named like the deleted file. It means "hide this name".
 
-"Whole file" in point 2 is the big-file story from the start of the page. A fresh overlay, this time with a 512 MiB file in the lower layer:
+"Whole file" in point 2 explains the big-file problem from the start of the page. A fresh overlay, this time with a 512 MiB file in the lower layer:
 
 ```console
 $ unshare -Urm sh
@@ -767,7 +768,7 @@ $ cat /sys/class/net/eth0/mtu
 1500
 ```
 
-The disk `sdc` uses no I/O scheduler (`[none]`), claims to be rotational (a virtual disk often does), and has 2147483648 sectors of 512 bytes: 1 TiB. Tools like `lsblk`, `ip link` and `udev` are mostly pretty printers for `/sys`. And `/sys/fs/cgroup` is where cgroups live; on this WSL2 machine it's a hybrid of v1 controllers and a `cgroup2` mount at `/sys/fs/cgroup/unified`. See [Namespaces and cgroups](namespaces-and-cgroups.md).
+The disk `sdc` uses no I/O scheduler (`[none]`), claims to be rotational (a virtual disk often does), and has 2147483648 sectors of 512 bytes: 1 TiB. Tools like `lsblk`, `ip link` and `udev` mostly read and format what is in `/sys`. And `/sys/fs/cgroup` is where cgroups live; on this WSL2 machine it's a hybrid of v1 controllers and a `cgroup2` mount at `/sys/fs/cgroup/unified`. See [Namespaces and cgroups](namespaces-and-cgroups.md).
 
 ## Try it
 

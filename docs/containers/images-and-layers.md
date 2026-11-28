@@ -11,19 +11,19 @@ Four things that go wrong with images, and all four make sense once you have ope
 
 An image is not a disk file and not a black box. It is a handful of JSON documents and tarballs, each named by the SHA-256 hash of its bytes. On this page you take the `ordersd` image apart, check every hash yourself with `sha256sum`, and follow a tag through a real registry to the bytes behind it.
 
-## The idea: a parcel with a packing list
+## The idea: content-addressed storage
 
-Think of a parcel service where every box is labelled with a **fingerprint of its contents**, not with a name.
+An image is stored as a set of objects. Each object is named by a **hash of its contents** (its fingerprint), not by a chosen name. This is called **content-addressed storage**.
 
-- The **layers** are the boxes: each one is a tarball of files.
-- The **config** is the instruction sheet: which program to run, as which user, and the fingerprints of the unpacked boxes.
-- The **manifest** is the packing list: "one instruction sheet with fingerprint X, then boxes A, B, C, in this order".
-- An **index** is a list of packing lists, one per kind of machine: "for amd64 use list P, for arm64 use list Q".
-- A **tag** (`nonroot`, `dev`, `latest`) is a sticky note on the counter that says "today, the parcel called `nonroot` is packing list P". Anyone can move the sticky note.
+- A **layer** is a tarball of files.
+- The **config** is a JSON document: which program to run, as which user, and the hashes of the unpacked layers.
+- The **manifest** is a JSON list: "the config with hash X, then layers A, B, C, in this order".
+- An **index** is a list of manifests, one per kind of machine: "for amd64 use manifest P, for arm64 use manifest Q".
+- A **tag** (`nonroot`, `dev`, `latest`) is a name that points to one manifest or index today: "`nonroot` is manifest P". Anyone with push access can move it.
 
-Because every box is named by its fingerprint, you can always check that you got what the list says. And two parcels that contain the same box share it: it is stored and sent once.
+Because every object is named by its hash, you can always check that you received what the manifest lists. Two images that contain the same layer share it: it is stored and sent once.
 
-If this sounds like Git, it is the same idea. A Git commit points to a tree, which points to blobs, all named by their hash ([Git objects](../git/objects.md)). A branch is a movable name for a commit, like a tag here.
+Git uses the same idea. A Git commit points to a tree, which points to blobs, all named by their hash ([Git objects](../git/objects.md)). A branch is a movable name for a commit, like a tag here.
 
 ```mermaid
 flowchart LR
@@ -94,7 +94,7 @@ sha256:92aefe8829eeb7301e322b3d32c49cab2a0b54cb13fe6d71be3d0d1b38ab56e8
 
 `CONTENT SIZE` is the compressed blobs (what a pull downloads). `DISK USAGE` adds the unpacked layers, which is what a container runs from. `U` means a container is using it.
 
-### The manifest: the packing list
+### The manifest: the list of parts
 
 ```console
 $ cd blobs/sha256
@@ -141,7 +141,7 @@ $ jq -r '.layers[] | "\(.size)\t\(.mediaType | sub("application/";""))"' 92aefe8
 
 Twelve OCI layers from the distroless base, and our own layer last, with a **Docker** media type. The old builder on this machine writes the older Docker type for new layers, and keeps the base's layers exactly as they were (it cannot change their type without changing their bytes, and so their digests). Every runtime accepts both.
 
-Now the key move. Is the manifest really the thing its name says?
+Now check the most important property: is the manifest's name really the hash of its bytes?
 
 ```console
 $ sha256sum 92aefe8829eeb7301e322b3d32c49cab2a0b54cb13fe6d71be3d0d1b38ab56e8
@@ -152,7 +152,7 @@ $ wc -c < 92aefe8829eeb7301e322b3d32c49cab2a0b54cb13fe6d71be3d0d1b38ab56e8
 
 The hash of the file **is** its name, and the size matches `"size": 3115` in `index.json`. Change one space in that JSON and it becomes a different manifest with a different digest. That is why a digest is a promise and a tag is not.
 
-### The config: the instruction sheet
+### The config: how to run the image
 
 ```console
 $ sha256sum b10af4102acf1b11aa59ba7a874f40e626c7df03d089f29687c3023bb22609a7; wc -c < b10af4102acf1b11aa59ba7a874f40e626c7df03d089f29687c3023bb22609a7
@@ -229,7 +229,7 @@ $ jq . b10af4102acf1b11aa59ba7a874f40e626c7df03d089f29687c3023bb22609a7
 - **`architecture` and `os`**: which machine this image is for. The runtime refuses (or emulates) a mismatch.
 - **`config`**: what [What a container is](what-a-container-is.md) saw become the process: user, environment, entrypoint, working directory. `EXPOSE` is only a note here; it opens nothing.
 - **`history`**: one line per Dockerfile step. Steps like `USER` and `ENTRYPOINT` change only this JSON, so they are `empty_layer: true` and make no tarball. The distroless steps say `bazel build` and were made on `1970-01-01`: Google builds these images with Bazel, with every timestamp set to zero, so the same inputs always give the same bytes (more in [Building images](building-images.md)). The `created` times of our own steps change on every build, which is one reason a rebuild gives a new digest.
-- **`rootfs.diff_ids`**: one hash per layer, but **not** the same hashes as in the manifest. Why two?
+- **`rootfs.diff_ids`**: one hash per layer, but **not** the same hashes as in the manifest. The next section explains why there are two.
 
 ### Layers: digest vs diff ID
 
@@ -318,7 +318,7 @@ nobody:x:65534:65534:nobody:/nonexistent:/sbin/nologin
 nonroot:x:65532:65532:nonroot:/home/nonroot:/sbin/nologin
 ```
 
-So that is where `nonroot` = 65532 and `HOME=/home/nonroot` came from. No magic: `USER nonroot` in the Dockerfile works because a layer put this line in `/etc/passwd`, and the runtime reads the file from the merged image when it starts the container.
+So that is where `nonroot` = 65532 and `HOME=/home/nonroot` came from. `USER nonroot` in the Dockerfile works because a layer put this line in `/etc/passwd`, and the runtime reads the file from the merged image when it starts the container.
 
 The distroless image is twelve small layers of exactly the files a static Go binary may need: CA certificates for TLS, time zones, `/etc/passwd`, `/tmp`. No shell, no package manager, no libc. [Building images](building-images.md) compares it with `scratch` and `alpine`.
 
@@ -533,7 +533,7 @@ $ crane export --platform linux/amd64 gcr.io/distroless/static-debian12:nonroot 
 1307
 ```
 
-1436 entries, and 1307 of them are time zone data. That is the honest size of "distroless": a few certificates, a few `/etc` files, and the world's time zones.
+1436 entries, and 1307 of them are time zone data. That is the real content of "distroless": a few certificates, a few `/etc` files, and the time zone database.
 
 ## Try it
 

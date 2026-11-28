@@ -9,7 +9,7 @@ Your team writes a small tool to create orders from the terminal. It works on yo
 - A script checks `if orderctl get $ID; then ...`. The tool exits with `0` even when the order does not exist.
 - Nobody can test it, because all the logic is inside `main()`, which calls `os.Exit` in ten places.
 
-None of these are hard problems. But each one makes a tool that people **cannot trust**. This page builds `orderctl`, the command-line client of the orders project, and explains every decision so your next CLI is right from day one.
+None of these are hard problems. But each one makes a tool that people **cannot trust**. This page builds `orderctl`, the command-line client of the orders project, and explains every decision so your next CLI is right from the start.
 
 All code on this page is real. It lives in `examples/orders/` in this repository, and CI builds, lints and tests it.
 
@@ -94,7 +94,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 
 ### Under the hood: why `os.Exit` skips `defer`
 
-`defer` is not magic. The compiler arranges for deferred calls to run when the **function returns**. `os.Exit` never returns: it makes the `exit_group` system call (see [Processes, threads and system calls](../fundamentals/processes-and-threads.md)) and the kernel destroys the process on the spot. There is no "return" for the deferred calls to hook into.
+The compiler arranges for deferred calls to run when the **function returns**. `os.Exit` never returns: it makes the `exit_group` system call (see [Processes, threads and system calls](../fundamentals/processes-and-threads.md)) and the kernel destroys the process on the spot. There is no "return" for the deferred calls to hook into.
 
 The same is true for `log.Fatal`, which is just `log.Print` plus `os.Exit(1)`. That is why enterprise Go code avoids `log.Fatal` outside `main`.
 
@@ -130,7 +130,7 @@ Line by line:
 - **`flag.ContinueOnError`.** The global flag set uses `ExitOnError`: on a bad flag it calls `os.Exit(2)` _for you_, deep inside a library. With `ContinueOnError`, `Parse` returns an error and **we** decide what happens.
 - **`fs.SetOutput(stderr)`.** Usage text goes to the writer we were given. In tests, that is a buffer we can check.
 - **Backticks in the help text.** In ``"orders service `URL` (env ORDERS_SERVER)"`` the word between backticks becomes the placeholder name, so `PrintDefaults` shows `-server URL` instead of the generic `-server string`.
-- **`cmp.Or(a, b)`** returns the first value that is not the zero value. Here: the environment variable if set, else the default. It saves an `if` and reads like a sentence.
+- **`cmp.Or(a, b)`** returns the first value that is not the zero value. Here: the environment variable if set, else the default. It replaces an `if` statement.
 - **`time.Duration` flags.** `fs.DurationVar` parses `10s`, `1m30s`, `250ms`. Never take a timeout as a bare integer: is `-timeout 10` seconds or milliseconds?
 
 The result, from a real run:
@@ -154,7 +154,7 @@ Global flags:
     	timeout for the whole command (default 10s)
 ```
 
-### Subcommands are just more flag sets
+### Subcommands are more flag sets
 
 After the global flags, `fs.Arg(0)` is the command name and the rest belongs to it:
 
@@ -223,7 +223,7 @@ Notice the CLI does **not** check "quantity must be at least 1". It only checks 
 
     `1250` means 12.50. Money is always an integer count of the smallest unit. A `float64` cannot store 0.10 exactly (see [Bits, bytes and numbers](../fundamentals/bits-and-bytes.md)), and tiny rounding errors in money become real bugs in invoices.
 
-## Configuration: flags beat environment beat defaults
+## Configuration: flags, then environment, then defaults
 
 `orderctl` finds its server in three places, strongest first:
 
@@ -231,7 +231,7 @@ Notice the CLI does **not** check "quantity must be at least 1". It only checks 
 2. The `ORDERS_SERVER` environment variable.
 3. The built-in default `http://localhost:8080`.
 
-The trick is small: the environment value becomes the flag's **default**. If the user passes `-server`, it overwrites that default. The service uses the same rule with more settings; the [service page](services.md) shows its `config` package.
+The mechanism is simple: the environment value becomes the flag's **default**. If the user passes `-server`, it overwrites that default. The service uses the same rule with more settings; the [service page](services.md) shows its `config` package.
 
 !!! abstract "Convention: config precedence is flag > env > file > default"
 
@@ -369,7 +369,7 @@ func exitCode(err error) int {
 
 `errors.AsType` (Go 1.26) walks the chain of wrapped errors and finds a `usageError` anywhere in it. So `runGet` can return `usagef("get: %q is not a valid order ID", ...)` and `main` still exits with `2`. The [Errors](errors.md) page explains wrapping in depth.
 
-The `reported` flag solves a small annoyance: the `flag` package already prints "flag provided but not defined: -verbose" before returning the error. Without `reported`, the user would see the same line twice.
+The `reported` flag solves a small problem: the `flag` package already prints "flag provided but not defined: -verbose" before returning the error. Without `reported`, the user would see the same line twice.
 
 Real runs:
 
@@ -394,7 +394,7 @@ exit=0
 
     **Rule:** asking for help is success. A wrong command line is `2` (the code the `flag` package and most Unix tools use). A runtime failure is `1`. A signal is `128 + signal number`.
 
-    **Why:** `if orderctl get "$ID"; then ...` must only enter the `then` branch when the order really exists. CI systems, `make`, `xargs` and shell scripts all make decisions from exit codes. A tool that exits `0` on failure silently lies to all of them.
+    **Why:** `if orderctl get "$ID"; then ...` must only enter the `then` branch when the order really exists. CI systems, `make`, `xargs` and shell scripts all make decisions from exit codes. A tool that exits `0` on failure gives all of them wrong information.
 
 ## Error messages that help
 
@@ -414,7 +414,7 @@ Each layer added a few words with `fmt.Errorf("...: %w", err)`:
 | `Get "http://127.0.0.1:9999/v1/orders":` | `net/http` (a `*url.Error`)    |
 | `dial tcp ...: connection refused`       | the `net` package, from the OS |
 
-Together they form a story: _what_ the user wanted, _where_ it failed, and _why_. No stack trace needed.
+Together they say _what_ the user wanted, _where_ it failed, and _why_. No stack trace needed.
 
 !!! abstract "Convention: error strings are lowercase, without punctuation at the end"
 
@@ -426,7 +426,7 @@ Server errors carry even more: the API returns a request ID, and the client puts
 
 ## Timeouts and Ctrl-C
 
-A CLI that can hang forever is a CLI that will hang forever, in CI, at 3 a.m. `orderctl` sets one deadline for the whole command:
+If a CLI can hang forever, it will eventually do so, for example in CI. `orderctl` sets one deadline for the whole command:
 
 ```go
 	// One deadline for the whole command, and Ctrl-C cancels it too.
@@ -497,7 +497,7 @@ Every line protects against a real production problem:
 - **Drain and close the body.** Go reuses TCP connections (keep-alive) only if you read the response body to the end _and_ close it. Forget it, and every request opens a new connection: slow, and under load you run out of ports or file descriptors. The `bodyclose` linter catches a missing `Close`.
 - **`io.LimitReader`.** A broken or hostile server could send gigabytes. The limit caps what we read.
 
-### Errors that survive the network
+### Domain errors across the network
 
 When the server answers `404`, the client returns an `*APIError`. Its `Unwrap` method maps HTTP statuses back to the **domain** errors:
 
@@ -740,7 +740,7 @@ For real releases, teams often use **GoReleaser**: one config file that cross-co
 ## Recap
 
 - `main` is tiny: collect signals, args, env and streams, call `run`, map the error to an exit code.
-- Use `flag.NewFlagSet` with `ContinueOnError`. Subcommands are just more flag sets and a `switch`.
+- Use `flag.NewFlagSet` with `ContinueOnError`. Subcommands are more flag sets and a `switch`.
 - Precedence: flag > environment > default. The human typing always wins.
 - Data to stdout, messages to stderr. JSON output is a contract: give it its own struct.
 - Exit codes are API: `0` success, `1` failure, `2` usage, `130` interrupted.

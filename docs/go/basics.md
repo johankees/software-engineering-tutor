@@ -12,9 +12,9 @@ for i := 0; i < len(items); i = i + 1 {
 }
 ```
 
-It compiles. It works. And the reviewer leaves five comments. Not because it is wrong, but because it is **not how Go is written**. Every line says "this person learned another language first".
+It compiles and it works. But the reviewer leaves five comments. The code is not wrong, but it is **not how Go is written**. Every line shows habits from another language.
 
-Go is a small language. You can learn all of its syntax in a weekend. But "knowing the syntax" and "writing Go like a Go programmer" are two different things. This page teaches you both at once: every piece of syntax comes with the way it is _used_ in real code, and why.
+Go is a small language. You can learn all of its syntax in a few days. But knowing the syntax and writing Go the way experienced Go programmers do are two different things. This page teaches both: every piece of syntax comes with the way it is _used_ in real code, and why.
 
 ## The smallest real program
 
@@ -43,7 +43,7 @@ func run(args []string) error {
 }
 ```
 
-Already a lot to see:
+This short program already shows several things:
 
 - **`package main`** says "this package builds into a program". Every other package name builds into a library that other code imports.
 - **`import`** lists the packages we use. Only what we use: an unused import is a compile error.
@@ -75,7 +75,7 @@ The `:=` is called a **short variable declaration**. It declares _and_ assigns. 
 
 ### Zero values: there is no "uninitialised"
 
-In C, a new variable holds whatever garbage was in that memory. In Java, a field can be `null` and crash later. In Go, **every variable always has a value**. If you don't give one, it gets the **zero value** of its type.
+In C, a new variable holds whatever old data was in that memory. In Java, a field can be `null` and crash later. In Go, **every variable always has a value**. If you don't give one, it gets the **zero value** of its type.
 
 | Type                                                | Zero value                |
 | --------------------------------------------------- | ------------------------- |
@@ -138,7 +138,7 @@ after append: 1
 read from nil map: 0
 ```
 
-Look closely at the last two lines. A `nil` slice is fine to `append` to. A `nil` map is fine to _read_ from (you get the zero value). Go's designers made `nil` as harmless as they could. (Writing to a `nil` map still panics; see [Types and data](types-and-data.md).)
+Look at the last two lines. You can `append` to a `nil` slice. You can _read_ from a `nil` map (you get the zero value). Go's designers made `nil` as safe to use as they could. (Writing to a `nil` map still panics; see [Types and data](types-and-data.md).)
 
 !!! info "Under the hood: why zero values are cheap"
 
@@ -154,8 +154,8 @@ Look closely at the last two lines. A `nil` slice is fine to `append` to. A `nil
 
     **Why:** A type that works at its zero value can never be "used before it was set up". There is no
     `NewMutex()` to forget. It also means a struct that _contains_ such a field works at its zero value
-    too, for free. Fewer constructors, fewer ways to get it wrong. See
-    [Conventions](conventions.md#make-the-zero-value-useful) for the full story.
+    too, with no extra code. Fewer constructors means fewer ways to get it wrong. See
+    [Conventions](conventions.md#make-the-zero-value-useful) for details.
 
 ### Money is an integer
 
@@ -218,7 +218,7 @@ Output:
 4
 ```
 
-Two interesting things happened:
+Two things to note:
 
 1. Lines without `= ...` **repeat the expression above them** with the next `iota`. So `MB` is `1 << (10 * 2)`.
 2. `timeout` is an **untyped constant**. It is not an `int` yet; it is "the number 5". It becomes whatever type it is used as: `float64` in one line, `int64` in the next. Untyped constants are also computed with very high precision by the compiler: `1 << 100` does not fit in any Go integer type, but as a constant it is fine, as long as the final result fits.
@@ -264,9 +264,9 @@ The part before `;` runs first, and `err` only exists inside the `if` (and its `
 
     **Why:** Apple's famous "goto fail" bug (2014) was a C `if` without braces: a second line looked
     like it belonged to the `if`, but it ran every time, and TLS certificate checks were skipped.
-    Go removes that whole bug class. The `{` placement is because Go inserts semicolons
+    Go removes that whole class of bugs. The `{` placement is required because Go inserts semicolons
     automatically at the end of lines; a `{` on the next line would end the statement too early.
-    One rule, enforced by the compiler, and no team ever argues about it.
+    The compiler enforces this one rule, so teams do not need to discuss it.
 
 ### One loop keyword: `for`
 
@@ -282,7 +282,7 @@ for key, value := range m { }  // map: key and value
 for i, r := range "héllo" { }  // string: byte index and rune (see encodings)
 ```
 
-**Why one keyword?** Less to learn, and every loop reads the same way. The designers asked "do we need `while`?" and the answer was "no, `for` with one condition _is_ a while loop".
+**Why one keyword?** There is less to learn, and every loop reads the same way. A separate `while` is not needed, because `for` with one condition _is_ a while loop.
 
 ```go
 package main
@@ -324,13 +324,13 @@ Output:
 money received
 ```
 
-Line one: each closure prints a different `i`. Since **Go 1.22, every loop iteration has its own copy of the loop variable**. Before 1.22 this printed `3 3 3`, and that was one of the most common Go bugs in history (especially with goroutines started inside loops). If you read old code or old blog posts with `i := i` inside a loop, that was the workaround. You don't need it anymore.
+Line one: each closure prints a different `i`. Since **Go 1.22, every loop iteration has its own copy of the loop variable**. Before 1.22 this printed `3 3 3`, and that was one of the most common Go bugs (especially with goroutines started inside loops). If you read old code or old blog posts with `i := i` inside a loop, that was the workaround. You don't need it anymore.
 
 Line two: ranging over a string gives **runes**, not bytes. The index jumps from `1` to `3` because `é` takes two bytes in UTF-8. See [Encodings](../fundamentals/encodings.md).
 
 ### `switch` without fall-through
 
-- No `break` needed: a case ends by itself. (Use `fallthrough` if you really want C behaviour. You almost never do.)
+- No `break` needed: a case ends by itself. (Use `fallthrough` if you need C behaviour. This is rarely needed.)
 - One case can match many values: `case "paid", "shipped":`.
 - A `switch` with no value is a clean `if/else if` chain:
 
@@ -433,9 +433,9 @@ deferred x = 1
 
 Three rules, all visible in the output:
 
-1. Deferred calls run in **reverse order** (last in, first out), like a stack of plates. That is what you want: if you open A then B, you close B then A.
+1. Deferred calls run in **reverse order** (last in, first out). This is the order you need: if you open A then B, you close B then A.
 2. The **arguments are evaluated immediately**, at the `defer` line. That is why `x` printed `1`, not `2`.
-3. `defer trace("countdown")()` runs `trace(...)` **now** (prints "enter") and defers the function it _returns_. A neat trick, and a good test of rule 2.
+3. `defer trace("countdown")()` runs `trace(...)` **now** (prints "enter") and defers the function it _returns_. This follows directly from rule 2.
 
 !!! abstract "Convention: `defer` the cleanup right after the acquire"
 
@@ -622,8 +622,8 @@ func TotalCents(items []Item) (int64, error) {
 ??? question "4. Why does Go refuse to compile a program with an unused import?"
 
     Unused imports make builds slower (every imported package must be compiled and linked) and add
-    hidden dependencies, which matters a lot in huge codebases. Making it an error keeps every file
-    honest about what it really uses. Tools like `goimports` add and remove imports for you.
+    hidden dependencies, which matters a lot in huge codebases. Making it an error means every
+    file's imports show exactly what it uses. Tools like `goimports` add and remove imports for you.
 
 ??? question "5. Where can `defer f.Close()` lose data, and how do you fix it?"
 

@@ -12,17 +12,17 @@ Five tickets that metrics and logs alone can't close:
 
 [Metrics](metrics.md) told you **that** p99 got worse. A **trace** shows **where the time went** for one request, across every process it touched. This page adds OpenTelemetry tracing to `ordersd` and `orderctl`, sends spans to a real Jaeger, and reads them back through Jaeger's API. Then it shows how to keep the traces you need without paying for all the others.
 
-## The idea: the stamps in a passport
+## The idea: one ID that travels with the request
 
-A traveller crosses five countries. At each border, the officer stamps the passport: country, time in, time out. At the end, the passport tells the whole story of the trip, even though no officer saw more than their own border.
+A request passes through several services. Each service records its own part of the work. Together, these records describe the whole request, even though no single service saw all of it.
 
-- The **passport number** is the **trace ID**. Every stamp in this passport belongs to the same trip.
-- Each **stamp** is a **span**: one piece of work, with a name, a start, an end, and some notes (attributes).
-- Each stamp also says **which border sent you here**: the **parent span ID**. That's how the stamps form a tree, not just a list.
-- The traveller **carries the passport across each border**. Nobody phones ahead. That's **context propagation**: the trace ID travels **inside the request**, in an HTTP header called `traceparent`.
-- At the end of the day, each border office sends copies of its stamps to a central archive. That's the **exporter** sending spans to a **backend** (Jaeger, Tempo, a vendor).
+- The **trace ID** identifies one request. Every record with this ID belongs to the same request.
+- Each record is a **span**: one piece of work, with a name, a start, an end, and some notes (attributes).
+- Each span also stores the ID of the span that caused it: the **parent span ID**. That is how the spans form a tree, not just a list.
+- The trace ID travels **inside the request**, in an HTTP header called `traceparent`. No service needs to contact another to learn it. This is **context propagation**.
+- Each service sends its finished spans to a central store. The **exporter** sends them to a **backend** (Jaeger, Tempo, a vendor).
 
-If one border forgets to look at the passport and starts a new one, the story breaks into two trips. That is the fourth ticket.
+If one service ignores the incoming header and starts a new trace, the request is split into two traces. That is the fourth ticket.
 
 ```mermaid
 sequenceDiagram
@@ -61,7 +61,7 @@ Note the difference with metrics: attributes **may** carry an order ID or a cust
 
 ### The `traceparent` header
 
-The [W3C Trace Context](https://www.w3.org/TR/trace-context/) standard defines one header that every tracing system understands. Here is what `orderctl` really sends, caught with `nc -l` pretending to be the server:
+The [W3C Trace Context](https://www.w3.org/TR/trace-context/) standard defines one header that every tracing system understands. Here is what `orderctl` really sends, captured with `nc -l` acting as the server:
 
 ```text
 GET /v1/orders HTTP/1.1
@@ -199,7 +199,7 @@ srv := &http.Server{
 
 ### A span of our own: the store
 
-Library spans show HTTP. The interesting time is usually inside: the database, a call to a payment provider, a slow loop. Our demo store gets a span for every call:
+Library spans show HTTP. Most of the time is usually spent inside: the database, a call to a payment provider, a slow loop. Our demo store gets a span for every call:
 
 ```go title="cmd/ordersd/demo.go"
 var tracer = otel.Tracer("github.com/acme/orders/cmd/ordersd")
@@ -321,7 +321,7 @@ $ curl -s localhost:19686/api/v3/services
 
 ### When the span is called `GET`
 
-Our first version of this page did not have nice span names. The server span from the first run:
+Our first version of this page did not have useful span names. The server span from the first run:
 
 ```console
 $ curl -s localhost:19686/api/v3/traces/4bf92f3577b34da6a3ce929d0e0e4736 | jq -c '.result.resourceSpans[].scopeSpans[].spans[] | {name, spanId, parentSpanId, kind}'
@@ -333,7 +333,7 @@ $ curl -s localhost:19686/api/v3/traces/4bf92f3577b34da6a3ce929d0e0e4736 | jq -c
 
 Every server span was just `GET` (the third ticket). `otelhttp` names the span from `r.Pattern`, which the `ServeMux` sets **on the request it receives**. But our request-ID middleware calls `r.WithContext(ctx)`, which makes a **copy**. The mux set `Pattern` on the copy; `otelhttp`, outside, still held the original, where `Pattern` is empty.
 
-The fix is a tiny middleware **directly around the mux**, where the pattern is visible:
+The fix is a small middleware **directly around the mux**, where the pattern is visible:
 
 ```go title="internal/httpapi/tracing.go"
 // nameSpan gives the server span its route, like "GET /v1/orders/{id}".
@@ -358,7 +358,7 @@ func nameSpan(next http.Handler) http.Handler {
 return withRequestID(logRequests(logger, metrics.measure(recoverPanic(logger, nameSpan(mux)))))
 ```
 
-Don't "fix" this by naming spans after `r.URL.Path`. The span name is what backends group by, and `/v1/orders/019ac0de-...` is a new group per order: the same cardinality problem as in [Metrics](metrics.md#cardinality-the-bill-nobody-saw-coming).
+Don't "fix" this by naming spans after `r.URL.Path`. The span name is what backends group by, and `/v1/orders/019ac0de-...` is a new group per order: the same cardinality problem as in [Metrics](metrics.md#cardinality-the-cost-of-labels).
 
 ### Joining a trace someone else started
 
@@ -373,9 +373,9 @@ $ curl -s localhost:19686/api/v3/traces/4bf92f3577b34da6a3ce929d0e0e4737 | jq -c
 {"name":"GET /v1/orders/{id}","spanId":"4d671d9c9e55d580","parentSpanId":"00f067aa0ba902b7"}
 ```
 
-The server span adopted our trace ID and our span as its parent. (Jaeger adds a warning to the span, `parent span ID=00f067aa0ba902b7 is not in the trace`, because our `curl` sent no spans of its own.) That is all a gateway does: as long as every hop passes `traceparent` on, the trace survives. If one proxy in the middle strips unknown headers, or starts a fresh trace, the story breaks there.
+The server span adopted our trace ID and our span as its parent. (Jaeger adds a warning to the span, `parent span ID=00f067aa0ba902b7 is not in the trace`, because our `curl` sent no spans of its own.) That is all a gateway does: as long as every hop passes `traceparent` on, the trace survives. If one proxy in the middle strips unknown headers, or starts a new trace, the trace is split there.
 
-The flip side: **an incoming `traceparent` is input from outside**. A public client can force sampling (flag `01`) on every request, or pick trace IDs. At the edge of your system (the public gateway), start a new trace, or keep the incoming one only as a _link_. Inside, trust it.
+There is a risk: **an incoming `traceparent` is input from outside**. A public client can force sampling (flag `01`) on every request, or pick trace IDs. At the edge of your system (the public gateway), start a new trace, or keep the incoming one only as a _link_. Inside, trust it.
 
 ## Sampling: you can't keep everything
 
@@ -505,7 +505,7 @@ $ curl -s "localhost:19686/api/v3/traces?query.service_name=ordersd-tail&query.s
 ]
 ```
 
-**20 traces of 600, and exactly the 20 we wanted**: every error, every slow request, and none of the 580 boring ones. One of the kept error traces:
+**20 traces of 600, and exactly the 20 we wanted**: every error, every slow request, and none of the 580 normal ones. One of the kept error traces:
 
 ```console
 $ curl -s localhost:19686/api/v3/traces/0affde84a911228155a8200ffeec40a3 | jq -r -f spans.jq
@@ -534,7 +534,7 @@ You now have three ways into the same request:
 - **Log → trace.** Every log line carries `trace_id` (see [Structured logging](structured-logging.md)).
 - **Trace → log.** The span has the trace ID; search the logs for it to see everything the service wrote during that request.
 
-Retries are where traces shine. With `otelhttp.NewTransport`, **every attempt is its own client span** under the same parent, so a trace shows "three attempts, 2 s backoff, the third one worked" at a glance. That's also how you spot retry storms (see [Retries and idempotency](../distributed-systems/retries-and-idempotency.md)).
+Traces are especially useful for retries. With `otelhttp.NewTransport`, **every attempt is its own client span** under the same parent, so a trace shows "three attempts, 2 s backoff, the third one worked" at a glance. That's also how you spot retry storms (see [Retries and idempotency](../distributed-systems/retries-and-idempotency.md)).
 
 ## Traps
 
@@ -598,4 +598,4 @@ Retries are where traces shine. With `otelhttp.NewTransport`, **every attempt is
 - **Head sampling** decides at the start and is cheap, but keeps errors at the same rate as everything else. **Tail sampling** in a Collector keeps exactly the errors and slow traces (20 of 600 here), at the cost of shipping every span.
 - Connect the signals: `trace_id` in logs, exemplars on histograms, one span per retry attempt.
 
-Next: you can now see what users feel. Decide how much of it is acceptable, and when to wake someone up. [SLOs and alerting](slos-and-alerting.md).
+Next: you can now see what users experience. Decide how much of it is acceptable, and when to wake someone up. [SLOs and alerting](slos-and-alerting.md).

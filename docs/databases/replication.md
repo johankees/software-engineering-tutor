@@ -10,18 +10,18 @@ Five messages from the incident channel:
 - "After the failover, two servers both accepted orders for 30 seconds. Now we have orders that exist on only one of them."
 - "Deleting last year's orders took 6 hours and made the table bigger."
 
-One database server has limits: one machine can fail, and one machine can only do so much work. **Replication** keeps copies of the data on other servers, for safety and for reads. **Partitioning** splits one big table into smaller ones on the same server. **Sharding** splits the data across servers. Each one solves a real problem, and each one adds a new way to be wrong. This page builds a primary and a replica, breaks them in each of the ways above, and ends with what sharding costs.
+One database server has limits: one machine can fail, and one machine can only do so much work. **Replication** keeps copies of the data on other servers, for safety and for reads. **Partitioning** splits one big table into smaller ones on the same server. **Sharding** splits the data across servers. Each one solves a real problem, and each one adds new ways to fail. This page builds a primary and a replica, breaks them in each of the ways above, and ends with what sharding costs.
 
-## The idea: a teacher dictating
+## The idea: send the write-ahead log to other servers
 
-A teacher (the **primary**) writes in the class book, and reads every sentence aloud as she writes it. Students (the **replicas**) copy every sentence into their own books.
+One server, the **primary**, accepts writes. It sends a stream of its changes to other servers, the **replicas**, which apply the same changes to their own copy of the data.
 
-- The teacher doesn't wait for the students. She writes, reads aloud, moves on. A student who writes slowly is a few sentences **behind**. Ask him a question, and you get yesterday's answer. That's **asynchronous replication** and **replication lag**.
-- The teacher can decide to wait until at least one student says "got it" before she moves on. Safer: if her book burns, a student has every sentence. Slower: every sentence waits for a student. And if the only student leaves the room, she waits forever. That's **synchronous replication**.
-- A student who leaves for a week comes back and asks "what did I miss?" The teacher must have kept her notes since he left. A **replication slot** is her promise to keep them, even if her desk overflows.
-- If the teacher gets sick, a student takes over (**failover**). If the teacher comes back and keeps writing in her own book too, the class now has two different books.
+- By default, the primary does not wait for the replicas. It commits and continues. A replica that applies changes slowly is **behind**, and a query on it returns older data. That is **asynchronous replication**, and the delay is **replication lag**.
+- The primary can instead wait, before `COMMIT` returns, until at least one replica confirms it has the change. That is safer: if the primary's disk is lost, a replica has every committed change. It is also slower, because every commit waits for a replica. And if the only such replica is unavailable, commits wait without end. That is **synchronous replication**.
+- A replica that was offline for a week must receive every change it missed when it reconnects. So the primary must keep those changes until then. A **replication slot** makes the primary keep them, even if its disk fills up.
+- If the primary fails, a replica takes over as the new primary (**failover**). If the old primary comes back and still accepts writes, there are now two different versions of the data.
 
-The "sentences" are the **WAL**, the write-ahead log from [How data is stored](storage.md). The primary already writes every change there before it touches the table. Streaming replication just sends that same log to other servers, which replay it.
+The stream of changes is the **WAL**, the write-ahead log from [How data is stored](storage.md). The primary already writes every change there before it touches the table. Streaming replication just sends that same log to other servers, which replay it.
 
 ```mermaid
 flowchart LR
@@ -152,7 +152,7 @@ An **LSN** (log sequence number) is a position in the WAL, a byte offset written
 
 Here all four are equal: the replica is fully caught up. `sync_state = async`: the primary doesn't wait for it. `pg_wal_lsn_diff(a, b)` gives the distance between two LSNs in bytes, which is the best "how far behind" number.
 
-### Replication slots: the promise to keep WAL
+### Replication slots: keeping WAL for a replica
 
 Without a slot, the primary deletes old WAL after a checkpoint, whether a replica still needs it or not. A replica that was away too long then can't catch up, and needs a new base backup. **With** a slot, the primary keeps all WAL the slot's replica hasn't confirmed, **without limit**. Stop the replica and write 500,000 orders:
 
@@ -188,7 +188,7 @@ $ primary -c 'SHOW max_slot_wal_keep_size'
 (1 row)
 ```
 
-`-1` means no limit. Set `max_slot_wal_keep_size` (for example to a fraction of the WAL disk). Past that size, PostgreSQL gives up on the slot (`wal_status` becomes `lost`), and that replica needs a new base backup, but the primary lives. Alert on `retained` and on slots with `active = f`, and drop slots you don't need: `SELECT pg_drop_replication_slot('name')`.
+`-1` means no limit. Set `max_slot_wal_keep_size` (for example to a fraction of the WAL disk). Past that size, PostgreSQL gives up on the slot (`wal_status` becomes `lost`), and that replica needs a new base backup, but the primary keeps running. Alert on `retained` and on slots with `active = f`, and drop slots you don't need: `SELECT pg_drop_replication_slot('name')`.
 
 ## Synchronous replication: safer, and it can stop your writes
 
@@ -221,7 +221,7 @@ INSERT 0 1
 Time: 4.223 ms
 ```
 
-Now the danger. Pause replay on the replica (`SELECT pg_wal_replay_pause()`, which you'd never do in production, but a stuck or slow replica looks the same), and commit with `remote_apply`, with a 2-second `statement_timeout` as a "safety net":
+Now the failure case. Pause replay on the replica (`SELECT pg_wal_replay_pause()`, which you'd never do in production, but a stuck or slow replica looks the same), and commit with `remote_apply`, with a 2-second `statement_timeout` as a "safety net":
 
 ```console
 $ replica -qc 'SELECT pg_wal_replay_pause()'
@@ -304,7 +304,7 @@ The replica **received** all the WAL (`0/30AA768`, the primary's position), but 
 
 ### Read-your-writes
 
-Ticket 1: the customer pays (a write to the primary), the page reloads, and the read goes to a replica that hasn't replayed the payment yet. Three ways out, from simple to clever:
+Ticket 1: the customer pays (a write to the primary), the page reloads, and the read goes to a replica that hasn't replayed the payment yet. Three fixes, from the simplest to the most precise:
 
 1. **Read from the primary after a write.** For a few seconds after a user writes, send that user's reads to the primary (a cookie or a session flag says "wrote at time T").
 2. **Read from the primary for the pages that matter.** Order status after checkout, yes; the product catalog, no.
@@ -408,7 +408,7 @@ $ primary -c "SELECT name, setting, source FROM pg_settings WHERE name = 'wal_le
 (1 row)
 ```
 
-**Command-line options beat `ALTER SYSTEM`.** `pg_settings.source` tells you where a value came from, and `pg_file_settings.applied = f` shows a setting in a file that lost. So the example uses a fresh publisher, `tutor-pg-pub` (port 55436, `-c wal_level=logical`), and a subscriber, `tutor-pg-logical` (port 55435), both on the `tutor-repl` network:
+**Command-line options override `ALTER SYSTEM`.** `pg_settings.source` tells you where a value came from, and `pg_file_settings.applied = f` shows a setting in a file that was overridden. So the example uses a fresh publisher, `tutor-pg-pub` (port 55436, `-c wal_level=logical`), and a subscriber, `tutor-pg-logical` (port 55435), both on the `tutor-repl` network:
 
 ```console
 $ pub -c "CREATE TABLE orders (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, customer_id text NOT NULL,
@@ -541,7 +541,7 @@ DETAIL:  Partition key of the failing row contains (created_at) = (2026-12-05 00
 - **Partition pruning.** A query with the partition key in its `WHERE` only touches matching partitions: one `Seq Scan on orders_2026_11`, the others aren't even in the plan. Reading the plan is covered in [Query planning](query-planning.md).
 - **A query without the key touches every partition.** Looking up one customer is now **three** index scans instead of one. With 36 monthly partitions, it would be 36. Partitioning makes queries by the key cheaper and queries across partitions more expensive. Pick the key from your most important queries, not from habit.
 
-The big win is maintenance. Removing a month is a metadata change, not a `DELETE`:
+The main benefit is maintenance. Removing a month is a metadata change, not a `DELETE`:
 
 ```console
 tutor_replication=# CREATE TABLE orders_2026_12 PARTITION OF orders FOR VALUES FROM ('2026-12-01') TO ('2027-01-01');
@@ -555,7 +555,7 @@ DROP TABLE
 Time: 5.534 ms
 ```
 
-104,000 rows gone in 10 ms, with no dead tuples, no `VACUUM`, no WAL flood for the replicas. `DETACH ... CONCURRENTLY` uses a weaker lock than a plain `DETACH`, so queries keep running; like `CREATE INDEX CONCURRENTLY`, it can't run inside a transaction. You can also detach and keep the table, to archive it.
+104,000 rows gone in 10 ms, with no dead tuples, no `VACUUM`, and no large burst of WAL for the replicas. `DETACH ... CONCURRENTLY` uses a weaker lock than a plain `DETACH`, so queries keep running; like `CREATE INDEX CONCURRENTLY`, it can't run inside a transaction. You can also detach and keep the table, to archive it.
 
 Partitioning doesn't make a table faster by itself, and too many partitions (thousands) make planning slow. It is the right tool when data has a natural time key, old data is dropped or archived in whole periods, and most queries name a period.
 
@@ -578,7 +578,7 @@ Ways to choose the shard:
 - **Range** of the key: range queries stay on one shard, but new keys may all go to the same "hot" shard (with time-ordered keys, the newest one gets all writes).
 - **A directory**: a lookup table maps each tenant to a shard. Flexible (move one big customer to its own shard), but the lookup is one more thing that must be up.
 
-What you give up, and it is a lot:
+What you give up, which is a lot:
 
 - **Transactions across shards.** An order and the customer's balance on two different shards can't change in one ACID transaction anymore. You need sagas or two-phase commit: the [Distributed systems](../distributed-systems/index.md) chapter.
 - **Joins and unique constraints across shards.** A unique email across all customers is no longer one index. Joins become application code, or a query to every shard.

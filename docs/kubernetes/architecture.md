@@ -13,17 +13,17 @@ Each one is easy once you know the parts of a cluster and, more important, **how
 
 On this page you take a real cluster apart: you create it with `kind`, list the processes, read the raw bytes in etcd, and watch each component do its one job for one pod.
 
-## The idea: a restaurant with one ticket rail
+## The idea: one API, one store, many watchers
 
-Picture a busy restaurant kitchen.
+A cluster has one central record and several programs that each do one job:
 
-- **The pass** (the counter between the dining room and the kitchen) is the **API server**. Every order comes in here, written on a ticket. The person at the pass checks it: is this a real waiter, may they order this, is the ticket filled in correctly? Only then does it go on the rail.
-- **The ticket rail** is **etcd**. It is the only record of what was ordered and what is done. If it isn't on the rail, it didn't happen.
-- **The head chef** is the **scheduler**. They look at new tickets with no station written on them, and write one: "grill", "cold kitchen". That's all they do. They don't cook.
-- **The managers** are the **controllers**. One watches desserts: "the table ordered three, the rail says two are out, start one more." Each manager has one kind of ticket and keeps comparing what was ordered with what is done.
-- **The cook at each station** is the **kubelet**. It watches the rail for tickets with its station name, cooks them (starts the containers), and writes back "plated" or "burnt".
+- **The API server** receives every request. It checks who sent it, whether they may do it, and whether the object is valid. Only then does it store the object.
+- **etcd** is the store. It is the only record of what was asked for and what is done. If an object is not in etcd, it does not exist for the cluster.
+- **The scheduler** looks for new pods that have no node yet, and writes a node name into each one. That is all it does. It does not start containers.
+- **The controllers** each watch one kind of object and compare the desired state with the actual state. For example: "the ReplicaSet wants three pods, two exist, create one more."
+- **The kubelet** runs on each node. It watches for pods assigned to its node, starts their containers, and writes their status back.
 
-Nobody shouts across the kitchen. The chef never walks over to the grill. Everybody reads the rail, does their part, and writes the result back on the rail, through the pass. That one rule explains most of Kubernetes.
+No component calls another one directly. The scheduler never contacts a node. Each component reads from the API, does its part, and writes the result back through the API. That one rule explains most of Kubernetes.
 
 ```mermaid
 flowchart LR
@@ -217,7 +217,7 @@ The pod object existed for seconds with no node, and nothing happened. The momen
 
 `kube-controller-manager` is one binary with 49 controllers inside: `deployment-controller`, `replicaset-controller`, `namespace-controller`, `garbage-collector-controller`, `node-lifecycle-controller`, `endpointslice-controller`, `job-controller` and so on (`kube-controller-manager --help` lists them under `--controllers`). Each one watches one or two resource types and keeps the world in line with them. The next page, [Reconciliation](reconciliation.md), is all about how such a loop works.
 
-With three control plane nodes you have three controller managers, but two loops fighting over the same ReplicaSet would be chaos. So they hold an election: whoever holds a **Lease** object is the leader, and renews it every few seconds. The others wait. The same goes for the scheduler:
+With three control plane nodes you have three controller managers, but two loops changing the same ReplicaSet at once would undo each other's work. So they hold an election: whoever holds a **Lease** object is the leader, and renews it every few seconds. The others wait. The same goes for the scheduler:
 
 ```console
 $ kubectl -n kube-system get leases
@@ -279,7 +279,7 @@ The `pause` processes are the subject of [Pods](pods.md). For now: the first fou
 
 ### Static pods: how the control plane starts itself
 
-There is a chicken-and-egg problem. The API server runs in a pod, but pods are created through the API server. Who starts the API server?
+There is a circular dependency. The API server runs in a pod, but pods are created through the API server. So what starts the API server?
 
 The kubelet does, from **files**. It watches a directory, `staticPodPath`, and runs every pod manifest it finds there, with no API server needed:
 
@@ -326,7 +326,7 @@ Pods on the control plane are in `10.244.0.0/24`, reached via that node's IP. Ea
 
 ### Create it
 
-[`kind`](https://kind.sigs.k8s.io/) ("Kubernetes in Docker") runs each node as a Docker container. Inside each container is a full systemd, containerd and kubelet. It's the best way to see real Kubernetes on a laptop. This chapter's cluster has one control plane node and one worker:
+[`kind`](https://kind.sigs.k8s.io/) ("Kubernetes in Docker") runs each node as a Docker container. Inside each container is a full systemd, containerd and kubelet. It is a good way to run real Kubernetes on a laptop. This chapter's cluster has one control plane node and one worker:
 
 ```yaml
 # kind-config.yaml
@@ -366,7 +366,7 @@ tutor-worker          Ready    <none>          101s   v1.37.0   172.18.0.2    <n
 
 The API server listens on port 6443 inside the container, published on `127.0.0.1:46318` on the host. Both nodes share the host's kernel (WSL2, 5.15).
 
-**Why the `failCgroupV1` patch?** This machine is a cgroup v1 hybrid (see [Namespaces and cgroups](../linux/namespaces-and-cgroups.md#this-machine-hybrid-and-honest-about-it)), and the kind nodes inherit it:
+**Why the `failCgroupV1` patch?** This machine is a cgroup v1 hybrid (see [Namespaces and cgroups](../linux/namespaces-and-cgroups.md#this-machine-hybrid-mode)), and the kind nodes inherit it:
 
 ```console
 $ docker exec tutor-control-plane stat -fc %T /sys/fs/cgroup
@@ -394,7 +394,7 @@ $ docker exec tutor-archv1-control-plane journalctl -u kubelet --no-pager | grep
 Nov 26 21:43:12 tutor-archv1-control-plane kubelet[314]: E1126 21:43:12.443633     314 run.go:72] "command failed" err="failed to validate kubelet configuration, error: kubelet is configured to not run on a host using cgroup v1. cgroup v1 support is unsupported and will be removed in a future release, path: &TypeMeta{Kind:,APIVersion:,}"
 ```
 
-Read it from the bottom up, the way you debug any cluster. kubeadm wrote the static pod manifests, started the kubelet, and then waited a minute for the API server. But the kubelet exited at once, so **nobody read the manifests**, so there was never an API server to answer. One component's refusal looks like a timeout in another. The patch says "yes, I know". Production nodes should run cgroup v2; this is a laptop workaround, not a recommendation. (Delete such a test cluster with `kind delete cluster --name tutor-archv1`.)
+Read it from the bottom up, the way you debug any cluster. kubeadm wrote the static pod manifests, started the kubelet, and then waited a minute for the API server. But the kubelet exited at once, so **nobody read the manifests**, so there was never an API server to answer. One component's refusal looks like a timeout in another. The patch tells the kubelet to accept cgroup v1. Production nodes should run cgroup v2; this is a laptop workaround, not a recommendation. (Delete such a test cluster with `kind delete cluster --name tutor-archv1`.)
 
 ### Talk HTTP to the API
 
@@ -573,7 +573,7 @@ tutor-ordersd   1/1     Running   0          13m
 
 Only the two pods from earlier are left.
 
-That's the third message from the top of the page. And the first one: while the API server is down, the kubelets keep running the pods they have, and kube-proxy's iptables rules stay in the kernel. Traffic flows. Only **changes** stop: no new pods, no rescheduling, no scaling.
+This explains the third message at the top of the page. It also explains the first one: while the API server is down, the kubelets keep running the pods they have, and kube-proxy's iptables rules stay in the kernel. Traffic flows. Only **changes** stop: no new pods, no rescheduling, no scaling.
 
 Clean up with `kubectl delete namespace tutor-architecture`.
 

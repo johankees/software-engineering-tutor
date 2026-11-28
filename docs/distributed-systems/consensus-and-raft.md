@@ -13,19 +13,19 @@ Each one is about the same question: **how do several machines agree on one valu
 
 On this page you run a real three-node **Raft** cluster in one Go process, crash its leader, and watch the rest elect a new one and keep working, until too many are gone.
 
-## The idea: three treasurers and one ledger
+## The idea: a leader, a replicated log and majority votes
 
-A small club keeps its money records in a ledger. It has three treasurers, and each keeps **a full copy** of the ledger at home, so one fire can't destroy it.
+A Raft cluster is a small group of nodes (usually three or five). Each node keeps **a full copy** of the same log, so the loss of one machine does not lose the data.
 
-- For a while, one treasurer is **chair**. Only the chair writes new lines. The others copy what the chair sends them.
-- A line is **final** when a **majority** (2 of 3) has copied it. Then nobody may ever change it.
-- Each chair serves for a numbered **term**. If the chair goes silent for too long, another treasurer says "I'll be chair for term 5. Vote for me?"
-- Every treasurer votes **once per term**, and only for someone whose ledger is **at least as complete** as their own.
-- If two chairs ever appear, the one with the **higher term** wins, and the old one steps down as soon as it hears about it.
+- At any time, at most one node is the **leader**. Only the leader adds new entries to the log. The other nodes, the **followers**, copy what the leader sends them.
+- An entry is **committed** (final) when a **majority** of the nodes (2 of 3) has stored it. After that, no node may ever change it.
+- Each leader serves for a numbered **term**. If the leader is silent for too long, another node starts an election: "I want to be leader for term 5. Will you vote for me?"
+- Every node votes **once per term**, and only for a candidate whose log is **at least as complete** as its own.
+- If two leaders ever exist at the same time, the one with the **higher term** wins. The old one steps down as soon as it sees the higher term.
 
-Why does "majority" make this safe? Because **any two majorities of the same group overlap**. Two of three and another two of three always share at least one person. That person has seen the final lines, and would never vote for a chair who doesn't have them. So a new chair always has every final line.
+Why does "majority" make this safe? Because **any two majorities of the same group overlap**. Two of three and another two of three always share at least one node. That node has every committed entry, and it never votes for a candidate that is missing them. So a new leader always has every committed entry.
 
-That's Raft. Diego Ongaro and John Ousterhout designed it in 2014 to be easier to understand than Paxos, which solves the same problem.
+This is Raft. Diego Ongaro and John Ousterhout designed it in 2014 to be easier to understand than Paxos, which solves the same problem.
 
 ```mermaid
 stateDiagram-v2

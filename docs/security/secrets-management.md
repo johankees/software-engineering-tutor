@@ -2,7 +2,7 @@
 
 ## Why care?
 
-Three messages from real teams:
+Real teams report problems like these:
 
 - "We deleted the key from the repo last year. Why did someone just use it?"
 - "The database password is the same in dev, test and prod, and nobody knows who has it."
@@ -13,22 +13,22 @@ A secret is easy to create and very hard to take back. Once it is copied (into G
 1. **Fewer secrets.** Use identity instead of passwords when you can.
 2. **Short-lived secrets.** A credential that expires in an hour is worth little to a thief.
 3. **One place.** Every secret lives in one store, with an audit log and access rules.
-4. **Easy rotation.** Changing a secret is a boring, tested, one-command job.
+4. **Easy rotation.** Changing a secret is a routine, tested, one-command job.
 
 On this page you run HashiCorp Vault in a container, get database passwords that delete themselves, encrypt a config file with `sops`, and write a small Go scanner that finds a key in Git history after it was "deleted".
 
-## The idea: hotel key cards, not house keys
+## The idea: short-lived credentials from one store
 
-A **house key** works forever. You give a copy to the cleaner, the cleaner gives a copy to a friend, and ten years later you don't know how many copies exist. To be safe, you must change the lock, and then give new keys to everyone who still needs one.
+A **static secret**, such as a password in a config file, works until someone changes it. It gets copied to people, scripts and machines, and after some years nobody knows how many copies exist. To be safe, you must change it and then update everyone who still needs it.
 
-A **hotel key card** is different:
+A **secrets manager** such as Vault works differently:
 
-- The front desk makes it when you arrive, for **your** room only.
-- It stops working on the day you leave.
-- If you lose it, the desk cancels it and makes a new one. Nobody else is affected.
-- The desk has a log of every card it made.
+- It creates a credential when a client asks, for that client only.
+- The credential expires after a set time.
+- If a credential leaks, the secrets manager revokes it and issues a new one. Other clients are not affected.
+- It keeps an audit log of every credential it issued.
 
-A static password in a config file is a house key. A secrets manager like Vault is the front desk. It knows **who** is asking (identity), decides **what** they may open (policy), and gives out cards that **expire** (leases).
+The secrets manager knows **who** is asking (identity), decides **what** they may access (policy), and gives out credentials that **expire** (leases).
 
 ```mermaid
 sequenceDiagram
@@ -78,7 +78,7 @@ Anyone who can run `docker inspect` (or `kubectl get pod -o yaml`, or read the D
 
 ### Leak 2: `rm` in a Dockerfile deletes nothing
 
-A classic mistake. The build needs a key, so the Dockerfile copies it in, uses it, and removes it:
+This is a common mistake. The build needs a key, so the Dockerfile copies it in, uses it, and removes it:
 
 ```dockerfile
 FROM hashicorp/vault:1.21
@@ -123,7 +123,7 @@ Anyone who can pull the image can read both. The fix is BuildKit's **build secre
 
 ### Start a dev server
 
-**Dev mode** keeps everything in memory, starts unsealed, and has a root token you choose. Perfect for learning. Never use it for anything real.
+**Dev mode** keeps everything in memory, starts unsealed, and has a root token you choose. It is useful for learning. Never use it for anything real.
 
 ```sh
 docker run -d --rm --name tutor-vault --cap-add=IPC_LOCK -p 127.0.0.1:8200:8200 \
@@ -303,7 +303,7 @@ WARNING! The following warnings were returned from Vault:
 
 After `max_ttl`, the service must ask for a **new** user. That's a feature: every credential has a hard end of life.
 
-And the incident button. You think `orders` credentials leaked. Kill every one of them at once:
+Vault can also revoke credentials in an incident. Suppose the `orders` credentials leaked. Revoke all of them at once:
 
 ```console
 $ docker exec tutor-vault-pg psql -U postgres -d orders -tAc "select count(*) from pg_roles where rolname like 'v-%'"
@@ -314,7 +314,7 @@ $ docker exec tutor-vault-pg psql -U postgres -d orders -tAc "select count(*) fr
 0
 ```
 
-Compare that with "find every config file that has the password, change it everywhere, restart everything, at 2 a.m.".
+Compare that with "find every config file that has the password, change it everywhere, restart everything", during an incident.
 
 ### Rotate the root, too
 
@@ -396,9 +396,9 @@ main.DBConfig{User:"orders", Password:[REDACTED]}
 16
 ```
 
-The first line is the usual mistake. Every other line is safe, because `fmt`, `slog` and `encoding/json` all ask the type how to show itself. `Reveal()` is the one place the real value comes out, and a reviewer can grep for it. (It does not stop `string(cfg.Password)` or reflection. It's a seat belt, not a vault.)
+The first line is the usual mistake. Every other line is safe, because `fmt`, `slog` and `encoding/json` all ask the type how to show itself. `Reveal()` is the one place the real value comes out, and a reviewer can grep for it. (It does not stop `string(cfg.Password)` or reflection. It reduces accidental leaks; it is not a security boundary.)
 
-### Who are you? Workload identity
+### Workload identity
 
 Vault gave `ordersd` a token. But how does `ordersd` get **that** token without a secret? This is the "secret zero" problem: every secret store needs a first credential.
 
@@ -659,7 +659,7 @@ Where to run a scanner:
 1. **Pre-commit hook** on the developer machine (see [hooks](../git/config-hooks-signing.md#under-the-hood-hooks)). Fast, but optional: anyone can skip it with `--no-verify`.
 2. **CI on every pull request**, on the new commits. This one is enforced.
 3. **Push protection** on the Git server (GitHub secret scanning, GitLab secret detection): the push is refused before the key is public. The best place, because the secret never lands.
-4. **A full history scan** once, when you adopt the tool. Expect surprises.
+4. **A full history scan** once, when you adopt the tool. It often finds old secrets.
 
 When it finds a real key: **revoke and rotate it first**. Rewriting history (`git filter-repo`) afterwards is fine for tidiness, but forks, clones and caches already have the old commits.
 
@@ -673,7 +673,7 @@ docker rmi tutor-leaky:dev
 
 ## Traps
 
-- **Dev mode in production.** `vault server -dev` keeps everything in memory, unsealed, with a root token. It is a toy. A real Vault needs storage, TLS, unseal keys or auto-unseal, and audit logging.
+- **Dev mode in production.** `vault server -dev` keeps everything in memory, unsealed, with a root token. It is for learning only. A real Vault needs storage, TLS, unseal keys or auto-unseal, and audit logging.
 - **Forgetting `data/` in KV v2 policies.** `path "secret/orders/*"` matches nothing in KV v2. The API path is `secret/data/orders/*`.
 - **Long-lived root tokens.** After setup, revoke the root token. Create a new one only for emergencies (`vault operator generate-root`), with several people present.
 - **The secret in the env, again.** `docker inspect`, `/proc/<pid>/environ` and crash reporters see environment variables. Use files or fetch at start-up.
@@ -733,7 +733,7 @@ docker rmi tutor-leaky:dev
 
 ## Recap
 
-- A **secret** gives access just by being known. Have fewer of them, make them short-lived, keep them in **one store**, and make rotation boring.
+- A **secret** gives access just by being known. Have fewer of them, make them short-lived, keep them in **one store**, and make rotation routine.
 - Secrets leak through **Git history, logs, environment variables, image layers and CI**. `rm` and "delete the commit" don't undo a leak. **Revoke** does.
 - **Vault**: everything is a path; **policies** deny by default; **KV v2** keeps versions (and needs `data/` in policies).
 - **Dynamic secrets** create a new database user per request with a **lease**. It expires on its own, can be renewed up to `max_ttl`, and `lease revoke -prefix` kills them all in an incident. `rotate-root` removes the last human-known password.
