@@ -37,37 +37,39 @@ Green steps change when you add a dependency (rare). Red steps change on every c
 Here is `examples/orders/Dockerfile` again, without its comments:
 
 ```dockerfile
-FROM golang:1.27 AS build
+FROM golang:1.27.4@sha256:5f1b98fa02fe396ebce2a0227a0e08309e11792915b9dd2e1f71053d7e7e6666 AS build
 WORKDIR /src
+
 COPY go.mod go.sum ./
 RUN go mod download
+
 COPY . .
 ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath \
       -ldflags="-s -w -X github.com/acme/orders/internal/buildinfo.version=${VERSION}" \
       -o /out/ordersd ./cmd/ordersd
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 COPY --from=build /out/ordersd /ordersd
 USER nonroot:nonroot
 EXPOSE 8080
 ENTRYPOINT ["/ordersd"]
 ```
 
-| Line                             | What it really does                                                                                                                                                                                                         |
-| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `FROM golang:1.27 AS build`      | Starts stage `build` from the Go image. The tag is resolved to a digest **once per build**; a re-pushed tag silently gives you a different base. `AS build` names the stage so a later stage can copy from it.              |
-| `WORKDIR /src`                   | Creates `/src` if needed and makes it the working folder for later lines. It changes only the image config, plus an empty folder.                                                                                           |
-| `COPY go.mod go.sum ./`          | Copies two files. The cache key is a **checksum of the file contents**, not its time stamp. Same bytes, same key.                                                                                                           |
-| `RUN go mod download`            | Fills the module cache (`/go/pkg/mod`) inside this layer. The cache key is the **command text** and the parent layer. Docker does not know or care that this step uses the network.                                         |
-| `COPY . .`                       | Copies the whole build context (minus [`.dockerignore`](#dockerignore-what-the-builder-never-sees)). Any change to any copied file gives a new key here, and every line after it runs again.                                |
-| `ARG VERSION=dev`                | A build-time variable. Its value becomes part of the cache key of the `RUN` lines that use it. `--build-arg VERSION=v0.2.0` rebuilds the binary, nothing before it.                                                         |
-| `RUN CGO_ENABLED=0 go build ...` | Builds a static binary. Explained in [Build flags](#build-flags-that-matter-inside-an-image).                                                                                                                               |
-| `FROM gcr.io/distroless/...`     | Starts a **new, empty stage** from a tiny base. Nothing from the `build` stage comes along unless you copy it. This is the whole point of a multi-stage build: the 1.3 GB toolchain never reaches the final image.          |
-| `COPY --from=build ...`          | Copies one file out of the other stage. Its key is the checksum of that file, so an identical binary means a cached layer (you will see this below).                                                                        |
-| `USER nonroot:nonroot`           | Sets the default user in the image config. The name is looked up in the image's own `/etc/passwd` when the container **starts**, not at build time.                                                                         |
-| `EXPOSE 8080`                    | Documentation only. It writes `ExposedPorts` into the config. It does not open or publish anything (see [Container networking](networking.md)).                                                                             |
-| `ENTRYPOINT ["/ordersd"]`        | The JSON (exec) form: `/ordersd` is PID 1 itself, so it gets `SIGTERM` directly. The shell form (`ENTRYPOINT /ordersd`) wraps it in `sh -c`, and distroless has no `sh` (see [Signals](../linux/signals-and-processes.md)). |
+| Line                                   | What it really does                                                                                                                                                                                                                                                                                                   |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FROM golang:1.27.4@sha256:… AS build` | Starts stage `build` from the Go image. With a tag alone, the tag is resolved to a digest **once per build**, and a re-pushed tag silently gives you a different base. With `@sha256:` the builder uses exactly that image; the tag is only for humans. `AS build` names the stage so a later stage can copy from it. |
+| `WORKDIR /src`                         | Creates `/src` if needed and makes it the working folder for later lines. It changes only the image config, plus an empty folder.                                                                                                                                                                                     |
+| `COPY go.mod go.sum ./`                | Copies two files. The cache key is a **checksum of the file contents**, not its time stamp. Same bytes, same key.                                                                                                                                                                                                     |
+| `RUN go mod download`                  | Fills the module cache (`/go/pkg/mod`) inside this layer. The cache key is the **command text** and the parent layer. Docker does not know or care that this step uses the network.                                                                                                                                   |
+| `COPY . .`                             | Copies the whole build context (minus [`.dockerignore`](#dockerignore-what-the-builder-never-sees)). Any change to any copied file gives a new key here, and every line after it runs again.                                                                                                                          |
+| `ARG VERSION=dev`                      | A build-time variable. Its value becomes part of the cache key of the `RUN` lines that use it. `--build-arg VERSION=v0.2.0` rebuilds the binary, nothing before it.                                                                                                                                                   |
+| `RUN CGO_ENABLED=0 go build ...`       | Builds a static binary. Explained in [Build flags](#build-flags-that-matter-inside-an-image).                                                                                                                                                                                                                         |
+| `FROM gcr.io/distroless/...`           | Starts a **new, empty stage** from a tiny base. Nothing from the `build` stage comes along unless you copy it. This is the whole point of a multi-stage build: the 1.3 GB toolchain never reaches the final image.                                                                                                    |
+| `COPY --from=build ...`                | Copies one file out of the other stage. Its key is the checksum of that file, so an identical binary means a cached layer (you will see this below).                                                                                                                                                                  |
+| `USER nonroot:nonroot`                 | Sets the default user in the image config. The name is looked up in the image's own `/etc/passwd` when the container **starts**, not at build time.                                                                                                                                                                   |
+| `EXPOSE 8080`                          | Documentation only. It writes `ExposedPorts` into the config. It does not open or publish anything (see [Container networking](networking.md)).                                                                                                                                                                       |
+| `ENTRYPOINT ["/ordersd"]`              | The JSON (exec) form: `/ordersd` is PID 1 itself, so it gets `SIGTERM` directly. The shell form (`ENTRYPOINT /ordersd`) wraps it in `sh -c`, and distroless has no `sh` (see [Signals](../linux/signals-and-processes.md)).                                                                                           |
 
 Only `FROM`, `COPY`, `ADD` and `RUN` make filesystem layers. `WORKDIR`, `ARG`, `ENV`, `USER`, `EXPOSE` and `ENTRYPOINT` change the image **config** JSON (see [Images and layers](images-and-layers.md)).
 
@@ -486,6 +488,14 @@ Two limits:
 ## SBOM: the list of packages in the image
 
 A Software Bill of Materials lists every package in the image. `syft` reads the Debian package database in distroless **and** the module list Go embeds in every binary (the same data as `go version -m`):
+
+!!! tip "New tool: `syft`"
+
+    ```sh
+    mise use syft@1.57.2
+    ```
+
+    This adds it to the project's `mise.toml`, pinned to an exact version. See [Adding tools as you go](../toolbox/mise.md#adding-tools-as-you-go).
 
 ```console
 $ syft -q tutor-b-base:distroless

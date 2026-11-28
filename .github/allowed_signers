@@ -1,0 +1,6 @@
+# Keys that may sign commits on main (public keys; see SECURITY.md).
+# Changes need a review: CODEOWNERS covers this file.
+22237801+johankees@users.noreply.github.com namespaces="git" sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAINlEL3Nr5OzQDCp4dYsHQXX1bt4WLZ6IH0LqGkXAcoWXAAAADXNzaDpqb2hhbmtlZXM=
+22237801+johankees@users.noreply.github.com namespaces="git" sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIC6IQ3fmWCQ2AEuxCpqLPyrZG2Pq4E4QumIIJyRFzUs+AAAADXNzaDpqb2hhbmtlZXM=
+22237801+johankees@users.noreply.github.com namespaces="git" sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIBXdCGwGoix6kWvLykPTf00Jq51sg00W16xTejZN0KIzAAAADXNzaDpqb2hhbmtlZXM=
+22237801+johankees@users.noreply.github.com namespaces="git" sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIFFn6DrLzZOTV9Een4LJlUt5Z5oE4hB++kXa5tSmT4Z8AAAADXNzaDpqb2hhbmtlZXM=

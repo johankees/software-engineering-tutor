@@ -5,31 +5,58 @@ on:
     branches: [main]
   workflow_dispatch:
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
+permissions: {}
 
+# Never cancel a deploy halfway; a new run waits.
 concurrency:
   group: pages
   cancel-in-progress: false
 
+env:
+  # mise.toml also lists the tutorial's tools; `mise run` must not install them.
+  MISE_TASK_RUN_AUTO_INSTALL: "false"
+
 jobs:
   build:
+    name: Build site
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read # clone the repository
     steps:
-      - uses: actions/checkout@v5
-      - uses: jdx/mise-action@v3
+      - uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
+        with:
+          version: 2026.11.14
+          sha256: 6fa596291e9758106f761fea4f8e7fac6c3e7ff4714d5c0b9a76e16068db14f6
+          install_args: python pipx:zensical uv
+          # The deployed build starts from clean downloads, not from a cache.
+          cache: false
       - run: mise run build
-      - uses: actions/upload-pages-artifact@v4
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: site
+
   deploy:
+    name: Deploy to GitHub Pages
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Only this job may deploy, and only it gets the Pages and OIDC scopes.
+    permissions:
+      pages: write # publish the site
+      id-token: write # prove the workflow's identity to Pages
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        with:
+          egress-policy: audit
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

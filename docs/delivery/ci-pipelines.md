@@ -95,6 +95,8 @@ Pull requests **from forks** are stricter by default: their token is read-only a
 
 ### This repository's CI, line by line
 
+The start of `.github/workflows/ci.yml`, up to the end of its main job. The other three jobs (an online workflow audit, a commit-signature check and a dependency review on PRs) are explained in [GitHub Actions security](../secure-delivery/workflow-security.md) and [Signed commits](../secure-delivery/signed-commits.md#under-the-hood-verify-history-in-ci-yourself).
+
 ```yaml
 name: CI
 
@@ -103,26 +105,58 @@ on:
   push:
     branches: [main]
 
-permissions:
-  contents: read
+# No token scopes by default; each job asks for what it needs.
+permissions: {}
+
+# A new push makes the old run useless: cancel it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # mise.toml also lists the tutorial's tools; `mise run` must not install them.
+  MISE_TASK_RUN_AUTO_INSTALL: "false"
 
 jobs:
   check:
+    name: Check
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read # clone the repository
     steps:
-      - uses: actions/checkout@v5
-      - uses: jdx/mise-action@v3
+      - uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # gitleaks scans the whole history
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
+        with:
+          version: 2026.11.14
+          sha256: 6fa596291e9758106f761fea4f8e7fac6c3e7ff4714d5c0b9a76e16068db14f6
+          install_args: python pipx:zensical go golangci-lint actionlint zizmor gitleaks bun uv
+          # PR runs must not write caches that main reads (cache poisoning).
+          cache_save: ${{ github.event_name == 'push' }}
       - run: mise run check
 ```
 
-| Line                          | What it does                                                                                        |
-| ----------------------------- | --------------------------------------------------------------------------------------------------- |
-| `on: pull_request`            | Runs for every PR, on a **merge commit** of the PR into its base. So it tests "main plus my change" |
-| `push: branches: [main]`      | Runs again after the merge, on main itself                                                          |
-| `permissions: contents: read` | Least privilege for the token                                                                       |
-| `actions/checkout@v5`         | Clones the repository into the workspace                                                            |
-| `jdx/mise-action@v3`          | Installs mise and every tool in `mise.toml`, at the versions in `mise.lock`                         |
-| `mise run check`              | **The same command you run locally.** All the logic is in `mise.toml`, not in YAML                  |
+| Line                                         | What it does                                                                                                                                       |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `on: pull_request`                           | Runs for every PR, on a **merge commit** of the PR into its base. So it tests "main plus my change"                                                |
+| `push: branches: [main]`                     | Runs again after the merge, on main itself                                                                                                         |
+| `permissions: {}`                            | The token gets **no** scopes by default; each job asks for its own (`contents: read` here)                                                         |
+| `concurrency`                                | A new push to the same ref cancels the old run, which is now useless                                                                               |
+| `timeout-minutes: 20`                        | A hung job fails after 20 minutes instead of 6 hours                                                                                               |
+| `step-security/harden-runner`                | Records every network connection the job makes (`audit`), the first step towards an allow-list                                                     |
+| `actions/checkout@3d3c… # v7.0.1`            | Clones the repository. Pinned by commit SHA, with the version as a comment (see [below](#pin-actions-by-commit-sha))                               |
+| `persist-credentials: false`                 | Doesn't leave the token in `.git/config` for later steps                                                                                           |
+| `fetch-depth: 0`                             | The whole history, because `gitleaks` scans every commit                                                                                           |
+| `jdx/mise-action@924e… # v5.3.0`             | Installs mise at a pinned `version`, checks the binary against `sha256`, then installs the tools that `check` needs at the versions in `mise.lock` |
+| `install_args`, `MISE_TASK_RUN_AUTO_INSTALL` | `mise.toml` also lists every tool the tutorial uses. CI installs only the build and check tools, and `mise run` must not fetch the rest            |
+| `cache_save`                                 | Only runs on `main` save the tool cache, so a PR can't poison what `main` restores                                                                 |
+| `mise run check`                             | **The same command you run locally.** All the logic is in `mise.toml`, not in YAML                                                                 |
 
 That last line is the most important design choice. The [mise page](../toolbox/mise.md#mise-in-ci) explains the tool. Here is what `check` actually runs:
 
@@ -151,40 +185,68 @@ on:
     branches: [main]
   workflow_dispatch:
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
+permissions: {}
 
+# Never cancel a deploy halfway; a new run waits.
 concurrency:
   group: pages
   cancel-in-progress: false
 
+env:
+  # mise.toml also lists the tutorial's tools; `mise run` must not install them.
+  MISE_TASK_RUN_AUTO_INSTALL: "false"
+
 jobs:
   build:
+    name: Build site
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read # clone the repository
     steps:
-      - uses: actions/checkout@v5
-      - uses: jdx/mise-action@v3
+      - uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
+        with:
+          version: 2026.11.14
+          sha256: 6fa596291e9758106f761fea4f8e7fac6c3e7ff4714d5c0b9a76e16068db14f6
+          install_args: python pipx:zensical uv
+          # The deployed build starts from clean downloads, not from a cache.
+          cache: false
       - run: mise run build
-      - uses: actions/upload-pages-artifact@v4
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: site
+
   deploy:
+    name: Deploy to GitHub Pages
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Only this job may deploy, and only it gets the Pages and OIDC scopes.
+    permissions:
+      pages: write # publish the site
+      id-token: write # prove the workflow's identity to Pages
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        with:
+          egress-policy: audit
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
 ```
 
 New ideas in it:
 
 - **`workflow_dispatch`**: a "Run workflow" button, for a manual redeploy.
-- **`pages: write` and `id-token: write`**: `deploy-pages` proves "I am this repo's workflow" with a short-lived OIDC token, instead of a stored password. You'll meet OIDC again for cloud deploys: no long-lived cloud keys in CI secrets.
+- **`pages: write` and `id-token: write`, on the deploy job only**: `deploy-pages` proves "I am this repo's workflow" with a short-lived OIDC token, instead of a stored password. The build job runs `mise run build` and needs neither scope, so it doesn't get them. You'll meet OIDC again for cloud deploys: no long-lived cloud keys in CI secrets.
+- **`cache: false` in the build**: the output of this job is published, so it starts from clean, verified downloads instead of a cache that another run wrote.
 - **`concurrency: group: pages`**: only one run in the group at a time. `cancel-in-progress: false` means a new run **waits** instead of killing a deploy halfway. For PR checks you want the opposite: a new push makes the old run useless, so cancel it.
 - **Two jobs, one artifact.** `build` and `deploy` run on different VMs. The `site/` folder crosses over as an uploaded artifact. Build once, deploy that exact output.
 - **`environment: github-pages`**: environments can have protection rules (required reviewers, a wait timer, only from main). That's where "who may deploy to production" lives.
@@ -256,7 +318,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 ```
 
-And give every job a `timeout-minutes`. The default job timeout is hours. A test that hangs on a network call blocks a runner and your PR until then. This repo's `ci.yml` doesn't set one yet; for a 30-second job, `timeout-minutes: 10` is generous.
+And give every job a `timeout-minutes`. The default job timeout is hours. A test that hangs on a network call blocks a runner and your PR until then. This repo's jobs set 5 to 20 minutes.
 
 ## Try it: lint a workflow with `actionlint`
 
@@ -418,7 +480,7 @@ A full commit SHA can't be moved. Git objects are named by their content (see [O
 - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 ```
 
-The comment keeps it readable. Dependabot or Renovate update the SHA **and** the comment in a pull request, so upgrades are reviewed like any other change. This repository still uses tags (`@v5`, `@v3`): a choice that trades some safety for less noise, on a site with no secrets. In an enterprise repository that deploys to production, pin by SHA, at least for actions outside `actions/` and your own organization.
+The comment keeps it readable. Dependabot or Renovate update the SHA **and** the comment in a pull request, so upgrades are reviewed like any other change. This repository used tags (`@v5`, `@v3`) until it applied its own [Secure delivery](../secure-delivery/index.md) chapter; now every `uses:` is a SHA with a comment, and the repository's Actions policy refuses any action that isn't pinned that way. Pin by SHA everywhere, including `actions/*`: the policy can't make exceptions, and neither should you.
 
 ### Least privilege, everywhere
 
@@ -426,6 +488,8 @@ The comment keeps it readable. Dependabot or Renovate update the SHA **and** the
 - Secrets only in the job that needs them, ideally through an `environment` with protection rules.
 - OIDC (`id-token: write`) to get short-lived cloud credentials, instead of storing cloud keys as secrets.
 - Treat everything in `github.event.*` that a user can type (titles, branch names, commit messages, comments) as untrusted input. `actionlint` flags the common ones.
+
+[GitHub Actions security](../secure-delivery/workflow-security.md) goes much further: dangerous triggers, script injection, cache poisoning, environments and OIDC trust policies.
 
 ### Flaky tests
 
@@ -503,6 +567,14 @@ A team rule that works: **a flaky test is a bug with an owner and a deadline**. 
 
 You don't need the browser to follow CI. The GitHub CLI has a `run` command group:
 
+!!! tip "New tool: `gh`"
+
+    ```sh
+    mise use gh@2.106.0
+    ```
+
+    This adds it to the project's `mise.toml`, pinned to an exact version. See [Adding tools as you go](../toolbox/mise.md#adding-tools-as-you-go).
+
 ```sh
 gh run list --branch agent/delivery --limit 5   # recent runs of this branch
 gh run watch --exit-status                      # follow the newest run, exit 1 if it fails
@@ -568,10 +640,10 @@ gh run rerun --failed                           # re-run only the failed jobs
     order. Add `-race` too: a data race is a classic source of flakes. Meanwhile, quarantine it
     with a ticket so main stays green for real reasons.
 
-??? question "6. Why does this repository's whole CI job fit in three steps?"
+??? question "6. Why does this repository's main CI job need only four steps?"
 
     All the logic lives in `mise.toml`: tool versions (pinned and locked) and the `check` task.
-    CI only installs mise and runs `mise run check`, the same command a developer runs. That
+    CI only hardens the runner, checks out, installs mise and runs `mise run check`, the same command a developer runs. That
     removes the "works locally, fails in CI" class of problems, and the YAML has almost nothing
     to get wrong.
 

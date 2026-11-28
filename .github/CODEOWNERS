@@ -1,0 +1,16 @@
+# Every file needs the owner's review. The lines below repeat this for the
+# files that control the build, so that a later broad rule can't drop them.
+*                   @johankees
+
+# Workflows, Dependabot, the signing trust list and this file
+/.github/           @johankees
+/scripts/           @johankees
+
+# Tool versions, checksums, tasks and the secret-scanning allow-list
+/mise.toml          @johankees
+/mise.lock          @johankees
+/.mise/             @johankees
+/.gitleaks.toml     @johankees
+/Makefile           @johankees
+/package.json       @johankees
+/bun.lock           @johankees

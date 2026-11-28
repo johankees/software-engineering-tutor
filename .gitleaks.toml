@@ -1,0 +1,29 @@
+# gitleaks configuration: the default rules, plus an allow-list of the
+# example values that this course prints on purpose. Each entry is one exact
+# value, reviewed by hand; never allow a whole file or a whole rule.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Documented examples: not secrets"
+regexTarget = "secret"
+regexes = [
+  # architecture/http-api-design.md: opaque pagination cursors (base64 of a time stamp and an ID)
+  '''^MjAyNi0xMS0yN1QxNTo1NzowMS4xMzUyMTQyMzJafDAxYTIxZGI5LTZkNGYtNzM2YS1hM2QwLTlhM2JhODVmYTQ2ZQ$''',
+  '''^MjAyNi0xMS0yN1QxNTo1NzowMS4xMzUyMzgyMDVafDAxYTIxZGI5LTZkNGYtNzNjYy05MmM0LTU0ODlhYjdjZmZmMA$''',
+  # networking/tls.md: the name of a TLS key-exchange group
+  '''^X25519MLKEM768$''',
+  # security/cryptography.md: keys derived in a demo, used nowhere
+  '''^d2e261978c95871ab8f0f015c81ad9923e5c7577dabaa58e95f70f545c8a47b7$''',
+  '''^cd664fe5061a8a6d49d0cc56467987becd10000fffb4d455424d3df6b548752e$''',
+  # kubernetes/config-and-secrets.md: base64 of the demo password "s3cr3t-Passw0rd"
+  '''^czNjcjN0LVBhc3N3MHJk$''',
+  # security/authentication.md: a truncated JWT from a local Dex
+  '''^eyJhbGciOiJSUzI1NiIsImtp\.\.\.S50YA0RBGqcw$''',
+  # public SSH key fingerprints (a fingerprint is not a key)
+  '''^l\+dUqMwO6hMjO7OVBKg3f/QB9YlMQ\+AimGFL5sxIUuc$''',
+  '''^vUsDi8Lc2\+u9Q2bCshU7bKCZleM6gyxkEX7KGFCjIbM$''',
+  # bearer tokens of local lab services
+  '''^s3cret-lab-token$''',
+  '''^tutor-token-alice$''',
+]

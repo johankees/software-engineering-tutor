@@ -471,7 +471,7 @@ GitHub Actions with `attest-build-provenance` on hosted runners reaches Build 2,
 
 ## Under the hood: CI actions are dependencies too
 
-A GitHub Action runs with your workflow's token and secrets. It is a dependency, with less review than any Go module. This repository's workflows use **tags**:
+A GitHub Action runs with your workflow's token and secrets. It is a dependency, with less review than any Go module. When this page was first written, this repository's workflows used **tags**:
 
 ```console
 $ grep -n 'uses:' .github/workflows/*.yml
@@ -504,6 +504,32 @@ Ask for both `refs/tags/v3` and `refs/tags/v3^{}`: for an **annotated** tag, the
 ```yaml
 - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3.6.3
+```
+
+This repository now does exactly that, in every workflow, and its Actions policy refuses any `uses:` that is not a full SHA (see [Configuring a GitHub repository](../secure-delivery/github-repositories.md)). Dependabot updates the SHAs and the comments every week:
+
+```console
+$ grep -n 'uses:' .github/workflows/*.yml
+.github/workflows/ci.yml:28:      - uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+.github/workflows/ci.yml:31:      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+.github/workflows/ci.yml:35:      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
+.github/workflows/ci.yml:51:      - uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+.github/workflows/ci.yml:54:      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+.github/workflows/ci.yml:57:      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
+.github/workflows/ci.yml:79:      - uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+.github/workflows/ci.yml:82:      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+.github/workflows/ci.yml:105:      - uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+.github/workflows/ci.yml:108:      - uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec # v5.0.1
+.github/workflows/pages.yml:27:      - uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+.github/workflows/pages.yml:30:      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+.github/workflows/pages.yml:33:      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
+.github/workflows/pages.yml:41:      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+.github/workflows/pages.yml:58:      - uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+.github/workflows/pages.yml:62:        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+.github/workflows/scorecard.yml:26:      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+.github/workflows/scorecard.yml:29:      - uses: ossf/scorecard-action@23f22cd43608bae7a1f1fa2603d7314dee9538a5 # v2.6.0
+.github/workflows/scorecard.yml:34:      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+.github/workflows/scorecard.yml:39:      - uses: github/codeql-action/upload-sarif@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
 ```
 
 A SHA pin is immutable, but an action can still download other code at run time (a `docker://` image by tag, a script by URL, or another action by tag inside a composite action). Pinning stops the easy attack; reviewing what an action does stops the rest. And give the job the least it needs: `permissions: contents: read` by default, and OIDC to the cloud instead of stored keys (see [Workload identity](secrets-management.md#workload-identity)), so that there is little to steal.

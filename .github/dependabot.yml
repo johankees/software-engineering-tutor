@@ -1,0 +1,53 @@
+# Version updates for every ecosystem in this repository.
+# Cooldowns let the community find a bad release before we take it.
+# mise.toml/mise.lock are not supported by Dependabot: update them with
+# `mise outdated` and `MISE_LOCKED=0 mise use <tool>@<version>`.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /examples/orders
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 3
+      semver-major-days: 30
+      semver-minor-days: 7
+      semver-patch-days: 3
+    groups:
+      golang-x:
+        patterns:
+          - "golang.org/x/*"
+        update-types:
+          - minor
+          - patch
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: docker
+    directory: /examples/orders
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+
+  - package-ecosystem: bun
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      lint-tools:
+        patterns:
+          - "*"

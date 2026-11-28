@@ -5,13 +5,111 @@ on:
   push:
     branches: [main]
 
-permissions:
-  contents: read
+# No token scopes by default; each job asks for what it needs.
+permissions: {}
+
+# A new push makes the old run useless: cancel it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # mise.toml also lists the tutorial's tools; `mise run` must not install them.
+  MISE_TASK_RUN_AUTO_INSTALL: "false"
 
 jobs:
   check:
+    name: Check
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read # clone the repository
     steps:
-      - uses: actions/checkout@v5
-      - uses: jdx/mise-action@v3
+      - uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # gitleaks scans the whole history
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
+        with:
+          version: 2026.11.14
+          sha256: 6fa596291e9758106f761fea4f8e7fac6c3e7ff4714d5c0b9a76e16068db14f6
+          install_args: python pipx:zensical go golangci-lint actionlint zizmor gitleaks bun uv
+          # PR runs must not write caches that main reads (cache poisoning).
+          cache_save: ${{ github.event_name == 'push' }}
       - run: mise run check
+
+  workflow-audit:
+    name: Workflow audit (online)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read # clone the repository
+    steps:
+      - uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
+        with:
+          version: 2026.11.14
+          sha256: 6fa596291e9758106f761fea4f8e7fac6c3e7ff4714d5c0b9a76e16068db14f6
+          install_args: zizmor
+          cache: false
+      # The online audits (impostor commits, known-vulnerable actions) need
+      # the GitHub API; the token goes to this one step only.
+      - run: zizmor --no-progress .github/workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  signatures:
+    name: Commit signatures
+    # Dependabot's commits are signed by GitHub, not by a key in our list;
+    # the ruleset's "require signed commits" rule still checks them.
+    if: github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read # clone the repository
+    steps:
+      - uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the range base..head needs the history, not one commit
+          persist-credentials: false
+      - name: Verify commit signatures
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Trust list and script come from the BASE branch, not from the PR.
+          git show "$BASE:.github/allowed_signers" > "$RUNNER_TEMP/allowed_signers"
+          git show "$BASE:scripts/verify-signatures.sh" > "$RUNNER_TEMP/verify-signatures.sh"
+          git config gpg.ssh.allowedSignersFile "$RUNNER_TEMP/allowed_signers"
+          sh "$RUNNER_TEMP/verify-signatures.sh" "$BASE" "$HEAD"
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read # read the dependency diff of the PR
+    steps:
+      - uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        with:
+          egress-policy: audit
+      - uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec # v5.0.1
+        with:
+          fail-on-severity: moderate
+          fail-on-scopes: runtime, development
+          allow-licenses: MIT, BSD-2-Clause, BSD-3-Clause, Apache-2.0, ISC, MPL-2.0
+          deny-packages: pkg:golang/github.com/boltdb-go/bolt
+          show-openssf-scorecard: true
+          warn-on-openssf-scorecard-level: 3

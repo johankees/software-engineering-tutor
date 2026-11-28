@@ -244,9 +244,9 @@ $ docker image inspect tutor-ordersd:dev --format '{{.Config.User}} {{json .Conf
 nonroot:nonroot {"8080/tcp":{}} [/ordersd]
 ```
 
-Good: not root, no shell. (The Dockerfile itself says base images should be pinned by digest in production; today they are pinned by tag.)
+Good: not root, no shell. (When this model was made, the base images were pinned by tag only. They are now pinned by digest: see the note below.)
 
-**How is it built?** From the repository root: the GitHub workflows use actions by **tag**, and the deploy workflow can mint OIDC identity tokens:
+**How is it built?** From the repository root, at the time of this model: the GitHub workflows used actions by **tag**, and the deploy workflow could mint OIDC identity tokens:
 
 ```console
 $ grep -n 'uses\|permissions\|write' .github/workflows/pages.yml
@@ -260,6 +260,10 @@ $ grep -n 'uses\|permissions\|write' .github/workflows/pages.yml
 ```
 
 A tag like `v3` can be moved by whoever controls that action's repository. That job holds `id-token: write`, so a moved tag runs someone else's code with the right to ask for a token. ([CI pipelines](../delivery/ci-pipelines.md#pin-actions-by-commit-sha) explains pinning.)
+
+!!! note "What this model changed"
+
+    A threat model is only useful if it leads to changes. These two findings were fixed when the repository applied the [Secure delivery](../secure-delivery/index.md) chapter: every action is now pinned by commit SHA (and the repository's Actions policy refuses any other kind of `uses:`), `pages: write` and `id-token: write` moved from the whole workflow to the deploy job, and both base images in the Dockerfile are pinned by digest.
 
 Stop the service when you are done: `kill %1`.
 
