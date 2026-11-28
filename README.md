@@ -35,15 +35,21 @@ mise run serve     # live preview at http://localhost:8000
 
 ## Tasks
 
-| Task               | What it does                       |
-| ------------------ | ---------------------------------- |
-| `mise run install` | Install lint/format tools with bun |
-| `mise run serve`   | Serve the site with live reload    |
-| `mise run build`   | Build the static site into `site/` |
-| `mise run fmt`     | Format Markdown, YAML and Go code  |
-| `mise run lint`    | Lint Markdown and GitHub workflows |
-| `mise run check`   | Format check + lint + build (CI)   |
-| `mise run clean`   | Remove build output                |
+Every task runs with `mise run <task>`. The `Makefile` wraps each one, so `make <task>` works too. Run `make help` to list them.
+
+| Task         | What it does                                                    |
+| ------------ | --------------------------------------------------------------- |
+| `install`    | Install lint/format tools with bun                              |
+| `serve`      | Serve the site with live reload                                 |
+| `build`      | Build the static site into `site/`                              |
+| `fmt`        | Format Markdown, YAML and Go code                               |
+| `fmt:check`  | Check formatting (`make fmt-check`)                             |
+| `lint`       | Lint Markdown and GitHub workflows                              |
+| `make:check` | Check every mise task has a Makefile target (`make make-check`) |
+| `go:check`   | Vet, lint and race-test the Go example (`make go-check`)        |
+| `check`      | Format check + lint + build + Go checks (CI)                    |
+| `pr`         | All checks, then `./commit.sh` if present and executable        |
+| `clean`      | Remove build output                                             |
 
 ## License
 

@@ -35,9 +35,23 @@ depends = ["install"]
 run = "bunx --bun prettier --check '**/*.{md,yml,yaml}'"
 
 [tasks.lint]
-description = "Lint Markdown and workflows"
-depends = ["install"]
+description = "Lint Markdown, workflows and Makefile coverage"
+depends = ["install", "make:check"]
 run = ["bunx --bun markdownlint-cli2 '**/*.md'", "actionlint"]
+
+[tasks."make:check"]
+description = "Check that every mise task has a Makefile target"
+run = """
+missing=0
+for task in $(mise tasks ls --no-header | awk '{print $1}'); do
+  target=$(printf '%s' "$task" | tr ':' '-')
+  if ! grep -q "^$target:" Makefile; then
+    echo "Makefile has no target '$target' for mise task '$task'" >&2
+    missing=1
+  fi
+done
+exit $missing
+"""
 
 [tasks."go:check"]
 description = "Vet, lint and race-test the Go reference project"
@@ -52,6 +66,19 @@ run = [
 [tasks.check]
 description = "Run all checks (CI entry point)"
 depends = ["fmt:check", "lint", "build", "go:check"]
+
+[tasks.pr]
+description = "Run all checks, then ./commit.sh if it is present and executable"
+depends = ["check"]
+# commit.sh signs commits: it needs the terminal for key touches and editors.
+raw = true
+run = """
+if [ -x ./commit.sh ]; then
+  ./commit.sh
+else
+  echo "pr: checks passed; no executable ./commit.sh to run"
+fi
+"""
 
 [tasks.clean]
 description = "Remove build output"
