@@ -248,6 +248,14 @@ Look at where `orderctl` writes things:
 
 That is what makes this work:
 
+!!! tip "New tool: `jq`"
+
+    ```sh
+    mise use jq@1.8.2
+    ```
+
+    This adds it to the project's `mise.toml`, pinned to an exact version. See [Adding tools as you go](../toolbox/mise.md#adding-tools-as-you-go).
+
 ```sh
 orderctl -o json list | jq '.[] | select(.status == "pending") | .id'
 ```

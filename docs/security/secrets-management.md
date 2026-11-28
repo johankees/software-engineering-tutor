@@ -427,6 +427,14 @@ Sometimes a secret must live in Git: a Helm values file, a Terraform variable, a
 
 How it works: SOPS makes a random **data key**, encrypts each value with AES-256-GCM, and then encrypts the data key with one or more **master keys**: a cloud KMS key, a PGP or age key, or a Vault **transit** key. Transit is "encryption as a service": Vault holds the key and never gives it out. Use it here, because it ties into the policies above.
 
+!!! tip "New tool: `sops`"
+
+    ```sh
+    mise use sops@3.13.3
+    ```
+
+    This adds it to the project's `mise.toml`, pinned to an exact version. See [Adding tools as you go](../toolbox/mise.md#adding-tools-as-you-go).
+
 ```console
 $ vault secrets enable transit
 Success! Enabled the transit secrets engine at: transit/
@@ -645,6 +653,14 @@ exit=1
 Found, with the commit and the file, and only a prefix of the key in the output (a scanner's report is itself a log). The non-zero exit code lets CI fail the build.
 
 Real tools work the same way, with hundreds of provider rules (AWS, GitHub, Stripe, Slack...), entropy checks, and allow-lists for test data:
+
+!!! tip "New tool: `gitleaks`"
+
+    ```sh
+    mise use gitleaks@8.30.1
+    ```
+
+    This adds it to the project's `mise.toml`, pinned to an exact version. See [Adding tools as you go](../toolbox/mise.md#adding-tools-as-you-go).
 
 ```sh
 gitleaks git .                       # scan history

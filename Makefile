@@ -2,7 +2,7 @@
 MISE ?= mise
 
 .DEFAULT_GOAL := help
-.PHONY: help install serve build fmt fmt-check lint make-check go-check check pr clean
+.PHONY: help install serve build fmt fmt-check lint make-check go-check secrets pre-commit github-apply github-check check pr clean
 
 help: ## List the available targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -30,6 +30,18 @@ make-check: ## Check that every mise task has a Makefile target
 
 go-check: ## Vet, lint and race-test the Go reference project
 	$(MISE) run go:check
+
+secrets: ## Scan the whole Git history for secrets
+	$(MISE) run secrets
+
+pre-commit: ## Scan staged changes for secrets
+	$(MISE) run pre-commit
+
+github-apply: ## Apply the GitHub settings and rulesets (needs repo admin)
+	$(MISE) run github:apply
+
+github-check: ## Compare the GitHub settings with this repository (read-only)
+	$(MISE) run github:check
 
 check: ## Run all checks (CI entry point)
 	$(MISE) run check

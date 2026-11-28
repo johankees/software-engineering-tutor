@@ -42,7 +42,7 @@ description = "Run all checks (CI entry point)"
 depends = ["fmt:check", "lint", "build", "go:check"]
 ```
 
-(Tasks shortened; all of them are shown below.)
+(Tasks shortened; all of them are shown below. Later chapters add more tools to `[tools]`, one at a time: see [Adding tools as you go](#adding-tools-as-you-go).)
 
 ## Under the hood: three ways to get the right `go`
 
@@ -231,6 +231,38 @@ mise ████████████████ 6/6 · installed 6 tools i
 
 The price: after you change a version in `mise.toml`, run `mise lock` and commit both files, or the next install fails.
 
+## Adding tools as you go
+
+Later chapters need more tools: `kubectl` and `kind` for Kubernetes, `cosign` and `syft` for signing and SBOMs, `zizmor` for workflow security, and so on. Each one goes into the same `mise.toml`, never into a global install. When a page needs a new tool, it shows one line:
+
+```sh
+mise use cosign@3.1.6
+```
+
+`mise use` does three things: it writes `cosign = "3.1.6"` to `[tools]` in the nearest `mise.toml`, installs that version, and (in a project with a lock file) records it in `mise.lock`. Always give an exact version. `mise use cosign` without one writes `latest`, with the problem from [What "latest" means](#what-latest-means).
+
+This repository already lists every tool the course uses, so after a clone `mise install` gets them all. You don't even need that: with `mise activate`, the first time you type a tool's name mise installs the missing version (the `not_found_auto_install` setting, on by default), and `mise run` installs what is missing before a task starts. Use `mise use` in **your own** projects, and here when you want to try a newer version.
+
+In a project with `locked = true`, a plain `mise use` of a new tool fails, because the lock file doesn't know it yet:
+
+```text
+$ mise use zizmor@1.33.1
+mise ERROR Failed to install aqua:zizmorcore/zizmor@1.33.1: zizmor@1.33.1 is not in the lockfile
+hint: Run `mise install` without --locked to update the lockfile
+```
+
+That's the lock doing its job: nothing gets installed that a reviewer hasn't seen in `mise.lock`. Adding a tool is the one moment you allow mise to resolve a new version, so switch the setting off for that one command:
+
+```text
+$ MISE_LOCKED=0 mise use zizmor@1.33.1
+mise lock                              ✓ 94 targets checked
+mise ~/.cache/agent/worktrees/software-engineering-tutor-secure-delivery/mise.toml tools: zizmor@1.33.1
+```
+
+It wrote the line to `mise.toml` and checksums for every platform to `mise.lock` (71 new lines). Commit both. Prefer tools from the `aqua` backend (see [Backends](#backends-where-tools-come-from)): mise checks their checksums and, where the project publishes them, their [signatures and attestations](../secure-delivery/artifact-signing.md). A tool that only exists as a Go module can use the `go` backend, for example `mise use go:github.com/securego/gosec/v2/cmd/gosec@2.30.0`. That one is built from source with `go install`.
+
+Some tools don't belong in mise: the kernel's tools (`strace`, `tcpdump`, `uidmap`), Docker, and OpenSSL come from the operating system's package manager, because they depend on the kernel or system libraries. The pages say so where it matters.
+
 ## Config files and trust
 
 mise reads config files from the current folder up to `/`, plus a global one. Closer files win. The common names:
@@ -338,16 +370,33 @@ Two more task features:
 
 ## mise in CI
 
-This repository's whole CI job is three steps:
+The main job of this repository's CI is four steps (shown without the comments):
 
 ```yaml
 steps:
-  - uses: actions/checkout@v5
-  - uses: jdx/mise-action@v3
+  - uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+    with:
+      egress-policy: audit
+  - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    with:
+      persist-credentials: false
+      fetch-depth: 0
+  - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
+    with:
+      version: 2026.11.14
+      sha256: 6fa596291e9758106f761fea4f8e7fac6c3e7ff4714d5c0b9a76e16068db14f6
+      install_args: python pipx:zensical go golangci-lint actionlint zizmor gitleaks bun uv
+      cache_save: ${{ github.event_name == 'push' }}
   - run: mise run check
 ```
 
-`jdx/mise-action` installs mise and the tools from `mise.toml`. Then CI runs **the same task you run locally**. No separate list of setup steps that drifts from the README. The only gap is the one above: without a pin or lock file, "latest" in CI is newer than "latest" on your laptop. With pins and `mise.lock`, both get the same versions.
+`jdx/mise-action` installs mise and the tools from `mise.toml`. Then CI runs **the same task you run locally**. Three inputs make the install itself trustworthy:
+
+- **`version` and `sha256`** pin mise itself. Without them the action takes the newest release, so the program that installs all other tools would be the one unpinned tool.
+- **`install_args`** limits the install to the tools that `check` needs. `mise.toml` also lists the course's other tools, and CI doesn't need `kubectl` or `cosign` to build this site. The workflow also sets `MISE_TASK_RUN_AUTO_INSTALL: "false"`, because otherwise `mise run` installs every missing tool before it starts the task.
+- **`cache_save`** is true only on pushes to `main`, so a pull request can't write a cache that `main` later restores.
+
+[CI pipelines](../delivery/ci-pipelines.md#this-repositorys-ci-line-by-line) and [GitHub Actions security](../secure-delivery/workflow-security.md) explain the other lines. No separate list of setup steps that drifts from the README. The only gap is the one above: without a pin or lock file, "latest" in CI is newer than "latest" on your laptop. With pins and `mise.lock`, both get the same versions.
 
 ## mise next to Homebrew, fnm, direnv and asdf
 
@@ -366,6 +415,8 @@ This setup activates **fnm** and **direnv** in `.zshrc`, but not mise, even thou
 - **Installed but not activated.** `mise doctor` says `activated: no`. Everything still _seems_ to work, because Homebrew has a `go` too. You only notice when the versions differ. Run `mise doctor` on every new machine.
 - **Hook order.** `mise activate` must run after `mise` is on `PATH` (after `brew shellenv`). Other hooks that also rewrite `PATH` on each prompt (fnm with `--use-on-cd`) compete for the order.
 - **Shims and `rehash`.** When you install a tool with a new name, a new shim file appears. zsh may have hashed the old location of that name (or "not found") and needs a `rehash`.
+- **`mise use` without a version.** It writes `latest`. Give the exact version, as every page in this course does.
+- **`MISE_LOCKED=0` as a habit.** It is for the one command that adds or changes a tool. If installs fail in locked mode for any other reason, find out why instead of switching the lock off.
 - **Untrusted configs in CI.** `mise run` trusts its config automatically. For other commands, the help text says that without trust "mise prompts, skips the file, or fails with an untrusted-config error when it cannot prompt". In CI there is nobody to answer the prompt.
 
 ## Check yourself
@@ -402,6 +453,7 @@ This setup activates **fnm** and **direnv** in `.zshrc`, but not mise, even thou
 - This setup did **not activate** mise: `mise doctor` showed it. The fix is `eval "$(mise activate zsh)"` in `.zshrc`, plus shims for non-interactive programs.
 - `latest` means "newest installed". Pin versions or use `mise lock` for reproducible builds.
 - Config files merge from the folder upwards; trust protects you from running a stranger's config.
+- New tools go into the project with `mise use tool@version` (with `MISE_LOCKED=0` when the project is locked), never into a global install.
 - Tasks with `depends`, `dir` and `run` arrays make `mise run check` the single entry point, locally and in CI.
 
 Next: [Dotfiles and everyday CLI tools](dotfiles.md), the repository that holds all of this config.

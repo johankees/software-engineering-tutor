@@ -52,3 +52,11 @@ Each page builds on the one before it.
 ## How each page works
 
 The same shape as the [Fundamentals](../fundamentals/index.md): **Why care?**, **The idea**, **Under the hood**, **Try it**, **Traps** and **Check yourself**. All examples run on a local `kind` cluster, and deploy the `ordersd` service from the [Go chapter](../go/index.md). All output comes from real runs on WSL2 (kernel 5.15, cgroup v1) with Docker 29.1, `kind` 0.33 (Kubernetes 1.37.0, containerd 2.3), `kubectl` 1.37.3, Helm 4.3 and Go 1.27.4.
+
+!!! tip "New tools: `kind`, `kubectl`"
+
+    ```sh
+    mise use kind@0.33.0 kubectl@1.37.3
+    ```
+
+    This adds them to the project's `mise.toml`, pinned to an exact version. See [Adding tools as you go](../toolbox/mise.md#adding-tools-as-you-go).

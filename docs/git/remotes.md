@@ -331,6 +331,14 @@ Doing all of this by hand (fetch upstream, rebase each branch of a stack onto it
 
 The one thing Git Town adds is a **parent for each branch**, stored in normal git config:
 
+!!! tip "New tool: `git-town`"
+
+    ```sh
+    mise use git-town@24.2.0
+    ```
+
+    This adds it to the project's `mise.toml`, pinned to an exact version. See [Adding tools as you go](../toolbox/mise.md#adding-tools-as-you-go).
+
 ```console
 $ git town hack kitchen
 ... (Git Town first prints the git commands it runs)

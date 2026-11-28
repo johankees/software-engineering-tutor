@@ -143,6 +143,14 @@ plugins:
     opt: paths=source_relative
 ```
 
+!!! tip "New tools: `buf`, `protoc`"
+
+    ```sh
+    mise use buf@1.75.0 protoc@36.2
+    ```
+
+    This adds them to the project's `mise.toml`, pinned to an exact version. See [Adding tools as you go](../toolbox/mise.md#adding-tools-as-you-go).
+
 ```console
 $ buf generate
 $ find gen -type f
@@ -791,6 +799,14 @@ Many companies use both: gRPC inside, a JSON gateway at the edge, generated from
 - **Command-line calls.** `grpcurl` is a command-line client for gRPC, similar to `curl` for HTTP. It uses server **reflection** (`reflection.Register(srv)`) or a `.proto` file to turn JSON into protobuf.
 
 <!-- TODO(real-output): grpcurl is not installed here. With it: register reflection in cmd/demo, then run `grpcurl -plaintext 127.0.0.1:PORT list` (expect `grpc.reflection.v1.ServerReflection` and `orders.v1.OrderService`) and `grpcurl -plaintext -d '{"id":"o-1"}' 127.0.0.1:PORT orders.v1.OrderService/GetOrder` (expect the order as JSON with camelCase names: "customerId", "totalCents": "700" as a string, because int64 maps to a JSON string). -->
+
+!!! tip "New tool: `grpcurl`"
+
+    ```sh
+    mise use grpcurl@1.9.4
+    ```
+
+    This adds it to the project's `mise.toml`, pinned to an exact version. See [Adding tools as you go](../toolbox/mise.md#adding-tools-as-you-go).
 
 ## Traps
 

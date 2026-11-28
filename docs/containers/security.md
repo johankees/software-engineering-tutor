@@ -459,6 +459,14 @@ The **purl** (package URL) is the key: `pkg:golang/stdlib@1.27.4` is the same st
 
 A scanner such as **Trivy** or **Grype** does two steps: build an SBOM like the one above (or read yours), then look up every purl and version in vulnerability databases (the Debian security tracker, the Go vulnerability database, GitHub advisories, NVD). Neither is installed on this machine, so no output here; the idea is the same for both: `grype sbom:ordersd.spdx.json` or `trivy sbom ordersd.cdx.json`.
 
+!!! tip "New tool: `grype`"
+
+    ```sh
+    mise use grype@0.122.1
+    ```
+
+    This adds it to the project's `mise.toml`, pinned to an exact version. See [Adding tools as you go](../toolbox/mise.md#adding-tools-as-you-go).
+
 What to know before you read a scan report:
 
 - **The base image is most of it.** An image `FROM golang:1.27` has hundreds of Debian packages, and a report with hundreds of CVEs. The distroless image above has five. The cheapest fix for a long report is a smaller base (see [Building good images](building-images.md)).
@@ -475,6 +483,14 @@ A tag like `tutor-ordersd:dev` can point anywhere tomorrow. A digest (`sha256:..
 - **Keyless**: no long-lived key. CI proves its identity with an OIDC token (for example GitHub Actions: "repo `acme/orders`, workflow `release.yml`"). Sigstore's CA, **Fulcio**, issues a certificate valid for 10 minutes for a fresh key. Cosign signs, records the signature in the public transparency log **Rekor**, and throws the key away. A verifier checks "signed by workflow X of repo Y" instead of "signed by key Z", and Rekor proves the signature existed while the certificate was valid.
 
 Here: a key pair, and a file instead of an image. We sign the SBOM.
+
+!!! tip "New tool: `cosign`"
+
+    ```sh
+    mise use cosign@3.1.6
+    ```
+
+    This adds it to the project's `mise.toml`, pinned to an exact version. See [Adding tools as you go](../toolbox/mise.md#adding-tools-as-you-go).
 
 ```console
 $ unshare -Urn cosign generate-key-pair

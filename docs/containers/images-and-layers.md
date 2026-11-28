@@ -340,6 +340,14 @@ docker-content-digest: sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842d
 
 The `Docker-Content-Digest` header is the resolved digest. `crane` (from Google's `go-containerregistry`) does the same in one command, and you can check its answer yourself:
 
+!!! tip "New tool: `crane`"
+
+    ```sh
+    mise use crane@0.22.1
+    ```
+
+    This adds it to the project's `mise.toml`, pinned to an exact version. See [Adding tools as you go](../toolbox/mise.md#adding-tools-as-you-go).
+
 ```console
 $ crane digest gcr.io/distroless/static-debian12:nonroot
 sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab

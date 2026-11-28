@@ -87,6 +87,14 @@ A **module** is a directory of `.tf` files with **variables** (inputs) and **out
 
 ## Try it: `ordersd` environments with OpenTofu
 
+!!! tip "New tool: `tofu`"
+
+    ```sh
+    mise use opentofu@1.13.10
+    ```
+
+    This adds it to the project's `mise.toml`, pinned to an exact version. See [Adding tools as you go](../toolbox/mise.md#adding-tools-as-you-go).
+
 ```console
 $ tofu version
 OpenTofu v1.13.10

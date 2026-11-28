@@ -71,6 +71,14 @@ Flux is a set of controllers. Each one is a [reconciliation](../kubernetes/recon
 
 The `flux` CLI (v2.10.1 here) installs them, creates their resources, and shows their status. Check the cluster first:
 
+!!! tip "New tool: `flux`"
+
+    ```sh
+    mise use flux2@2.10.1
+    ```
+
+    This adds it to the project's `mise.toml`, pinned to an exact version. See [Adding tools as you go](../toolbox/mise.md#adding-tools-as-you-go).
+
 ```console
 $ flux version --client
 flux: v2.10.1
@@ -394,6 +402,14 @@ The `kubectl` annotation is gone, the `tutor-tool` one stayed. kustomize-control
 ## Under the hood: Argo CD
 
 Argo CD is the other widely used GitOps controller. It does the same job with a different design. The `argocd` CLI is not installed on this machine, so here is the concept only:
+
+!!! tip "New tool: `argocd`"
+
+    ```sh
+    mise use argocd@3.6.3
+    ```
+
+    This adds it to the project's `mise.toml`, pinned to an exact version. See [Adding tools as you go](../toolbox/mise.md#adding-tools-as-you-go).
 
 | Topic          | Flux                                              | Argo CD                                                   |
 | -------------- | ------------------------------------------------- | --------------------------------------------------------- |

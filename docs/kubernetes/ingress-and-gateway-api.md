@@ -122,6 +122,14 @@ ports:
 
 Traefik's Gateway support needs the Gateway API CRDs first (next section explains them). Then the chart:
 
+!!! tip "New tool: `helm`"
+
+    ```sh
+    mise use helm@4.3.2
+    ```
+
+    This adds it to the project's `mise.toml`, pinned to an exact version. See [Adding tools as you go](../toolbox/mise.md#adding-tools-as-you-go).
+
 ```console
 $ kubectl apply --server-side -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.7.0/standard-install.yaml
 customresourcedefinition.apiextensions.k8s.io/backendtlspolicies.gateway.networking.k8s.io serverside-applied
