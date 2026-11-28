@@ -1,17 +1,15 @@
 # Software Engineering Tutor
 
-Welcome! This site teaches software engineering from the bottom up.
+This site teaches software engineering from the bottom up, from the CPU to production services.
 
-- **Fundamentals**: how a computer really works. CPU, registers, stack, heap, memory, encodings.
-- **Toolbox**: the workshop around the code. Terminal, shell, tmux, Neovim, mise and dotfiles, and how each one works.
-- **Git**: not the commands, the machine. Objects, refs, the index, packfiles, merging, remotes and recovery.
+- **Fundamentals**: how a computer works. CPU, registers, stack, heap, memory, encodings.
+- **Toolbox**: the tools around the code. Terminal, shell, tmux, Neovim, mise and dotfiles, and how each one works.
+- **Git**: how Git works internally. Objects, refs, the index, packfiles, merging, remotes and recovery.
 - **Go**: from basic to expert, always with an enterprise focus. Project layout, testing, tooling, real CLIs and services.
-
-Coming next (each section has its plan; pages are added over time):
 
 - **Linux**: the kernel your services run on. System calls, file descriptors, signals, namespaces, cgroups, systemd.
 - **Networking**: TCP, DNS, TLS and HTTP, one layer at a time, with real packets.
-- **Containers**: images as layers, containers as processes with walls, and how to build good images.
+- **Containers**: images as layers, containers as isolated processes, and how to build good images.
 - **Kubernetes**: desired state and reconciliation loops, from pods to writing an operator in Go.
 - **Databases**: pages, B-trees, the WAL, transactions, isolation, migrations, and Go with Postgres.
 - **Distributed systems**: failures, clocks, consistency, retries, idempotency, messaging, outbox and Raft.
@@ -25,6 +23,6 @@ Coming next (each section has its plan; pages are added over time):
 ## How this site is written
 
 - **Plain English.** Short sentences. Simple words. No jargon without an explanation.
-- **Friendly, like "Head First".** Pictures, analogies, and questions you might ask.
-- **Deep, like "The Hard Parts".** We do not stop at "it works". We ask _why_ it works.
-- **Up to date.** Examples target the current Go release.
+- **Professional and precise.** Diagrams where they help, real examples, no filler.
+- **Deep.** Every page explains _why_ something works, not only how to use it.
+- **Real.** Examples target the current Go release, and command output comes from real runs.

@@ -8,10 +8,20 @@ It covers:
 - **Toolbox**: terminal, zsh, tmux, Neovim, mise and dotfiles, under the hood.
 - **Git**: how Git works internally (objects, refs, index, packfiles, merging, remotes, recovery).
 - **Go**: from basic to expert, with an enterprise focus (project layout, tooling, testing, CLIs, services).
-- **Planned**: Linux, networking, containers, Kubernetes, databases, distributed systems, observability, CI/CD and
-  delivery, security, architecture, algorithms, AI-assisted engineering. Each section's index page holds its chapter plan.
+- **Linux**: system calls, file descriptors, filesystems, signals, namespaces, cgroups, systemd, debugging.
+- **Networking**: packets, TCP, DNS, TLS, HTTP/1.1 to HTTP/3, load balancers, debugging.
+- **Containers**: images and layers, building images, runtimes, networking, security.
+- **Kubernetes**: from the API server and reconciliation to storage, scheduling, packaging and operators.
+- **Databases**: PostgreSQL storage, indexes, transactions, MVCC, query planning, migrations, Go and SQL, replication.
+- **Distributed systems**: failures, time, consistency, retries, messaging, outbox and sagas, Raft, caching.
+- **Observability**: logs, metrics, traces, SLOs and alerting, profiling.
+- **CI/CD and delivery**: pipelines, reproducible builds, trunk-based development, feature flags, deployments, GitOps, IaC.
+- **Security**: threat modeling, cryptography, authentication, authorization, secrets, supply chain, web and API security.
+- **Architecture**: trade-offs, HTTP and gRPC APIs, evolving APIs, boundaries, domain modeling, decision records.
+- **Algorithms**: complexity, hashing, trees, heaps, graphs, sorting, probabilistic structures.
+- **AI engineering**: how LLMs work, prompting, coding agents, reviewing AI-written code, building with LLMs in Go.
 
-Style: plain English, friendly like "Head First", deep like "The Hard Parts".
+Style: professional, in plain and simple English, with depth: every page explains why, not only how.
 
 ## Getting started
 
