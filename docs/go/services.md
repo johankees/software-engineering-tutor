@@ -9,7 +9,7 @@ http.HandleFunc("/orders", handleOrders)
 log.Fatal(http.ListenAndServe(":8080", nil))
 ```
 
-It works on day one. In production, it fails in ways that are hard to see:
+It works at first. In production, it fails in ways that are hard to see:
 
 - A client opens 10,000 connections and sends headers one byte per minute. The server never times out. It runs out of memory.
 - Kubernetes deploys a new version. It sends `SIGTERM`, the process dies instantly, and 200 in-flight requests get "connection reset". Customers see errors on every deploy.
@@ -79,7 +79,7 @@ The `order` package imports nothing from this project. It does not know HTTP exi
 
 ## The domain: `internal/order`
 
-The heart of the service has no I/O at all:
+The core of the service has no I/O at all:
 
 ```go
 // Item is one line of an order. Money is stored in integer cents: floats
@@ -148,7 +148,7 @@ The clock and the ID generator are **fields**, not direct calls to `time.Now()` 
 
 !!! info "Why UUID version 7?"
 
-    A v7 UUID starts with a millisecond timestamp, then random bits. IDs created later sort later. Databases love this: new rows go at the end of the index instead of random places, which keeps B-tree indexes compact and inserts fast. Random v4 UUIDs scatter writes all over the index.
+    A v7 UUID starts with a millisecond timestamp, then random bits. IDs created later sort later. This helps databases: new rows go at the end of the index instead of random places, which keeps B-tree indexes compact and inserts fast. Random v4 UUIDs scatter writes all over the index.
 
 `Create` also copies the caller's slice with `slices.Clone(n.Items)`. A slice is a view on a shared backing array (see [Types and data](types-and-data.md)). Without the copy, the caller could change the stored order later by changing their own slice. The test `TestServiceCreate` checks this exact case.
 
@@ -210,7 +210,7 @@ Since Go 1.22, the standard router understands **methods** and **path wildcards*
 
 - `{id}` matches one path segment. The handler reads it with `r.PathValue("id")`.
 - `GET` patterns also match `HEAD` requests.
-- A request with the wrong method gets **405 Method Not Allowed** and an `Allow` header, for free:
+- A request with the wrong method gets **405 Method Not Allowed** and an `Allow` header, automatically:
 
 ```text
 $ curl -si -X DELETE localhost:8080/v1/orders
@@ -390,7 +390,7 @@ Once `w.WriteHeader(200)` is called, the status is on its way to the client and 
 
 ## Middleware: plain functions
 
-Middleware in Go is just a function that takes a handler and returns a handler:
+Middleware in Go is a function that takes a handler and returns a handler:
 
 ```go
 func(next http.Handler) http.Handler
@@ -432,7 +432,7 @@ type ctxKey int
 const requestIDKey ctxKey = iota
 ```
 
-Because `ctxKey` is unexported, no other package can create the same key, so there can be no collisions. See [Context and cancellation](context.md) for when context values are (and are not) a good idea. A request ID is the classic good case: it is request-scoped, and it is not a function input that changes behavior.
+Because `ctxKey` is unexported, no other package can create the same key, so there can be no collisions. See [Context and cancellation](context.md) for when context values are (and are not) a good idea. A request ID is a typical good case: it is request-scoped, and it is not a function input that changes behavior.
 
 ### Access logs
 
@@ -508,7 +508,7 @@ func (a *api) readyz(w http.ResponseWriter, r *http.Request) {
 | Liveness (`/healthz`) | "Is the process stuck?"       | **restarts** the container            |
 | Readiness (`/readyz`) | "Should I send you requests?" | **removes** it from the load balancer |
 
-Mixing them up causes outages. If liveness checked the database, a 30-second database hiccup would make Kubernetes restart _every_ pod at once, turning a small problem into a full outage.
+Mixing them up causes outages. If liveness checked the database, a 30-second database outage would make Kubernetes restart _every_ pod at once, turning a small problem into a full outage.
 
 ## Configuration: `internal/config`
 
@@ -552,7 +552,7 @@ shutdown timeout 0s: must be positive
 
     **Rule:** validate all configuration before starting anything. Refuse to start if it is wrong.
 
-    **Why:** a typo in a timeout should fail the deploy in the first second, with a clear message, not cause strange behavior at 2 a.m. three days later. Orchestrators show a crashing container immediately; a "running but wrong" container can stay hidden for weeks.
+    **Why:** a typo in a timeout should fail the deploy in the first second, with a clear message, not cause strange behavior days later. Orchestrators show a crashing container immediately; a "running but wrong" container can stay hidden for weeks.
 
 `ordersd -h` documents every environment variable next to its flag, so operators never need to read the code:
 
@@ -591,7 +591,7 @@ func main() {
 }
 ```
 
-The goroutine is a small kindness for developers: the first Ctrl-C starts a graceful shutdown; a second one, when you are impatient, kills the process immediately.
+The goroutine helps during development: the first Ctrl-C starts a graceful shutdown; a second one kills the process immediately.
 
 `run` builds every piece by hand:
 
@@ -616,7 +616,7 @@ The goroutine is a small kindness for developers: the first Ctrl-C starts a grac
 
     **Rule:** construct everything in one place (`run`), and pass dependencies as constructor parameters. No package-level `var db *sql.DB`, no `init()` that connects to things, no dependency-injection container.
 
-    **Why:** reading `run` top to bottom tells you _everything_ the service is made of, in the order it is built. The compiler checks every connection. A DI framework hides this behind reflection or code generation, and errors appear at run time instead of compile time. Globals make tests share state and make the order of `init()` functions matter. For services with many dependencies, this function grows to maybe 100 lines. That is fine: it is boring, explicit code, which is the best kind.
+    **Why:** reading `run` top to bottom tells you _everything_ the service is made of, in the order it is built. The compiler checks every connection. A DI framework hides this behind reflection or code generation, and errors appear at run time instead of compile time. Globals make tests share state and make the order of `init()` functions matter. For services with many dependencies, this function grows to maybe 100 lines. That is fine: the code is simple and explicit.
 
 Note `ready.Load`: a **method value**. It is a `func() bool` bound to this specific `ready` variable. The HTTP package only sees a function; it does not know about atomics at all.
 
@@ -752,7 +752,7 @@ During the delay, readiness is `503` but the process is alive and still serving.
 {"time":"2026-11-26T08:34:34.824901271+01:00","level":"INFO","msg":"shutdown complete","service":"ordersd"}
 ```
 
-The probe requests themselves do not appear: `logRequests` logs `/healthz` and `/readyz` at `DEBUG` level, because orchestrators call them every few seconds and they would drown out real traffic.
+The probe requests themselves do not appear: `logRequests` logs `/healthz` and `/readyz` at `DEBUG` level, because orchestrators call them every few seconds and they would hide the log lines of real traffic.
 
 ## Logging with `slog`
 
@@ -832,7 +832,7 @@ Its three methods each just return `s.err`.
 
 It then calls `/readyz` over real TCP, cancels the context (exactly what `SIGTERM` does through `NotifyContext`), and checks that `run` logs "shutdown complete" and returns `nil`. That is a full start-serve-stop cycle in about 50 milliseconds, with no `time.Sleep`.
 
-The memory store has a test that runs 50 goroutines at once. On its own it proves little, but under the **race detector** it is powerful:
+The memory store has a test that runs 50 goroutines at once. On its own it proves little. Under the **race detector**, it finds data races:
 
 ```text
 $ go test -race -count=1 ./...
@@ -961,7 +961,7 @@ Two runtime settings matter in containers:
 | `http.ListenAndServe(addr, h)`              | No timeouts at all                                             | Build an `http.Server` with every timeout set             |
 | Using `http.DefaultServeMux`                | Any imported package can register routes (e.g. `/debug/pprof`) | Always `http.NewServeMux()`                               |
 | `os.Exit` / `log.Fatal` on `SIGTERM`        | In-flight requests are cut off on every deploy                 | `signal.NotifyContext` + `srv.Shutdown`                   |
-| Liveness probe checks the database          | A DB blip restarts every pod                                   | Liveness = "process alive"; readiness = "send traffic"    |
+| Liveness probe checks the database          | A short DB outage restarts every pod                           | Liveness = "process alive"; readiness = "send traffic"    |
 | Shutdown timeout derived from cancelled ctx | `Shutdown` returns immediately; nothing drains                 | `context.WithTimeout(context.WithoutCancel(ctx), ...)`    |
 | `err.Error()` in 500 responses              | Leaks hostnames, SQL, stack details                            | Log the error; send a generic message with the request ID |
 | Domain structs with JSON tags               | Internal renames break clients; internal fields leak           | Separate wire types                                       |
@@ -1019,3 +1019,7 @@ Two runtime settings matter in containers:
 - Ship a static binary in a distroless, non-root image. Know `GOMAXPROCS` and `GOMEMLIMIT`.
 
 You now have a complete, production-shaped Go project. Go back to any earlier page and you will see its ideas here, in real code.
+
+## You finished Go
+
+You have built the `orders` project from an empty module to a tested, observable service that ships as a container image. The rest of the site looks at the systems around that service, starting with the [Linux](../linux/index.md) kernel it runs on.
